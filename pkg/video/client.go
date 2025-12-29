@@ -22,23 +22,23 @@ type Client struct {
 	robotIP       string
 	signallingURL string
 
-	ws        *websocket.Conn
-	pc        *webrtc.PeerConnection
-	wsMutex   sync.Mutex
+	ws      *websocket.Conn
+	pc      *webrtc.PeerConnection
+	wsMutex sync.Mutex
 
 	myPeerID   string
 	producerID string
 	sessionID  string
 
 	// H264 stream handling
-	h264Buffer    []byte
-	h264Mutex     sync.Mutex
-	lastKeyframe  []byte
-	
+	h264Buffer   []byte
+	h264Mutex    sync.Mutex
+	lastKeyframe []byte
+
 	// Latest decoded frame
-	latestFrame   []byte
-	frameMutex    sync.RWMutex
-	frameReady    chan struct{}
+	latestFrame []byte
+	frameMutex  sync.RWMutex
+	frameReady  chan struct{}
 
 	connected bool
 	closed    bool
@@ -56,11 +56,11 @@ func NewClient(robotIP string) *Client {
 // Connect establishes the WebRTC connection
 func (c *Client) Connect() error {
 	fmt.Println("  Connecting to signalling server...")
-	
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
-	
+
 	var err error
 	c.ws, _, err = dialer.Dial(c.signallingURL, nil)
 	if err != nil {
@@ -113,7 +113,7 @@ func (c *Client) waitForWelcome() error {
 	c.ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, msg, err := c.ws.ReadMessage()
 	c.ws.SetReadDeadline(time.Time{})
-	
+
 	if err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func (c *Client) handlePeerMessage(msg []byte) {
 				Type: webrtc.SDPTypeOffer,
 				SDP:  sdpStr,
 			}
-			
+
 			if err := c.pc.SetRemoteDescription(offer); err != nil {
 				fmt.Printf("  SetRemoteDescription error: %v\n", err)
 				return
@@ -285,12 +285,12 @@ func (c *Client) handlePeerMessage(msg []byte) {
 	if iceData, ok := peerMsg["ice"]; ok {
 		iceMap := iceData.(map[string]interface{})
 		candidate := iceMap["candidate"].(string)
-		
+
 		var sdpMid string
 		if mid, ok := iceMap["sdpMid"]; ok && mid != nil {
 			sdpMid = mid.(string)
 		}
-		
+
 		var sdpMLineIndex uint16
 		if idx, ok := iceMap["sdpMLineIndex"]; ok && idx != nil {
 			sdpMLineIndex = uint16(idx.(float64))
@@ -322,7 +322,7 @@ func (c *Client) sendICECandidate(candidate *webrtc.ICECandidate) {
 	if c.sessionID == "" {
 		return
 	}
-	
+
 	init := candidate.ToJSON()
 	msg := map[string]interface{}{
 		"type":      "peer",
@@ -345,10 +345,13 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 	default:
 	}
 
-	// Collect H264 NAL units and decode periodically
-	var nalBuffer bytes.Buffer
+	// H264 depacketizer to extract NAL units from RTP
+	// NAL units need proper start codes (0x00 0x00 0x00 0x01)
+	var h264Buffer bytes.Buffer
+	var frameBuffer bytes.Buffer
 	lastDecode := time.Now()
-	
+	frameCount := 0
+
 	for !c.closed {
 		// Read RTP packet
 		rtpPacket, _, err := track.ReadRTP()
@@ -356,32 +359,102 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 			return
 		}
 
-		// Extract H264 NAL unit from RTP payload
-		nalBuffer.Write(rtpPacket.Payload)
+		payload := rtpPacket.Payload
+		if len(payload) < 2 {
+			continue
+		}
 
-		// Decode every 100ms to get frames
-		if time.Since(lastDecode) > 100*time.Millisecond {
-			c.decodeH264ToJPEG(nalBuffer.Bytes())
-			nalBuffer.Reset()
+		// Parse H264 NAL unit header
+		nalType := payload[0] & 0x1F
+
+		switch {
+		case nalType >= 1 && nalType <= 23:
+			// Single NAL unit - add start code and NAL
+			h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
+			h264Buffer.Write(payload)
+
+		case nalType == 28: // FU-A (Fragmentation Unit)
+			fuHeader := payload[1]
+			startBit := (fuHeader & 0x80) != 0
+			endBit := (fuHeader & 0x40) != 0
+			nalType := fuHeader & 0x1F
+
+			if startBit {
+				// Start of fragmented NAL - add start code and reconstructed header
+				h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
+				h264Buffer.WriteByte((payload[0] & 0xE0) | nalType)
+			}
+			// Add fragment payload (skip FU indicator and header)
+			h264Buffer.Write(payload[2:])
+
+			if endBit {
+				// End of frame - decode
+				frameBuffer.Write(h264Buffer.Bytes())
+				h264Buffer.Reset()
+			}
+
+		case nalType == 24: // STAP-A (Single-time Aggregation Packet)
+			// Skip STAP-A header byte
+			offset := 1
+			for offset < len(payload)-2 {
+				nalSize := int(payload[offset])<<8 | int(payload[offset+1])
+				offset += 2
+				if offset+nalSize > len(payload) {
+					break
+				}
+				h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
+				h264Buffer.Write(payload[offset : offset+nalSize])
+				offset += nalSize
+			}
+		}
+
+		// Decode accumulated NALs periodically
+		if time.Since(lastDecode) > 100*time.Millisecond && h264Buffer.Len() > 1000 {
+			c.decodeH264ToJPEG(h264Buffer.Bytes())
+			frameCount++
+			h264Buffer.Reset()
 			lastDecode = time.Now()
 		}
 	}
 }
 
 func (c *Client) decodeH264ToJPEG(h264Data []byte) {
-	if len(h264Data) < 100 {
+	if len(h264Data) < 500 {
 		return
 	}
 
-	// Write H264 to temp file
+	// Write H264 to temp file for debugging
 	tmpH264 := "/tmp/reachy_video.h264"
 	tmpJPEG := "/tmp/reachy_frame.jpg"
-	
-	os.WriteFile(tmpH264, h264Data, 0644)
+
+	// Append to file to accumulate a valid stream
+	f, err := os.OpenFile(tmpH264, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	f.Write(h264Data)
+	f.Close()
+
+	// Get file size
+	info, _ := os.Stat(tmpH264)
+	if info == nil || info.Size() < 50000 {
+		// Wait until we have enough data
+		return
+	}
 
 	// Use ffmpeg to decode to JPEG
-	cmd := exec.Command("ffmpeg", "-y", "-i", tmpH264, "-vframes", "1", "-f", "image2", tmpJPEG)
-	cmd.Run()
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "h264",
+		"-i", tmpH264,
+		"-vframes", "1",
+		"-q:v", "2",
+		tmpJPEG)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Keep accumulating if decode fails
+		return
+	}
 
 	// Read the JPEG
 	jpegData, err := os.ReadFile(tmpJPEG)
@@ -389,7 +462,12 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 		c.frameMutex.Lock()
 		c.latestFrame = jpegData
 		c.frameMutex.Unlock()
+
+		// Clear the H264 buffer after successful decode
+		os.Remove(tmpH264)
 	}
+
+	_ = output
 }
 
 // GetFrame returns the latest video frame as JPEG bytes
@@ -409,7 +487,7 @@ func (c *Client) GetFrame() ([]byte, error) {
 // WaitForFrame waits for a frame to be available
 func (c *Client) WaitForFrame(timeout time.Duration) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
-	
+
 	for time.Now().Before(deadline) {
 		frame, err := c.GetFrame()
 		if err == nil {
@@ -417,7 +495,7 @@ func (c *Client) WaitForFrame(timeout time.Duration) ([]byte, error) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	
+
 	return nil, fmt.Errorf("timeout waiting for frame")
 }
 
@@ -436,4 +514,3 @@ func (c *Client) Close() {
 var _ = rtp.Packet{}
 var _ = http.Client{}
 var _ = io.EOF
-
