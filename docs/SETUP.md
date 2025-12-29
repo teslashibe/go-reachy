@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.21+** installed on your development machine
+- **Go 1.25** installed on your development machine
 - **Reachy Mini robot** powered on and connected to your network
 - **SSH access** to the robot (password: `root`)
 
