@@ -201,4 +201,3 @@ func analyzeWithGemini(ctx context.Context, apiKey string, imageData []byte) (st
 
 	return "I couldn't understand what I'm seeing", nil
 }
-
