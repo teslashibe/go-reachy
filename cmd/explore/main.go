@@ -296,37 +296,37 @@ func captureFrame() ([]byte, error) {
 			return frame, nil
 		}
 	}
-	
+
 	// Fallback to SSH/Python method
 	tmpFile := "/tmp/reachy_explore.jpg"
-	
+
 	captureCmd := fmt.Sprintf(
 		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 %s@%s 'source /venvs/mini_daemon/bin/activate && timeout 20 python /tmp/capture_frame.py'`,
 		sshPass, sshUser, robotIP)
-	
+
 	cmd := exec.Command("bash", "-c", captureCmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "OK") {
 		return nil, fmt.Errorf("capture failed: %s", string(output))
 	}
-	
+
 	scpCmd := exec.Command("bash", "-c", fmt.Sprintf(
 		`sshpass -p "%s" scp -o StrictHostKeyChecking=no %s@%s:/tmp/frame_live.jpg %s`,
 		sshPass, sshUser, robotIP, tmpFile))
-	
+
 	if err := scpCmd.Run(); err != nil {
 		return nil, fmt.Errorf("SCP failed: %v", err)
 	}
-	
+
 	data, err := os.ReadFile(tmpFile)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if len(data) < 5000 {
 		return nil, fmt.Errorf("frame too small: %d bytes", len(data))
 	}
-	
+
 	return data, nil
 }
 

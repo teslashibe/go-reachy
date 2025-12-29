@@ -3,6 +3,7 @@ package video
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
+	"gopkg.in/hraban/opus.v2"
 )
 
 // Client connects to Reachy's WebRTC video stream via GStreamer signalling
@@ -40,16 +42,31 @@ type Client struct {
 	frameMutex  sync.RWMutex
 	frameReady  chan struct{}
 
+	// Audio recording - stores decoded PCM samples
+	audioBuffer    []int16
+	audioMutex     sync.Mutex
+	audioRecording bool
+	audioReady     chan struct{}
+	opusDecoder    *opus.Decoder
+
 	connected bool
 	closed    bool
 }
 
 // NewClient creates a new WebRTC video client
 func NewClient(robotIP string) *Client {
+	// Create Opus decoder (48kHz mono - will decode stereo to mono)
+	decoder, err := opus.NewDecoder(48000, 1)
+	if err != nil {
+		fmt.Printf("Warning: failed to create opus decoder: %v\n", err)
+	}
+
 	return &Client{
 		robotIP:       robotIP,
 		signallingURL: fmt.Sprintf("ws://%s:8443", robotIP),
 		frameReady:    make(chan struct{}, 1),
+		audioReady:    make(chan struct{}, 1),
+		opusDecoder:   decoder,
 	}
 }
 
@@ -183,11 +200,20 @@ func (c *Client) createPeerConnection() error {
 		return err
 	}
 
-	// Handle incoming video track
+	// We want to receive audio too
+	if _, err = c.pc.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		return err
+	}
+
+	// Handle incoming video/audio tracks
 	c.pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		fmt.Printf("  Got track: %s (codec: %s)\n", track.Kind(), track.Codec().MimeType)
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			go c.handleVideoTrack(track)
+		} else if track.Kind() == webrtc.RTPCodecTypeAudio {
+			go c.handleAudioTrack(track)
 		}
 	})
 
@@ -508,6 +534,142 @@ func (c *Client) Close() {
 	if c.ws != nil {
 		c.ws.Close()
 	}
+}
+
+// handleAudioTrack processes incoming Opus audio
+func (c *Client) handleAudioTrack(track *webrtc.TrackRemote) {
+	fmt.Println("  🎤 Audio track started")
+
+	if c.opusDecoder == nil {
+		fmt.Println("  ⚠️  No opus decoder available")
+		return
+	}
+
+	// Buffer for decoded PCM (max 120ms at 48kHz = 5760 samples)
+	frameBuf := make([]int16, 5760)
+
+	for !c.closed {
+		rtpPacket, _, err := track.ReadRTP()
+		if err != nil {
+			return
+		}
+
+		// Decode Opus packet to PCM
+		n, err := c.opusDecoder.Decode(rtpPacket.Payload, frameBuf)
+		if err != nil {
+			continue // Skip bad packets
+		}
+
+		// Store decoded samples when recording
+		c.audioMutex.Lock()
+		if c.audioRecording {
+			c.audioBuffer = append(c.audioBuffer, frameBuf[:n]...)
+		}
+		c.audioMutex.Unlock()
+	}
+}
+
+// StartRecording begins capturing audio
+func (c *Client) StartRecording() {
+	c.audioMutex.Lock()
+	c.audioBuffer = nil
+	c.audioRecording = true
+	c.audioMutex.Unlock()
+}
+
+// StopRecording stops capturing audio and returns decoded PCM samples
+func (c *Client) StopRecording() []int16 {
+	c.audioMutex.Lock()
+	defer c.audioMutex.Unlock()
+
+	c.audioRecording = false
+	data := c.audioBuffer
+	c.audioBuffer = nil
+	return data
+}
+
+// RecordAudio records audio for a specified duration and returns WAV file path
+func (c *Client) RecordAudio(duration time.Duration) (string, error) {
+	tmpWav := "/tmp/reachy_audio.wav"
+	tmpWav16k := "/tmp/reachy_audio_16k.wav"
+
+	fmt.Printf("  📼 Recording %v of audio...\n", duration)
+
+	c.StartRecording()
+	time.Sleep(duration)
+	pcmSamples := c.StopRecording()
+
+	fmt.Printf("  📼 Captured %d PCM samples (%.2fs)\n", len(pcmSamples), float64(len(pcmSamples))/48000.0)
+
+	if len(pcmSamples) < 1000 {
+		return "", fmt.Errorf("no audio captured (got %d samples)", len(pcmSamples))
+	}
+
+	// Write WAV file (48kHz mono, 16-bit PCM)
+	err := writeWAV(tmpWav, pcmSamples, 48000, 1)
+	if err != nil {
+		return "", fmt.Errorf("failed to write WAV: %w", err)
+	}
+
+	// Resample to 16kHz for Whisper
+	cmd := exec.Command("ffmpeg", "-y",
+		"-i", tmpWav,
+		"-ar", "16000",
+		"-ac", "1",
+		tmpWav16k)
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("  ⚠️  Resample failed, using 48kHz WAV\n")
+		return tmpWav, nil
+	}
+
+	// Check output file
+	info, err := os.Stat(tmpWav16k)
+	if err != nil || info.Size() < 100 {
+		return tmpWav, nil
+	}
+
+	fmt.Printf("  ✅ Audio: %d samples -> %d bytes WAV (16kHz)\n", len(pcmSamples), info.Size())
+	return tmpWav16k, nil
+}
+
+// writeWAV writes PCM samples to a WAV file
+func writeWAV(filename string, samples []int16, sampleRate, channels int) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// WAV header
+	dataSize := len(samples) * 2 // 16-bit = 2 bytes per sample
+	fileSize := 36 + dataSize
+
+	// RIFF header
+	f.Write([]byte("RIFF"))
+	binary.Write(f, binary.LittleEndian, uint32(fileSize))
+	f.Write([]byte("WAVE"))
+
+	// fmt chunk
+	f.Write([]byte("fmt "))
+	binary.Write(f, binary.LittleEndian, uint32(16))         // Chunk size
+	binary.Write(f, binary.LittleEndian, uint16(1))          // Audio format (PCM)
+	binary.Write(f, binary.LittleEndian, uint16(channels))   // Channels
+	binary.Write(f, binary.LittleEndian, uint32(sampleRate)) // Sample rate
+	byteRate := sampleRate * channels * 2
+	binary.Write(f, binary.LittleEndian, uint32(byteRate))   // Byte rate
+	binary.Write(f, binary.LittleEndian, uint16(channels*2)) // Block align
+	binary.Write(f, binary.LittleEndian, uint16(16))         // Bits per sample
+
+	// data chunk
+	f.Write([]byte("data"))
+	binary.Write(f, binary.LittleEndian, uint32(dataSize))
+
+	// Write samples
+	for _, sample := range samples {
+		binary.Write(f, binary.LittleEndian, sample)
+	}
+
+	return nil
 }
 
 // Unused import placeholder

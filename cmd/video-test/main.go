@@ -52,7 +52,7 @@ func main() {
 			if len(frame) != len(lastFrame) {
 				frameCount++
 				lastFrame = frame
-				
+
 				// Save first frame
 				if frameCount == 1 {
 					os.WriteFile("test_frame.jpg", frame, 0644)
@@ -73,4 +73,3 @@ func main() {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-
