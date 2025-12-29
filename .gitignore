@@ -1,0 +1,45 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Built binaries (at root level only)
+/dance
+/dance-arm64
+/poc
+/reachy
+/reachy-linux-*
+
+# Build output
+/bin/
+/dist/
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+__debug_bin
+
+# Environment
+.env
+.env.local
+
