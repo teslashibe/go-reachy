@@ -49,7 +49,7 @@ var (
 	positionExpiry   time.Time
 )
 
-const systemPrompt = `You are Reachy, a curious and expressive robot with antenna ears. You're on a fun mission to find someone named Travis.
+const systemPrompt = `You are Eva, a curious and expressive robot with antenna ears. You're on a fun mission to find someone named Travis.
 
 PERSONALITY:
 - Genuinely curious about people - ask about their day, what they're up to
@@ -74,7 +74,7 @@ VARY YOUR APPROACH:
 - Be unpredictable and interesting!`
 
 func main() {
-	fmt.Println("🤖 Reachy - Conversational Travis Finder")
+	fmt.Println("🤖 Eva - Conversational Travis Finder")
 	fmt.Println("=========================================")
 
 	geminiKey := os.Getenv("GEMINI_API_KEY")
@@ -123,7 +123,7 @@ func main() {
 	go smoothHeadTracker(ctx)
 
 	// Opening
-	speak("Hello! I'm Reachy, and I'm on a mission to find Travis. Have you seen him around?", openaiKey)
+	speak("Hello! I'm Eva, and I'm on a mission to find Travis. Have you seen him around?", openaiKey)
 	waveAntenna()
 
 	fmt.Println("\n🔍 Watching and listening continuously...\n")
@@ -247,8 +247,8 @@ func continuousListener(ctx context.Context, openaiKey string) {
 				continue
 			}
 
-			// Record 2 seconds of audio (faster response)
-			wavFile, err := videoClient.RecordAudio(2 * time.Second)
+			// Record 1.5 seconds of audio (faster response)
+			wavFile, err := videoClient.RecordAudio(1500 * time.Millisecond)
 			if err != nil {
 				continue
 			}
@@ -413,8 +413,8 @@ func chat(ctx context.Context, apiKey string, frame []byte, userMessage string) 
 	payload := map[string]interface{}{
 		"contents": contents,
 		"generationConfig": map[string]interface{}{
-			"temperature":     1.0, // Higher for more variety
-			"maxOutputTokens": 60,
+			"temperature":     0.9,
+			"maxOutputTokens": 40, // Shorter = faster
 		},
 	}
 
@@ -424,7 +424,7 @@ func chat(ctx context.Context, apiKey string, frame []byte, userMessage string) 
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second} // Faster timeout
 	resp, err := client.Do(req)
 	if err != nil {
 		return "Hmm, let me think."
@@ -668,7 +668,7 @@ func speakWithOpenAI(text, apiKey string) {
 		"model": "tts-1",
 		"input": text,
 		"voice": "nova",
-		"speed": 1.0,
+		"speed": 1.1, // Slightly faster
 	}
 
 	jsonData, _ := json.Marshal(payload)
@@ -677,7 +677,7 @@ func speakWithOpenAI(text, apiKey string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return
@@ -688,17 +688,20 @@ func speakWithOpenAI(text, apiKey string) {
 		return
 	}
 
-	audioData, _ := io.ReadAll(resp.Body)
-	tmpFile := "/tmp/speech.mp3"
-	os.WriteFile(tmpFile, audioData, 0644)
+	// Stream directly to robot via SSH pipe (faster than SCP + play)
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(
+		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "cat > /tmp/s.mp3 && gst-launch-1.0 filesrc location=/tmp/s.mp3 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! audio/x-raw,rate=48000 ! opusenc ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 2>/dev/null"`,
+		sshPass, sshUser, robotIP))
 
-	exec.Command("bash", "-c", fmt.Sprintf(
-		`sshpass -p "%s" scp -o StrictHostKeyChecking=no %s %s@%s:/tmp/speech.mp3`,
-		sshPass, tmpFile, sshUser, robotIP)).Run()
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return
+	}
 
-	exec.Command("bash", "-c", fmt.Sprintf(
-		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "gst-launch-1.0 filesrc location=/tmp/speech.mp3 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! audio/x-raw,rate=48000 ! opusenc ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 2>/dev/null"`,
-		sshPass, sshUser, robotIP)).Run()
+	cmd.Start()
+	io.Copy(stdin, resp.Body) // Stream directly
+	stdin.Close()
+	cmd.Wait()
 }
 
 func speakWithEspeak(text string) {

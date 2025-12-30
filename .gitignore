@@ -43,3 +43,6 @@ __debug_bin
 .env
 .env.local
 
+*.exe
+eva
+travis
