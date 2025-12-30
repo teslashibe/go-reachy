@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -32,41 +34,42 @@ func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error
 	// Encode image as base64
 	b64Image := base64.StdEncoding.EncodeToString(imageData)
 
-	// Build Gemini API request
+	// Build Gemini API request (matching format from working explore code)
 	payload := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
 				"parts": []map[string]interface{}{
-					{
-						"text": prompt,
-					},
-					{
-						"inline_data": map[string]interface{}{
-							"mime_type": "image/jpeg",
-							"data":      b64Image,
-						},
-					},
+					{"text": prompt},
+					{"inline_data": map[string]string{"mime_type": "image/jpeg", "data": b64Image}},
 				},
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"maxOutputTokens": 150,
-			"temperature":     0.4,
+			"temperature":     0.7,
+			"maxOutputTokens": 100,
 		},
 	}
 
 	jsonData, _ := json.Marshal(payload)
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", apiKey)
+	// Using Gemini 3 Flash - latest model from https://deepmind.google/models/gemini/flash/
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=%s", apiKey)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Read full response for debugging
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
 
 	var result struct {
 		Candidates []struct {
@@ -76,24 +79,104 @@ func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		Error struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		} `json:"error"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w (body: %s)", err, string(bodyBytes[:min(200, len(bodyBytes))]))
+	}
+
+	if result.Error.Message != "" {
+		return "", fmt.Errorf("Gemini error: %s", result.Error.Message)
 	}
 
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
 		return result.Candidates[0].Content.Parts[0].Text, nil
 	}
 
-	return "", fmt.Errorf("no response from Gemini")
+	return "", fmt.Errorf("no response from Gemini (raw: %s)", string(bodyBytes[:min(300, len(bodyBytes))]))
+}
+
+// WebSearch uses Gemini with Google Search grounding to search the web
+func WebSearch(apiKey string, query string) (string, error) {
+	if apiKey == "" {
+		return "", fmt.Errorf("GOOGLE_API_KEY not set")
+	}
+
+	// Build request with search grounding enabled
+	payload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]interface{}{
+					{"text": fmt.Sprintf("Search the web and answer this question concisely (2-3 sentences max): %s", query)},
+				},
+			},
+		},
+		"tools": []map[string]interface{}{
+			{
+				"google_search": map[string]interface{}{},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"temperature":     0.7,
+			"maxOutputTokens": 200,
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// Use Gemini 2.0 Flash for search (3 Flash may not support grounding yet)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", apiKey)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes[:min(200, len(bodyBytes))]))
+	}
+
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+			GroundingMetadata struct {
+				SearchEntryPoint struct {
+					RenderedContent string `json:"renderedContent"`
+				} `json:"searchEntryPoint"`
+			} `json:"groundingMetadata"`
+		} `json:"candidates"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
+	}
+
+	return "", fmt.Errorf("no search results")
 }
 
 // EvaToolsConfig holds dependencies for Eva's tools
 type EvaToolsConfig struct {
-	Robot       RobotController
-	Memory      *Memory
-	Vision      VisionProvider
+	Robot        RobotController
+	Memory       *Memory
+	Vision       VisionProvider
 	GoogleAPIKey string
 }
 
@@ -342,19 +425,26 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					focus = "general"
 				}
 
+				fmt.Printf("👁️  describe_scene called (focus: %s)\n", focus)
+
 				if cfg.Vision == nil {
+					fmt.Println("👁️  Error: Vision provider is nil")
 					return "I cannot see right now - camera not connected", nil
 				}
 
 				if cfg.GoogleAPIKey == "" {
+					fmt.Println("👁️  Error: Google API key not set")
 					return "I cannot see right now - vision not configured", nil
 				}
 
 				// Capture frame
+				fmt.Println("👁️  Capturing frame...")
 				imageData, err := cfg.Vision.CaptureFrame()
 				if err != nil {
+					fmt.Printf("👁️  Frame capture error: %v\n", err)
 					return fmt.Sprintf("Could not capture image: %v", err), nil
 				}
+				fmt.Printf("👁️  Captured %d bytes\n", len(imageData))
 
 				// Build prompt based on focus
 				var prompt string
@@ -368,12 +458,48 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 				}
 
 				// Call Gemini
+				fmt.Println("👁️  Calling Gemini Flash...")
 				description, err := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
 				if err != nil {
+					fmt.Printf("👁️  Gemini error: %v\n", err)
 					return fmt.Sprintf("Vision error: %v", err), nil
 				}
+				fmt.Printf("👁️  Gemini response: %s\n", description)
 
 				return description, nil
+			},
+		},
+		{
+			Name:        "web_search",
+			Description: "Search the internet for information. Use this when someone asks about current events, facts, products, flights, weather, or anything you need to look up online.",
+			Parameters: map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "The search query to look up",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				query, _ := args["query"].(string)
+				if query == "" {
+					return "I need a search query to look up", nil
+				}
+
+				fmt.Printf("🌐 web_search called (query: %s)\n", query)
+
+				// Use Gemini with grounding/search capability
+				if cfg.GoogleAPIKey == "" {
+					return "Web search not configured", nil
+				}
+
+				// Call Gemini with search grounding
+				result, err := WebSearch(cfg.GoogleAPIKey, query)
+				if err != nil {
+					fmt.Printf("🌐 Search error: %v\n", err)
+					return fmt.Sprintf("Search failed: %v", err), nil
+				}
+
+				fmt.Printf("🌐 Search result: %s\n", result)
+				return result, nil
 			},
 		},
 		{
@@ -450,7 +576,8 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 
 // Memory stores information about people and conversations
 type Memory struct {
-	People map[string]*PersonMemory `json:"people"`
+	People   map[string]*PersonMemory `json:"people"`
+	FilePath string                   `json:"-"`
 }
 
 // PersonMemory stores facts about a person
@@ -467,7 +594,54 @@ func NewMemory() *Memory {
 	}
 }
 
-// RememberPerson stores a fact about a person
+// NewMemoryWithFile creates a memory store that persists to a file
+func NewMemoryWithFile(filePath string) *Memory {
+	m := &Memory{
+		People:   make(map[string]*PersonMemory),
+		FilePath: filePath,
+	}
+	m.Load() // Load existing memory if file exists
+	return m
+}
+
+// Save persists memory to file
+func (m *Memory) Save() error {
+	if m.FilePath == "" {
+		return nil
+	}
+
+	// Ensure directory exists
+	dir := m.FilePath[:strings.LastIndex(m.FilePath, "/")]
+	if dir != "" {
+		os.MkdirAll(dir, 0755)
+	}
+
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(m.FilePath, data, 0644)
+}
+
+// Load reads memory from file
+func (m *Memory) Load() error {
+	if m.FilePath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(m.FilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // File doesn't exist yet, that's OK
+		}
+		return err
+	}
+
+	return json.Unmarshal(data, m)
+}
+
+// RememberPerson stores a fact about a person and auto-saves
 func (m *Memory) RememberPerson(name, fact string) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
@@ -483,6 +657,9 @@ func (m *Memory) RememberPerson(name, fact string) {
 
 	m.People[name].Facts = append(m.People[name].Facts, fact)
 	m.People[name].LastSeen = time.Now()
+
+	// Auto-save to file
+	m.Save()
 }
 
 // RecallPerson retrieves facts about a person
@@ -599,4 +776,3 @@ func (r *SimpleRobotController) SetVolume(level int) error {
 	resp.Body.Close()
 	return nil
 }
-

@@ -34,6 +34,7 @@ PERSONALITY:
 
 CAPABILITIES:
 - You can SEE through your camera! Use describe_scene to look at the room
+- You can SEARCH THE WEB! Use web_search to find information online
 - You can MOVE your head to look around
 - You can EXPRESS emotions with your antennas
 - You can REMEMBER people and facts
@@ -68,6 +69,9 @@ var (
 	speakingMu   sync.Mutex
 	currentYaw   float64
 	targetYaw    float64
+
+	// Track if we've started printing Eva's response
+	evaResponseStarted bool
 )
 
 func main() {
@@ -159,8 +163,11 @@ func initialize(openaiKey string) error {
 	// Create robot controller
 	robot = realtime.NewSimpleRobotController(robotIP)
 
-	// Create memory
-	memory = realtime.NewMemory()
+	// Create persistent memory (saves to ~/.eva/memory.json)
+	homeDir, _ := os.UserHomeDir()
+	memoryPath := homeDir + "/.eva/memory.json"
+	memory = realtime.NewMemoryWithFile(memoryPath)
+	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
 
 	// Create audio player
 	audioPlayer = realtime.NewAudioPlayer(robotIP, sshUser, sshPass)
@@ -214,10 +221,16 @@ func connectRealtime(apiKey string) error {
 	// Set up callbacks
 	realtimeClient.OnTranscript = func(text string, isFinal bool) {
 		if isFinal && text != "" {
+			// User's final transcript
 			fmt.Printf("👤 User: %s\n", text)
+			evaResponseStarted = false
 		} else if !isFinal && text != "" {
-			// This is Eva's speech transcript
-			fmt.Printf("🤖 Eva: %s", text)
+			// Eva's speech - stream continuously on one line
+			if !evaResponseStarted {
+				fmt.Print("🤖 Eva: ")
+				evaResponseStarted = true
+			}
+			fmt.Print(text)
 		}
 	}
 
@@ -228,11 +241,17 @@ func connectRealtime(apiKey string) error {
 	}
 
 	realtimeClient.OnAudioDone = func() {
-		fmt.Println("🗣️  Eva: [playing audio...]")
-		if err := audioPlayer.FlushAndPlay(); err != nil {
-			fmt.Printf("⚠️  Audio playback error: %v\n", err)
+		// End the Eva response line
+		if evaResponseStarted {
+			fmt.Println() // newline after streaming text
+			evaResponseStarted = false
 		}
-		fmt.Println("🗣️  Eva: [done]")
+
+		fmt.Println("🗣️  [playing audio...]")
+		if err := audioPlayer.FlushAndPlay(); err != nil {
+			fmt.Printf("⚠️  Audio error: %v\n", err)
+		}
+		fmt.Println("🗣️  [done]")
 	}
 
 	realtimeClient.OnError = func(err error) {
