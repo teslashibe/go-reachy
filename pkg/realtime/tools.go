@@ -106,12 +106,12 @@ func WebSearch(apiKey string, query string) (string, error) {
 		return "", fmt.Errorf("GOOGLE_API_KEY not set")
 	}
 
-	// Build request with search grounding enabled
+	// Build request with search grounding enabled using dynamic retrieval
 	payload := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
 				"parts": []map[string]interface{}{
-					{"text": fmt.Sprintf("Search the web and answer this question concisely (2-3 sentences max): %s", query)},
+					{"text": query},
 				},
 			},
 		},
@@ -121,19 +121,24 @@ func WebSearch(apiKey string, query string) (string, error) {
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"temperature":     0.7,
-			"maxOutputTokens": 200,
+			"temperature":     0.2, // Lower temp for factual responses
+			"maxOutputTokens": 300,
+		},
+		"systemInstruction": map[string]interface{}{
+			"parts": []map[string]interface{}{
+				{"text": "You are a helpful assistant that searches the web for real-time information. Always use Google Search to find current, accurate information. Provide specific details like prices, times, dates, and links when available. Be concise but informative."},
+			},
 		},
 	}
 
 	jsonData, _ := json.Marshal(payload)
 
-	// Use Gemini 2.0 Flash for search (3 Flash may not support grounding yet)
+	// Use Gemini 2.0 Flash with grounding
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", apiKey)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
@@ -143,7 +148,17 @@ func WebSearch(apiKey string, query string) (string, error) {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes[:min(200, len(bodyBytes))]))
+		// Try to parse error
+		var errResp struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.Unmarshal(bodyBytes, &errResp)
+		if errResp.Error.Message != "" {
+			return "", fmt.Errorf("Gemini error: %s", errResp.Error.Message)
+		}
+		return "", fmt.Errorf("Gemini API error (status %d)", resp.StatusCode)
 	}
 
 	var result struct {
@@ -154,9 +169,16 @@ func WebSearch(apiKey string, query string) (string, error) {
 				} `json:"parts"`
 			} `json:"content"`
 			GroundingMetadata struct {
+				WebSearchQueries []string `json:"webSearchQueries"`
 				SearchEntryPoint struct {
 					RenderedContent string `json:"renderedContent"`
 				} `json:"searchEntryPoint"`
+				GroundingChunks []struct {
+					Web struct {
+						URI   string `json:"uri"`
+						Title string `json:"title"`
+					} `json:"web"`
+				} `json:"groundingChunks"`
 			} `json:"groundingMetadata"`
 		} `json:"candidates"`
 	}
@@ -166,7 +188,23 @@ func WebSearch(apiKey string, query string) (string, error) {
 	}
 
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
-		return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
+		response := strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text)
+
+		// Add source links if available
+		metadata := result.Candidates[0].GroundingMetadata
+		if len(metadata.GroundingChunks) > 0 {
+			response += "\n\nSources: "
+			for i, chunk := range metadata.GroundingChunks {
+				if i > 2 {
+					break // Limit to 3 sources
+				}
+				if chunk.Web.Title != "" {
+					response += fmt.Sprintf("%s (%s), ", chunk.Web.Title, chunk.Web.URI)
+				}
+			}
+		}
+
+		return response, nil
 	}
 
 	return "", fmt.Errorf("no search results")
@@ -471,7 +509,7 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 		},
 		{
 			Name:        "web_search",
-			Description: "Search the internet for information. Use this when someone asks about current events, facts, products, flights, weather, or anything you need to look up online.",
+			Description: "Search the internet for general information. Use for news, facts, weather, products, etc.",
 			Parameters: map[string]interface{}{
 				"query": map[string]interface{}{
 					"type":        "string",
@@ -486,12 +524,10 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 
 				fmt.Printf("🌐 web_search called (query: %s)\n", query)
 
-				// Use Gemini with grounding/search capability
 				if cfg.GoogleAPIKey == "" {
 					return "Web search not configured", nil
 				}
 
-				// Call Gemini with search grounding
 				result, err := WebSearch(cfg.GoogleAPIKey, query)
 				if err != nil {
 					fmt.Printf("🌐 Search error: %v\n", err)
@@ -499,6 +535,59 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 				}
 
 				fmt.Printf("🌐 Search result: %s\n", result)
+				return result, nil
+			},
+		},
+		{
+			Name:        "search_flights",
+			Description: "Search for real flight prices and availability. Use this when someone asks about flights, travel, or booking.",
+			Parameters: map[string]interface{}{
+				"origin": map[string]interface{}{
+					"type":        "string",
+					"description": "Origin city or airport code (e.g., 'San Francisco' or 'SFO')",
+				},
+				"destination": map[string]interface{}{
+					"type":        "string",
+					"description": "Destination city or airport code (e.g., 'Los Angeles' or 'LAX')",
+				},
+				"date": map[string]interface{}{
+					"type":        "string",
+					"description": "Travel date (e.g., 'January 6, 2025' or '2025-01-06')",
+				},
+				"cabin_class": map[string]interface{}{
+					"type":        "string",
+					"description": "Cabin class: economy, business, or first",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				origin, _ := args["origin"].(string)
+				destination, _ := args["destination"].(string)
+				date, _ := args["date"].(string)
+				cabinClass, _ := args["cabin_class"].(string)
+				if cabinClass == "" {
+					cabinClass = "economy"
+				}
+
+				fmt.Printf("✈️  search_flights called (from: %s, to: %s, date: %s, class: %s)\n",
+					origin, destination, date, cabinClass)
+
+				if cfg.GoogleAPIKey == "" {
+					return "Flight search not configured", nil
+				}
+
+				// Use Gemini with detailed flight search query
+				query := fmt.Sprintf(
+					"Find specific flights from %s to %s on %s in %s class. "+
+						"I need: airline names, departure times, arrival times, flight numbers, and prices in USD. "+
+						"Search Google Flights or airline websites for real current availability.",
+					origin, destination, date, cabinClass)
+
+				result, err := WebSearch(cfg.GoogleAPIKey, query)
+				if err != nil {
+					return fmt.Sprintf("Flight search failed: %v", err), nil
+				}
+
+				fmt.Printf("✈️  Flight search result: %s\n", result)
 				return result, nil
 			},
 		},

@@ -34,10 +34,17 @@ PERSONALITY:
 
 CAPABILITIES:
 - You can SEE through your camera! Use describe_scene to look at the room
-- You can SEARCH THE WEB! Use web_search to find information online
+- You can SEARCH FLIGHTS! Use search_flights for flight queries with origin, destination, date, cabin class
+- You can SEARCH THE WEB! Use web_search for news, weather, facts, products
 - You can MOVE your head to look around
 - You can EXPRESS emotions with your antennas
 - You can REMEMBER people and facts
+
+IMPORTANT FOR SEARCHING:
+- For FLIGHTS: ALWAYS use search_flights tool (not web_search) - it finds real prices
+- Share ALL the data you find: prices, times, flight numbers
+- Don't say "I couldn't find" - share whatever information you got
+- Be specific with numbers, don't be vague
 
 BEHAVIOR:
 - Keep responses conversational and natural - 1-2 sentences usually
@@ -65,10 +72,10 @@ var (
 	robot          *realtime.SimpleRobotController
 	memory         *realtime.Memory
 
-	speaking     bool
-	speakingMu   sync.Mutex
-	currentYaw   float64
-	targetYaw    float64
+	speaking   bool
+	speakingMu sync.Mutex
+	currentYaw float64
+	targetYaw  float64
 
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
@@ -383,7 +390,7 @@ func detectAndTrackPerson(googleKey string) {
 
 	// Quick check for person position
 	prompt := "Is there a person in this image? If yes, are they on the LEFT, CENTER, or RIGHT side of the frame? Reply with just: NONE, LEFT, CENTER, or RIGHT"
-	
+
 	result, err := realtime.GeminiVision(googleKey, frame, prompt)
 	if err != nil {
 		return
@@ -431,4 +438,3 @@ func (v *videoVisionAdapter) CaptureFrame() ([]byte, error) {
 	}
 	return v.client.CaptureJPEG()
 }
-

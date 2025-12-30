@@ -74,7 +74,8 @@ func (p *AudioPlayer) AppendAudio(base64Audio string) error {
 func (p *AudioPlayer) startStream() error {
 	// GStreamer pipeline that reads from stdin and plays audio
 	// Using fdsrc to read raw PCM from stdin
-	pipeline := `gst-launch-1.0 fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! opusenc ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 2>/dev/null`
+	// Added queue for buffering and sync=true to ensure proper playback timing
+	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=5000000000 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
 
 	p.streamCmd = exec.Command("bash", "-c", fmt.Sprintf(
 		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s '%s'`,
@@ -112,6 +113,9 @@ func (p *AudioPlayer) FlushAndPlay() error {
 		return nil
 	}
 
+	// Give GStreamer a moment to process buffered data before closing stdin
+	time.Sleep(100 * time.Millisecond)
+
 	// Close stdin to signal EOF to GStreamer
 	if p.streamStdin != nil {
 		p.streamStdin.Close()
@@ -131,7 +135,7 @@ func (p *AudioPlayer) FlushAndPlay() error {
 	select {
 	case <-done:
 		// Playback completed
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		// Timeout - kill the process
 		if p.streamCmd != nil && p.streamCmd.Process != nil {
 			p.streamCmd.Process.Kill()
