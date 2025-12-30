@@ -36,6 +36,7 @@ type Client struct {
 	h264Buffer   []byte
 	h264Mutex    sync.Mutex
 	lastKeyframe []byte
+	decodeMutex  sync.Mutex // Prevents concurrent ffmpeg calls
 
 	// Latest decoded frame
 	latestFrame []byte
@@ -448,6 +449,10 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 	if len(h264Data) < 500 {
 		return
 	}
+
+	// Lock to prevent concurrent ffmpeg calls on same temp files
+	c.decodeMutex.Lock()
+	defer c.decodeMutex.Unlock()
 
 	// Write H264 to temp file for debugging
 	tmpH264 := "/tmp/reachy_video.h264"
