@@ -139,6 +139,16 @@
                             <span class="text-gray-400">Timer</span>
                             <span id="timer-status" class="text-gray-300">None</span>
                         </div>
+                        <hr class="border-gray-700">
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-400">🔊 Volume</span>
+                                <span id="volume-value" class="text-eva-cyan font-mono">100%</span>
+                            </div>
+                            <input type="range" id="volume-slider" min="0" max="100" value="100" 
+                                class="w-full h-2 bg-eva-dark rounded-lg appearance-none cursor-pointer accent-eva-cyan"
+                                onchange="setVolume(this.value)" oninput="updateVolumeDisplay(this.value)">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -386,6 +396,15 @@
             } catch (err) {
                 console.error('Tool error:', err);
             }
+        }
+
+        function updateVolumeDisplay(value) {
+            document.getElementById('volume-value').textContent = value + '%';
+        }
+
+        async function setVolume(value) {
+            updateVolumeDisplay(value);
+            await triggerTool('set_volume', { level: parseInt(value) });
         }
 
         // Initialize
