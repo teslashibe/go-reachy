@@ -1,10 +1,13 @@
 package realtime
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
 	"sync"
 	"time"
@@ -12,9 +15,10 @@ import (
 
 // AudioPlayer handles streaming audio playback to the robot
 type AudioPlayer struct {
-	robotIP string
-	sshUser string
-	sshPass string
+	robotIP   string
+	sshUser   string
+	sshPass   string
+	openaiKey string // For TTS
 
 	// Streaming state
 	streamCmd   *exec.Cmd
@@ -38,6 +42,11 @@ func NewAudioPlayer(robotIP, sshUser, sshPass string) *AudioPlayer {
 		sshUser: sshUser,
 		sshPass: sshPass,
 	}
+}
+
+// SetOpenAIKey sets the OpenAI API key for TTS
+func (p *AudioPlayer) SetOpenAIKey(key string) {
+	p.openaiKey = key
 }
 
 // AppendAudio streams audio data directly to the robot (base64 encoded PCM16 at 24kHz)
@@ -202,6 +211,88 @@ func (p *AudioPlayer) IsSpeaking() bool {
 	p.speakingMu.Lock()
 	defer p.speakingMu.Unlock()
 	return p.speaking
+}
+
+// SpeakText uses OpenAI TTS to speak text directly (for timer announcements, etc.)
+func (p *AudioPlayer) SpeakText(text string) error {
+	if p.openaiKey == "" {
+		fmt.Println("🔔 Error: OpenAI API key not set for TTS")
+		return fmt.Errorf("OpenAI API key not set")
+	}
+
+	fmt.Printf("🔔 Speaking: %s\n", text)
+	fmt.Println("🔔 Calling OpenAI TTS...")
+
+	// Call OpenAI TTS API
+	payload := map[string]interface{}{
+		"model": "tts-1",
+		"voice": "shimmer",
+		"input": text,
+	}
+	jsonData, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(jsonData))
+	req.Header.Set("Authorization", "Bearer "+p.openaiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("TTS request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("TTS error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Read the MP3 audio
+	audioData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("🔔 Error reading TTS audio: %v\n", err)
+		return fmt.Errorf("failed to read audio: %w", err)
+	}
+	fmt.Printf("🔔 Got %d bytes of audio from TTS\n", len(audioData))
+
+	// Play via SSH and GStreamer (convert MP3 to playable format)
+	cmd := exec.Command("sshpass", "-p", p.sshPass,
+		"ssh", "-o", "StrictHostKeyChecking=no",
+		fmt.Sprintf("%s@%s", p.sshUser, p.robotIP),
+		"gst-launch-1.0 fdsrc fd=0 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! alsasink device=default")
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		fmt.Printf("🔔 Error getting stdin pipe: %v\n", err)
+		return fmt.Errorf("failed to get stdin: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("🔔 Error starting playback: %v\n", err)
+		return fmt.Errorf("failed to start playback: %w", err)
+	}
+
+	fmt.Println("🔔 Playing timer audio...")
+
+	// Trigger callbacks
+	if p.OnPlaybackStart != nil {
+		p.OnPlaybackStart()
+	}
+
+	stdin.Write(audioData)
+	stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		fmt.Printf("🔔 Playback error: %v\n", err)
+	} else {
+		fmt.Println("🔔 Timer audio complete")
+	}
+
+	if p.OnPlaybackEnd != nil {
+		p.OnPlaybackEnd()
+	}
+
+	return nil
 }
 
 // ConvertPCM16ToInt16 converts byte slice to int16 samples

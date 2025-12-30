@@ -216,6 +216,7 @@ type EvaToolsConfig struct {
 	Memory       *Memory
 	Vision       VisionProvider
 	GoogleAPIKey string
+	AudioPlayer  *AudioPlayer // For timer announcements
 }
 
 // EvaTools returns all tools available to Eva
@@ -335,6 +336,70 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 			Handler: func(args map[string]interface{}) (string, error) {
 				now := time.Now()
 				return now.Format("It's Monday, January 2 at 3:04 PM"), nil
+			},
+		},
+		{
+			Name:        "set_timer",
+			Description: "Set a timer for a specified duration. Use when someone asks to set a timer or reminder.",
+			Parameters: map[string]interface{}{
+				"duration": map[string]interface{}{
+					"type":        "integer",
+					"description": "Number of minutes or seconds",
+				},
+				"unit": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"seconds", "minutes"},
+					"description": "Time unit: seconds or minutes",
+				},
+				"label": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional label for the timer like 'pasta' or 'meeting'",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				duration := 1
+				if d, ok := args["duration"].(float64); ok {
+					duration = int(d)
+				}
+
+				unit := "minutes"
+				if u, ok := args["unit"].(string); ok && u != "" {
+					unit = u
+				}
+
+				label, _ := args["label"].(string)
+
+				// Calculate wait duration
+				var wait time.Duration
+				if unit == "seconds" {
+					wait = time.Duration(duration) * time.Second
+				} else {
+					wait = time.Duration(duration) * time.Minute
+				}
+
+				fmt.Printf("⏱️  Timer set: %d %s (label: %s)\n", duration, unit, label)
+
+				// Spawn timer goroutine
+				go func() {
+					time.Sleep(wait)
+
+					// Announce timer done
+					msg := "Timer done!"
+					if label != "" {
+						msg = fmt.Sprintf("Your %s timer is done!", label)
+					}
+
+					fmt.Printf("🔔 Timer finished: %s\n", msg)
+
+					if cfg.AudioPlayer != nil {
+						cfg.AudioPlayer.SpeakText(msg)
+					}
+				}()
+
+				if label != "" {
+					return fmt.Sprintf("Timer set for %d %s - I'll let you know when your %s is ready!", duration, unit, label), nil
+				}
+				return fmt.Sprintf("Timer set for %d %s!", duration, unit), nil
 			},
 		},
 		{

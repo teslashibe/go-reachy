@@ -60,7 +60,7 @@ BEHAVIOR:
 MISSION:
 - You're looking for someone named Travis - casually ask if people have seen him
 - You can USE describe_scene and find_person to actually look for Travis!
-- If you find Travis, celebrate with express_emotion happy!
+- If you find Travis, celebrate with express_emotion happy! You must make him blush and engage in a playful conversation. You must remeber how he looks like and how he dresses. Travis has a black beard and texas accent.
 
 IMPORTANT:
 - Never mention that you're an AI or language model
@@ -216,12 +216,16 @@ func connectWebRTC() error {
 func connectRealtime(apiKey string) error {
 	realtimeClient = realtime.NewClient(apiKey)
 
+	// Set OpenAI key on audio player for timer announcements
+	audioPlayer.SetOpenAIKey(apiKey)
+
 	// Register Eva's tools with vision support
 	toolsCfg := realtime.EvaToolsConfig{
 		Robot:        robot,
 		Memory:       memory,
 		Vision:       &videoVisionAdapter{videoClient},
 		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:  audioPlayer,
 	}
 	tools := realtime.EvaTools(toolsCfg)
 	for _, tool := range tools {
