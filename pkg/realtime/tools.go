@@ -52,8 +52,8 @@ func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error
 
 	jsonData, _ := json.Marshal(payload)
 
-	// Using Gemini 3 Flash - latest model from https://deepmind.google/models/gemini/flash/
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=%s", apiKey)
+	// Using Gemini 2.0 Flash - stable model
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", apiKey)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -392,7 +392,11 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					fmt.Printf("🔔 Timer finished: %s\n", msg)
 
 					if cfg.AudioPlayer != nil {
-						cfg.AudioPlayer.SpeakText(msg)
+						if err := cfg.AudioPlayer.SpeakText(msg); err != nil {
+							fmt.Printf("🔔 Timer TTS error: %v\n", err)
+						}
+					} else {
+						fmt.Println("🔔 Error: AudioPlayer is nil, cannot announce timer")
 					}
 				}()
 
