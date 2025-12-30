@@ -15,6 +15,7 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/video"
+	"github.com/teslashibe/go-reachy/pkg/web"
 )
 
 const (
@@ -60,7 +61,7 @@ BEHAVIOR:
 MISSION:
 - You're looking for someone named Travis - casually ask if people have seen him
 - You can USE describe_scene and find_person to actually look for Travis!
-- If you find Travis, celebrate with express_emotion happy!
+- If you find Travis, celebrate with express_emotion happy! Travis has a black beard.
 
 IMPORTANT:
 - Never mention that you're an AI or language model
@@ -74,6 +75,7 @@ var (
 	audioPlayer    *realtime.AudioPlayer
 	robot          *realtime.SimpleRobotController
 	memory         *realtime.Memory
+	webServer      *web.Server
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -82,6 +84,7 @@ var (
 
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
+	evaCurrentResponse string
 )
 
 func main() {
@@ -165,6 +168,26 @@ func main() {
 	// Start head tracking
 	go headTracker(ctx)
 
+	// Start web dashboard
+	go startWebDashboard(ctx)
+
+	// Start camera streaming to web
+	go streamCameraToWeb(ctx)
+
+	// Update web dashboard with initial connection state
+	go func() {
+		time.Sleep(500 * time.Millisecond) // Wait for web server to start
+		if webServer != nil {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.RobotConnected = true
+				s.OpenAIConnected = realtimeClient != nil && realtimeClient.IsConnected()
+				s.WebRTCConnected = videoClient != nil
+				s.Listening = true
+			})
+			webServer.AddLog("info", "Eva 2.0 started")
+		}
+	}()
+
 	// Keep running
 	<-ctx.Done()
 }
@@ -193,6 +216,86 @@ func initialize(openaiKey string) error {
 	}
 
 	return nil
+}
+
+func startWebDashboard(ctx context.Context) {
+	// Create web server
+	webServer = web.NewServer("8181")
+
+	// Configure tool trigger callback
+	webServer.OnToolTrigger = func(name string, args map[string]interface{}) (string, error) {
+		// Get tool config
+		cfg := realtime.EvaToolsConfig{
+			Robot:        robot,
+			Memory:       memory,
+			Vision:       &videoVisionAdapter{videoClient},
+			GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
+			AudioPlayer:  audioPlayer,
+		}
+
+		// Get tools and find the one requested
+		tools := realtime.EvaTools(cfg)
+		for _, tool := range tools {
+			if tool.Name == name {
+				return tool.Handler(args)
+			}
+		}
+		return "", fmt.Errorf("tool not found: %s", name)
+	}
+
+	// Configure frame capture callback
+	webServer.OnCaptureFrame = func() ([]byte, error) {
+		if videoClient == nil {
+			return nil, fmt.Errorf("video client not connected")
+		}
+		return videoClient.GetFrame()
+	}
+
+	// Start server (blocks)
+	if err := webServer.Start(); err != nil {
+		fmt.Printf("⚠️  Web server error: %v\n", err)
+	}
+}
+
+func streamCameraToWeb(ctx context.Context) {
+	// Wait for web server to be ready
+	for i := 0; i < 50; i++ {
+		if webServer != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if videoClient == nil {
+		fmt.Println("⚠️  Camera stream: video client not available")
+		return
+	}
+	if webServer == nil {
+		fmt.Println("⚠️  Camera stream: web server not available")
+		return
+	}
+
+	fmt.Println("📷 Camera streaming to dashboard started")
+
+	ticker := time.NewTicker(66 * time.Millisecond) // ~15 FPS
+	defer ticker.Stop()
+
+	frameCount := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			frame, err := videoClient.GetFrame()
+			if err == nil && len(frame) > 0 {
+				webServer.SendCameraFrame(frame)
+				frameCount++
+				if frameCount == 1 {
+					fmt.Printf("📷 First frame sent to dashboard (%d bytes)\n", len(frame))
+				}
+			}
+		}
+	}
 }
 
 func wakeUpRobot() error {
@@ -238,13 +341,24 @@ func connectRealtime(apiKey string) error {
 			// User's final transcript
 			fmt.Printf("👤 User: %s\n", text)
 			evaResponseStarted = false
+			// Update web dashboard
+			if webServer != nil {
+				webServer.UpdateState(func(s *web.EvaState) {
+					s.LastUserMessage = text
+					s.Listening = true
+					s.Speaking = false
+				})
+				webServer.AddConversation("user", text)
+			}
 		} else if !isFinal && text != "" {
 			// Eva's speech - stream continuously on one line
 			if !evaResponseStarted {
 				fmt.Print("🤖 Eva: ")
 				evaResponseStarted = true
+				evaCurrentResponse = ""
 			}
 			fmt.Print(text)
+			evaCurrentResponse += text
 		}
 	}
 
@@ -261,15 +375,39 @@ func connectRealtime(apiKey string) error {
 			evaResponseStarted = false
 		}
 
+		// Update web dashboard with Eva's response
+		if webServer != nil && evaCurrentResponse != "" {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = true
+				s.Listening = false
+				s.LastEvaMessage = evaCurrentResponse
+			})
+			webServer.AddConversation("eva", evaCurrentResponse)
+			webServer.AddLog("speech", "Playing audio...")
+		}
+
 		fmt.Println("🗣️  [playing audio...]")
 		if err := audioPlayer.FlushAndPlay(); err != nil {
 			fmt.Printf("⚠️  Audio error: %v\n", err)
 		}
 		fmt.Println("🗣️  [done]")
+
+		// Update web dashboard
+		if webServer != nil {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = false
+				s.Listening = true
+			})
+			webServer.AddLog("speech", "Audio done")
+		}
+		evaCurrentResponse = ""
 	}
 
 	realtimeClient.OnError = func(err error) {
 		fmt.Printf("⚠️  Error: %v\n", err)
+		if webServer != nil {
+			webServer.AddLog("error", err.Error())
+		}
 	}
 
 	realtimeClient.OnSessionCreated = func() {
@@ -442,6 +580,15 @@ func detectAndTrackPerson(googleKey string) {
 
 	fmt.Printf("👁️  Face at %.0f%% → yaw %.2f\n", position, newYaw)
 	targetYaw = newYaw
+
+	// Update web dashboard
+	if webServer != nil {
+		webServer.UpdateState(func(s *web.EvaState) {
+			s.FacePosition = position
+			s.HeadYaw = newYaw
+		})
+		webServer.AddLog("face", fmt.Sprintf("Face at %.0f%% → yaw %.2f", position, newYaw))
+	}
 }
 
 func shutdown() {

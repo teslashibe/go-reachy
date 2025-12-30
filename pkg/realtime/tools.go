@@ -46,7 +46,7 @@ func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error
 		},
 		"generationConfig": map[string]interface{}{
 			"temperature":     0.7,
-			"maxOutputTokens": 500, // Increased for better scene descriptions
+			"maxOutputTokens": 1000, // Increased for better scene descriptions
 		},
 	}
 

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eva Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        eva: {
+                            cyan: '#06b6d4',
+                            dark: '#0f172a',
+                            darker: '#020617',
+                            card: '#1e293b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e293b 100%);
+        }
+        .glass {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(6, 182, 212, 0.2);
+        }
+        .pulse-dot {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .log-scroll {
+            scrollbar-width: thin;
+            scrollbar-color: #06b6d4 #1e293b;
+        }
+        .log-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+        .log-scroll::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        .log-scroll::-webkit-scrollbar-thumb {
+            background: #06b6d4;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-gray-100 font-sans">
+    <div class="container mx-auto px-4 py-6">
+        <!-- Header -->
+        <header class="flex items-center justify-between mb-6">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-eva-cyan to-teal-400 flex items-center justify-center">
+                    <span class="text-xl">🤖</span>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white">Eva Dashboard</h1>
+                    <p class="text-sm text-gray-400">Real-time monitoring & control</p>
+                </div>
+            </div>
+            <div id="connection-status" class="flex items-center gap-2 px-4 py-2 glass rounded-full">
+                <div id="status-dot" class="w-3 h-3 rounded-full bg-red-500"></div>
+                <span id="status-text" class="text-sm">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-12 gap-4">
+            <!-- Left Column: Camera + Status -->
+            <div class="col-span-4 space-y-4">
+                <!-- Camera Feed -->
+                <div class="glass rounded-xl p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h2 class="text-lg font-semibold flex items-center gap-2">
+                            <span class="text-eva-cyan">📹</span> Camera Feed
+                        </h2>
+                        <button onclick="toggleFullscreen()" class="text-xs px-2 py-1 bg-eva-dark rounded hover:bg-eva-cyan/20 transition" title="Fullscreen">
+                            ⛶ Expand
+                        </button>
+                    </div>
+                    <div class="aspect-video bg-black rounded-lg overflow-hidden relative cursor-pointer" onclick="toggleFullscreen()">
+                        <img id="camera-feed" class="w-full h-full object-cover" alt="Camera Feed">
+                        <div id="camera-loading" class="absolute inset-0 flex items-center justify-center bg-black/50">
+                            <span class="text-gray-400">Waiting for feed...</span>
+                        </div>
+                    </div>
+                    <div class="mt-3 flex justify-between text-sm">
+                        <span class="text-gray-400">Face: <span id="face-pos" class="text-eva-cyan font-mono">--</span></span>
+                        <span class="text-gray-400">Yaw: <span id="head-yaw" class="text-eva-cyan font-mono">--</span></span>
+                    </div>
+                </div>
+
+                <!-- Status -->
+                <div class="glass rounded-xl p-4">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+                        <span class="text-eva-cyan">📊</span> Status
+                    </h2>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">Robot</span>
+                            <div id="robot-status" class="flex items-center gap-2">
+                                <div class="w-2.5 h-2.5 rounded-full bg-gray-500"></div>
+                                <span class="text-sm">--</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">OpenAI</span>
+                            <div id="openai-status" class="flex items-center gap-2">
+                                <div class="w-2.5 h-2.5 rounded-full bg-gray-500"></div>
+                                <span class="text-sm">--</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">WebRTC</span>
+                            <div id="webrtc-status" class="flex items-center gap-2">
+                                <div class="w-2.5 h-2.5 rounded-full bg-gray-500"></div>
+                                <span class="text-sm">--</span>
+                            </div>
+                        </div>
+                        <hr class="border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">State</span>
+                            <span id="eva-state" class="text-eva-cyan font-medium">--</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">Timer</span>
+                            <span id="timer-status" class="text-gray-300">None</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Middle Column: Controls + Conversation -->
+            <div class="col-span-5 space-y-4">
+                <!-- Controls -->
+                <div class="glass rounded-xl p-4">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+                        <span class="text-eva-cyan">🎮</span> Controls
+                    </h2>
+                    <div class="grid grid-cols-4 gap-2">
+                        <button onclick="triggerTool('wave_hello')" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">👋</span>
+                            <span class="block text-xs text-gray-400 mt-1">Wave</span>
+                        </button>
+                        <button onclick="triggerTool('look_around')" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">👀</span>
+                            <span class="block text-xs text-gray-400 mt-1">Look</span>
+                        </button>
+                        <button onclick="triggerTool('describe_scene', {focus: 'general'})" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">📸</span>
+                            <span class="block text-xs text-gray-400 mt-1">Describe</span>
+                        </button>
+                        <button onclick="triggerTool('get_time')" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">⏰</span>
+                            <span class="block text-xs text-gray-400 mt-1">Time</span>
+                        </button>
+                        <button onclick="triggerTool('express_emotion', {emotion: 'happy'})" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">😊</span>
+                            <span class="block text-xs text-gray-400 mt-1">Happy</span>
+                        </button>
+                        <button onclick="triggerTool('express_emotion', {emotion: 'sad'})" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">😢</span>
+                            <span class="block text-xs text-gray-400 mt-1">Sad</span>
+                        </button>
+                        <button onclick="triggerTool('nod_yes')" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">✅</span>
+                            <span class="block text-xs text-gray-400 mt-1">Nod</span>
+                        </button>
+                        <button onclick="triggerTool('shake_head_no')" class="p-3 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition text-center">
+                            <span class="text-2xl">❌</span>
+                            <span class="block text-xs text-gray-400 mt-1">Shake</span>
+                        </button>
+                    </div>
+                    <!-- Head Controls -->
+                    <div class="mt-4 flex items-center justify-center gap-2">
+                        <button onclick="triggerTool('move_head', {direction: 'left'})" class="p-2 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition">⬅️</button>
+                        <button onclick="triggerTool('move_head', {direction: 'up'})" class="p-2 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition">⬆️</button>
+                        <button onclick="triggerTool('move_head', {direction: 'center'})" class="p-2 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition">🎯</button>
+                        <button onclick="triggerTool('move_head', {direction: 'down'})" class="p-2 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition">⬇️</button>
+                        <button onclick="triggerTool('move_head', {direction: 'right'})" class="p-2 bg-eva-dark hover:bg-eva-cyan/20 rounded-lg transition">➡️</button>
+                    </div>
+                </div>
+
+                <!-- Conversation -->
+                <div class="glass rounded-xl p-4 flex-1">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+                        <span class="text-eva-cyan">💬</span> Conversation
+                    </h2>
+                    <div id="conversation" class="h-64 overflow-y-auto log-scroll space-y-2 text-sm">
+                        <div class="text-gray-500 text-center py-4">Waiting for conversation...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Logs -->
+            <div class="col-span-3">
+                <div class="glass rounded-xl p-4 h-full">
+                    <div class="flex items-center justify-between mb-3">
+                        <h2 class="text-lg font-semibold flex items-center gap-2">
+                            <span class="text-eva-cyan">📜</span> Logs
+                        </h2>
+                        <button id="pause-logs" onclick="togglePauseLogs()" class="text-xs px-2 py-1 bg-eva-dark rounded hover:bg-eva-cyan/20 transition">
+                            ⏸️ Pause
+                        </button>
+                    </div>
+                    <div id="logs" class="h-[500px] overflow-y-auto log-scroll font-mono text-xs space-y-1">
+                        <div class="text-gray-500">Connecting to log stream...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Camera Modal -->
+    <div id="camera-modal" class="fixed inset-0 bg-black/95 z-50 hidden flex items-center justify-center cursor-pointer" onclick="toggleFullscreen()">
+        <div class="relative w-full h-full flex items-center justify-center p-4">
+            <img id="camera-fullscreen" class="max-w-full max-h-full object-contain rounded-lg" alt="Camera Feed">
+            <div class="absolute top-4 right-4 text-white text-xl bg-black/50 px-4 py-2 rounded-lg">
+                Press ESC or click to close
+            </div>
+            <div class="absolute bottom-4 left-4 text-white bg-black/50 px-4 py-2 rounded-lg font-mono">
+                Face: <span id="face-pos-fs" class="text-eva-cyan">--</span> | Yaw: <span id="head-yaw-fs" class="text-eva-cyan">--</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connections
+        let statusWS, logsWS, cameraWS;
+        let logsPaused = false;
+        let autoScroll = true;
+        let isFullscreen = false;
+
+        // Connect to WebSockets
+        function connect() {
+            const host = window.location.host;
+
+            // Status WebSocket
+            statusWS = new WebSocket(`ws://${host}/ws/status`);
+            statusWS.onmessage = (e) => updateStatus(JSON.parse(e.data));
+            statusWS.onopen = () => setConnectionStatus(true);
+            statusWS.onclose = () => {
+                setConnectionStatus(false);
+                setTimeout(connect, 3000);
+            };
+
+            // Logs WebSocket
+            logsWS = new WebSocket(`ws://${host}/ws/logs`);
+            logsWS.onmessage = (e) => {
+                if (!logsPaused) addLog(JSON.parse(e.data));
+            };
+
+            // Camera WebSocket
+            cameraWS = new WebSocket(`ws://${host}/ws/camera`);
+            cameraWS.binaryType = 'arraybuffer';
+            cameraWS.onmessage = (e) => {
+                const blob = new Blob([e.data], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(blob);
+                document.getElementById('camera-feed').src = url;
+                document.getElementById('camera-fullscreen').src = url;
+                document.getElementById('camera-loading').style.display = 'none';
+            };
+        }
+
+        function toggleFullscreen() {
+            isFullscreen = !isFullscreen;
+            const modal = document.getElementById('camera-modal');
+            if (isFullscreen) {
+                modal.classList.remove('hidden');
+                document.body.style.overflow = 'hidden';
+            } else {
+                modal.classList.add('hidden');
+                document.body.style.overflow = '';
+            }
+        }
+
+        // ESC key to close fullscreen
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isFullscreen) {
+                toggleFullscreen();
+            }
+        });
+
+        function setConnectionStatus(connected) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            if (connected) {
+                dot.className = 'w-3 h-3 rounded-full bg-green-500 pulse-dot';
+                text.textContent = 'Connected';
+            } else {
+                dot.className = 'w-3 h-3 rounded-full bg-red-500';
+                text.textContent = 'Disconnected';
+            }
+        }
+
+        function updateStatus(state) {
+            // Update status indicators
+            updateIndicator('robot-status', state.robot_connected);
+            updateIndicator('openai-status', state.openai_connected);
+            updateIndicator('webrtc-status', state.webrtc_connected);
+
+            // Update state
+            const evaState = document.getElementById('eva-state');
+            if (state.speaking) {
+                evaState.textContent = '🗣️ Speaking';
+                evaState.className = 'text-green-400 font-medium';
+            } else {
+                evaState.textContent = '👂 Listening';
+                evaState.className = 'text-eva-cyan font-medium';
+            }
+
+            // Update face/yaw
+            const faceText = state.face_position.toFixed(0) + '%';
+            const yawText = state.head_yaw.toFixed(2);
+            document.getElementById('face-pos').textContent = faceText;
+            document.getElementById('head-yaw').textContent = yawText;
+            document.getElementById('face-pos-fs').textContent = faceText;
+            document.getElementById('head-yaw-fs').textContent = yawText;
+
+            // Update timer
+            document.getElementById('timer-status').textContent = state.active_timer || 'None';
+        }
+
+        function updateIndicator(id, connected) {
+            const el = document.getElementById(id);
+            const dot = el.querySelector('div');
+            const text = el.querySelector('span');
+            if (connected) {
+                dot.className = 'w-2.5 h-2.5 rounded-full bg-green-500';
+                text.textContent = 'Connected';
+                text.className = 'text-sm text-green-400';
+            } else {
+                dot.className = 'w-2.5 h-2.5 rounded-full bg-red-500';
+                text.textContent = 'Disconnected';
+                text.className = 'text-sm text-red-400';
+            }
+        }
+
+        function addLog(entry) {
+            const logs = document.getElementById('logs');
+            const colors = {
+                info: 'text-gray-400',
+                tool: 'text-yellow-400',
+                speech: 'text-green-400',
+                error: 'text-red-400',
+                face: 'text-cyan-400',
+            };
+            const div = document.createElement('div');
+            div.className = colors[entry.type] || 'text-gray-400';
+            div.innerHTML = `<span class="text-gray-600">${entry.time}</span> ${entry.message}`;
+            logs.appendChild(div);
+            
+            if (autoScroll) {
+                logs.scrollTop = logs.scrollHeight;
+            }
+        }
+
+        function togglePauseLogs() {
+            logsPaused = !logsPaused;
+            const btn = document.getElementById('pause-logs');
+            btn.textContent = logsPaused ? '▶️ Resume' : '⏸️ Pause';
+        }
+
+        async function triggerTool(name, args = {}) {
+            try {
+                const res = await fetch(`/api/tools/${name}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ args })
+                });
+                const data = await res.json();
+                console.log('Tool result:', data);
+            } catch (err) {
+                console.error('Tool error:', err);
+            }
+        }
+
+        // Initialize
+        connect();
+    </script>
+</body>
+</html>
+
