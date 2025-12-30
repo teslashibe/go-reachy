@@ -1,12 +1,13 @@
 package realtime
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // AudioPlayer handles streaming audio playback to the robot
@@ -15,14 +16,19 @@ type AudioPlayer struct {
 	sshUser string
 	sshPass string
 
-	buffer   bytes.Buffer
-	bufferMu sync.Mutex
+	// Streaming state
+	streamCmd   *exec.Cmd
+	streamStdin io.WriteCloser
+	streamMu    sync.Mutex
+	streaming   bool
 
-	playing bool
-	playMu  sync.Mutex
-
+	// Callbacks
 	OnPlaybackStart func()
 	OnPlaybackEnd   func()
+
+	// State
+	speaking   bool
+	speakingMu sync.Mutex
 }
 
 // NewAudioPlayer creates a new audio player for the robot
@@ -34,129 +40,164 @@ func NewAudioPlayer(robotIP, sshUser, sshPass string) *AudioPlayer {
 	}
 }
 
-// AppendAudio adds audio data to the buffer (base64 encoded PCM16)
+// AppendAudio streams audio data directly to the robot (base64 encoded PCM16 at 24kHz)
 func (p *AudioPlayer) AppendAudio(base64Audio string) error {
 	decoded, err := base64.StdEncoding.DecodeString(base64Audio)
 	if err != nil {
 		return err
 	}
 
-	p.bufferMu.Lock()
-	p.buffer.Write(decoded)
-	p.bufferMu.Unlock()
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+
+	// Start streaming pipeline if not already running
+	if !p.streaming {
+		if err := p.startStream(); err != nil {
+			return fmt.Errorf("start stream: %w", err)
+		}
+	}
+
+	// Write audio data directly to the pipeline
+	if p.streamStdin != nil {
+		_, err = p.streamStdin.Write(decoded)
+		if err != nil {
+			// Pipeline died, try to restart
+			p.stopStreamLocked()
+			return fmt.Errorf("write to stream: %w", err)
+		}
+	}
 
 	return nil
 }
 
-// StartStreaming begins playing buffered audio to the robot
-func (p *AudioPlayer) StartStreaming() error {
-	p.playMu.Lock()
-	if p.playing {
-		p.playMu.Unlock()
-		return nil
-	}
-	p.playing = true
-	p.playMu.Unlock()
+// startStream starts the GStreamer pipeline for streaming audio
+func (p *AudioPlayer) startStream() error {
+	// GStreamer pipeline that reads from stdin and plays audio
+	// Using fdsrc to read raw PCM from stdin
+	pipeline := `gst-launch-1.0 fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! opusenc ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 2>/dev/null`
 
-	if p.OnPlaybackStart != nil {
-		p.OnPlaybackStart()
-	}
+	p.streamCmd = exec.Command("bash", "-c", fmt.Sprintf(
+		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s '%s'`,
+		p.sshPass, p.sshUser, p.robotIP, pipeline))
 
-	go p.streamLoop()
-	return nil
-}
-
-func (p *AudioPlayer) streamLoop() {
-	defer func() {
-		p.playMu.Lock()
-		p.playing = false
-		p.playMu.Unlock()
-
-		if p.OnPlaybackEnd != nil {
-			p.OnPlaybackEnd()
-		}
-	}()
-
-	// Wait for buffer to fill
-	for {
-		p.bufferMu.Lock()
-		size := p.buffer.Len()
-		p.bufferMu.Unlock()
-		if size > 4800 { // ~100ms of audio at 24kHz
-			break
-		}
-	}
-
-	// Stream to robot
-	p.FlushAndPlay()
-}
-
-// FlushAndPlay plays all buffered audio immediately
-func (p *AudioPlayer) FlushAndPlay() error {
-	p.bufferMu.Lock()
-	data := p.buffer.Bytes()
-	p.buffer.Reset()
-	p.bufferMu.Unlock()
-
-	if len(data) == 0 {
-		return nil
-	}
-
-	if p.OnPlaybackStart != nil {
-		p.OnPlaybackStart()
-	}
-
-	defer func() {
-		if p.OnPlaybackEnd != nil {
-			p.OnPlaybackEnd()
-		}
-	}()
-
-	// OpenAI Realtime outputs PCM16 at 24kHz mono
-	// Robot expects audio via UDP port 5000 as Opus RTP
-	// Pipeline: raw PCM → convert to 48kHz → Opus encode → RTP → UDP
-	
-	// First, save PCM to temp file on robot, then play via GStreamer
-	cmd := exec.Command("bash", "-c", fmt.Sprintf(
-		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "cat > /tmp/eva_audio.raw && gst-launch-1.0 filesrc location=/tmp/eva_audio.raw ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! opusenc ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 2>/dev/null"`,
-		p.sshPass, p.sshUser, p.robotIP))
-
-	stdin, err := cmd.StdinPipe()
+	var err error
+	p.streamStdin, err = p.streamCmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := p.streamCmd.Start(); err != nil {
 		return fmt.Errorf("start cmd: %w", err)
 	}
 
-	// Write PCM data
-	_, err = stdin.Write(data)
-	if err != nil {
-		return fmt.Errorf("write data: %w", err)
-	}
-	stdin.Close()
+	p.streaming = true
 
-	// Wait for playback
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("cmd wait: %w", err)
+	// Notify playback started
+	if p.OnPlaybackStart != nil {
+		p.speakingMu.Lock()
+		p.speaking = true
+		p.speakingMu.Unlock()
+		p.OnPlaybackStart()
 	}
 
 	return nil
 }
 
-// Clear clears the audio buffer
+// FlushAndPlay signals end of audio stream and waits for playback to complete
+func (p *AudioPlayer) FlushAndPlay() error {
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+
+	if !p.streaming {
+		return nil
+	}
+
+	// Close stdin to signal EOF to GStreamer
+	if p.streamStdin != nil {
+		p.streamStdin.Close()
+		p.streamStdin = nil
+	}
+
+	// Wait for playback to complete (with timeout)
+	done := make(chan error, 1)
+	go func() {
+		if p.streamCmd != nil {
+			done <- p.streamCmd.Wait()
+		} else {
+			done <- nil
+		}
+	}()
+
+	select {
+	case <-done:
+		// Playback completed
+	case <-time.After(10 * time.Second):
+		// Timeout - kill the process
+		if p.streamCmd != nil && p.streamCmd.Process != nil {
+			p.streamCmd.Process.Kill()
+		}
+	}
+
+	p.streaming = false
+	p.streamCmd = nil
+
+	// Notify playback ended
+	if p.OnPlaybackEnd != nil {
+		p.speakingMu.Lock()
+		p.speaking = false
+		p.speakingMu.Unlock()
+		p.OnPlaybackEnd()
+	}
+
+	return nil
+}
+
+// stopStreamLocked stops the streaming pipeline (must hold streamMu)
+func (p *AudioPlayer) stopStreamLocked() {
+	if p.streamStdin != nil {
+		p.streamStdin.Close()
+		p.streamStdin = nil
+	}
+	if p.streamCmd != nil && p.streamCmd.Process != nil {
+		p.streamCmd.Process.Kill()
+		p.streamCmd.Wait()
+	}
+	p.streaming = false
+	p.streamCmd = nil
+
+	p.speakingMu.Lock()
+	p.speaking = false
+	p.speakingMu.Unlock()
+}
+
+// Cancel stops any current playback immediately
+func (p *AudioPlayer) Cancel() {
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+	p.stopStreamLocked()
+
+	if p.OnPlaybackEnd != nil {
+		p.OnPlaybackEnd()
+	}
+}
+
+// Clear is deprecated - use Cancel instead
 func (p *AudioPlayer) Clear() {
-	p.bufferMu.Lock()
-	p.buffer.Reset()
-	p.bufferMu.Unlock()
+	p.Cancel()
 }
 
 // IsPlaying returns whether audio is currently playing
 func (p *AudioPlayer) IsPlaying() bool {
-	p.playMu.Lock()
-	defer p.playMu.Unlock()
-	return p.playing
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+	return p.streaming
+}
+
+// IsSpeaking returns whether Eva is currently speaking
+func (p *AudioPlayer) IsSpeaking() bool {
+	p.speakingMu.Lock()
+	defer p.speakingMu.Unlock()
+	return p.speaking
 }
 
 // ConvertPCM16ToInt16 converts byte slice to int16 samples

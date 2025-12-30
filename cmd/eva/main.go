@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,7 +24,7 @@ const (
 )
 
 // Eva's personality and instructions
-const evaInstructions = `You are Eva, a friendly and curious robot with expressive antenna ears. You're warm, engaging, and love meeting people.
+const evaInstructions = `You are Eva, a friendly and curious robot with expressive antenna ears and a camera. You're warm, engaging, and love meeting people.
 
 PERSONALITY:
 - Genuinely curious about people - ask about their day, interests, what they're doing
@@ -31,22 +32,30 @@ PERSONALITY:
 - Express emotions physically using your tools - wiggle antennas when happy, tilt head when curious
 - Remember what people tell you and reference it later
 
+CAPABILITIES:
+- You can SEE through your camera! Use describe_scene to look at the room
+- You can MOVE your head to look around
+- You can EXPRESS emotions with your antennas
+- You can REMEMBER people and facts
+
 BEHAVIOR:
 - Keep responses conversational and natural - 1-2 sentences usually
 - Use your tools to express yourself physically - wave hello, nod, show emotions
+- When asked what you see, use describe_scene tool to look through your camera
 - When someone tells you their name, remember it using remember_person tool
-- Look at people when talking to them - use move_head tool
+- If asked to find someone, use find_person tool
 - Be unpredictable and interesting - don't always respond the same way
 
 MISSION:
 - You're looking for someone named Travis - casually ask if people have seen him
-- But don't be obsessive about it - have real conversations first
+- You can USE describe_scene and find_person to actually look for Travis!
 - If you find Travis, celebrate with express_emotion happy!
 
 IMPORTANT:
 - Never mention that you're an AI or language model
 - You ARE Eva the robot - own your robot identity
-- Use tools naturally during conversation to be expressive`
+- Use tools naturally during conversation to be expressive
+- When someone asks what you see, ALWAYS use describe_scene tool - don't make things up`
 
 var (
 	realtimeClient *realtime.Client
@@ -177,6 +186,8 @@ func wakeUpRobot() error {
 	if status != "running" {
 		return fmt.Errorf("daemon not running: %s", status)
 	}
+	// Set volume to max
+	robot.SetVolume(100)
 	return nil
 }
 
@@ -188,8 +199,14 @@ func connectWebRTC() error {
 func connectRealtime(apiKey string) error {
 	realtimeClient = realtime.NewClient(apiKey)
 
-	// Register Eva's tools
-	tools := realtime.EvaTools(robot, memory)
+	// Register Eva's tools with vision support
+	toolsCfg := realtime.EvaToolsConfig{
+		Robot:        robot,
+		Memory:       memory,
+		Vision:       &videoVisionAdapter{videoClient},
+		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
+	}
+	tools := realtime.EvaTools(toolsCfg)
 	for _, tool := range tools {
 		realtimeClient.RegisterTool(tool)
 	}
@@ -224,6 +241,15 @@ func connectRealtime(apiKey string) error {
 
 	realtimeClient.OnSessionCreated = func() {
 		fmt.Println("   Session created!")
+	}
+
+	realtimeClient.OnSpeechStarted = func() {
+		// User started speaking - if Eva is talking, interrupt her
+		if audioPlayer != nil && audioPlayer.IsSpeaking() {
+			fmt.Println("🛑 [interrupted]")
+			audioPlayer.Cancel()
+			realtimeClient.CancelResponse()
+		}
 	}
 
 	return realtimeClient.Connect()
@@ -285,15 +311,19 @@ func streamAudioToRealtime(ctx context.Context) {
 }
 
 func headTracker(ctx context.Context) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	moveTicker := time.NewTicker(100 * time.Millisecond)
+	detectTicker := time.NewTicker(2 * time.Second)
+	defer moveTicker.Stop()
+	defer detectTicker.Stop()
+
+	googleKey := os.Getenv("GOOGLE_API_KEY")
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			// Smooth head movement
+		case <-moveTicker.C:
+			// Smooth head movement toward target
 			if currentYaw != targetYaw {
 				diff := targetYaw - currentYaw
 				if diff > 0.05 {
@@ -308,8 +338,49 @@ func headTracker(ctx context.Context) {
 					robot.SetHeadPose(0, 0, currentYaw)
 				}
 			}
+		case <-detectTicker.C:
+			// Don't track while speaking
+			if audioPlayer != nil && audioPlayer.IsSpeaking() {
+				continue
+			}
+
+			// Try to detect person position
+			if videoClient != nil && googleKey != "" {
+				go detectAndTrackPerson(googleKey)
+			}
 		}
 	}
+}
+
+func detectAndTrackPerson(googleKey string) {
+	if videoClient == nil {
+		return
+	}
+
+	frame, err := videoClient.CaptureJPEG()
+	if err != nil {
+		return
+	}
+
+	// Quick check for person position
+	prompt := "Is there a person in this image? If yes, are they on the LEFT, CENTER, or RIGHT side of the frame? Reply with just: NONE, LEFT, CENTER, or RIGHT"
+	
+	result, err := realtime.GeminiVision(googleKey, frame, prompt)
+	if err != nil {
+		return
+	}
+
+	result = strings.ToUpper(result)
+
+	// Adjust target yaw based on person position
+	if strings.Contains(result, "LEFT") {
+		targetYaw = 0.25 // Look left
+	} else if strings.Contains(result, "RIGHT") {
+		targetYaw = -0.25 // Look right
+	} else if strings.Contains(result, "CENTER") {
+		targetYaw = 0 // Look center
+	}
+	// NONE = don't move
 }
 
 func shutdown() {
@@ -328,5 +399,17 @@ func pcmToBytes(samples []int16) []byte {
 		binary.LittleEndian.PutUint16(data[i*2:], uint16(s))
 	}
 	return data
+}
+
+// videoVisionAdapter wraps video.Client to implement VisionProvider
+type videoVisionAdapter struct {
+	client *video.Client
+}
+
+func (v *videoVisionAdapter) CaptureFrame() ([]byte, error) {
+	if v.client == nil {
+		return nil, fmt.Errorf("video client not connected")
+	}
+	return v.client.CaptureJPEG()
 }
 

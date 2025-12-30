@@ -525,6 +525,11 @@ func (c *Client) WaitForFrame(timeout time.Duration) ([]byte, error) {
 	return nil, fmt.Errorf("timeout waiting for frame")
 }
 
+// CaptureJPEG captures the current frame as JPEG (alias for WaitForFrame with short timeout)
+func (c *Client) CaptureJPEG() ([]byte, error) {
+	return c.WaitForFrame(500 * time.Millisecond)
+}
+
 // Close closes the WebRTC connection
 func (c *Client) Close() {
 	c.closed = true

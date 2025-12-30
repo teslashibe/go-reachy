@@ -1,6 +1,8 @@
 package realtime
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,10 +15,92 @@ type RobotController interface {
 	SetHeadPose(roll, pitch, yaw float64) error
 	SetAntennas(left, right float64) error
 	GetDaemonStatus() (string, error)
+	SetVolume(level int) error
+}
+
+// VisionProvider interface for camera access
+type VisionProvider interface {
+	CaptureFrame() ([]byte, error) // Returns JPEG image data
+}
+
+// GeminiVision calls Gemini Flash to describe an image
+func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error) {
+	if apiKey == "" {
+		return "", fmt.Errorf("GOOGLE_API_KEY not set")
+	}
+
+	// Encode image as base64
+	b64Image := base64.StdEncoding.EncodeToString(imageData)
+
+	// Build Gemini API request
+	payload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]interface{}{
+					{
+						"text": prompt,
+					},
+					{
+						"inline_data": map[string]interface{}{
+							"mime_type": "image/jpeg",
+							"data":      b64Image,
+						},
+					},
+				},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"maxOutputTokens": 150,
+			"temperature":     0.4,
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", apiKey)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		return result.Candidates[0].Content.Parts[0].Text, nil
+	}
+
+	return "", fmt.Errorf("no response from Gemini")
+}
+
+// EvaToolsConfig holds dependencies for Eva's tools
+type EvaToolsConfig struct {
+	Robot       RobotController
+	Memory      *Memory
+	Vision      VisionProvider
+	GoogleAPIKey string
 }
 
 // EvaTools returns all tools available to Eva
-func EvaTools(robot RobotController, memory *Memory) []Tool {
+func EvaTools(cfg EvaToolsConfig) []Tool {
+	robot := cfg.Robot
+	memory := cfg.Memory
 	return []Tool{
 		{
 			Name:        "move_head",
@@ -221,6 +305,146 @@ func EvaTools(robot RobotController, memory *Memory) []Tool {
 				return "Shook head no", nil
 			},
 		},
+		{
+			Name:        "set_volume",
+			Description: "Adjust your speaker volume. Use this if someone asks you to speak louder or quieter.",
+			Parameters: map[string]interface{}{
+				"level": map[string]interface{}{
+					"type":        "integer",
+					"description": "Volume level from 0 (silent) to 100 (maximum)",
+					"minimum":     0,
+					"maximum":     100,
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				level := 100 // default to max
+				if l, ok := args["level"].(float64); ok {
+					level = int(l)
+				}
+				if robot != nil {
+					robot.SetVolume(level)
+				}
+				return fmt.Sprintf("Volume set to %d%%", level), nil
+			},
+		},
+		{
+			Name:        "describe_scene",
+			Description: "Look through your camera and describe what you see. Use this when someone asks what you can see, who is in the room, or to look for something.",
+			Parameters: map[string]interface{}{
+				"focus": map[string]interface{}{
+					"type":        "string",
+					"description": "What to focus on: 'general' for overall scene, 'people' to look for people, or a specific thing to look for",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				focus, _ := args["focus"].(string)
+				if focus == "" {
+					focus = "general"
+				}
+
+				if cfg.Vision == nil {
+					return "I cannot see right now - camera not connected", nil
+				}
+
+				if cfg.GoogleAPIKey == "" {
+					return "I cannot see right now - vision not configured", nil
+				}
+
+				// Capture frame
+				imageData, err := cfg.Vision.CaptureFrame()
+				if err != nil {
+					return fmt.Sprintf("Could not capture image: %v", err), nil
+				}
+
+				// Build prompt based on focus
+				var prompt string
+				switch focus {
+				case "people":
+					prompt = "Describe any people you see in this image. How many people are there? What are they doing? Where are they positioned (left, center, right)? Be concise."
+				case "general":
+					prompt = "Briefly describe what you see in this image. Mention the setting, any people, and notable objects. Keep it to 2-3 sentences."
+				default:
+					prompt = fmt.Sprintf("Look at this image and tell me if you can see: %s. Describe what you find. Be concise.", focus)
+				}
+
+				// Call Gemini
+				description, err := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
+				if err != nil {
+					return fmt.Sprintf("Vision error: %v", err), nil
+				}
+
+				return description, nil
+			},
+		},
+		{
+			Name:        "find_person",
+			Description: "Look for a specific person in the room by name or description.",
+			Parameters: map[string]interface{}{
+				"person": map[string]interface{}{
+					"type":        "string",
+					"description": "Name or description of the person to find",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				person, _ := args["person"].(string)
+				if person == "" {
+					person = "anyone"
+				}
+
+				if cfg.Vision == nil || cfg.GoogleAPIKey == "" {
+					return "I cannot see right now", nil
+				}
+
+				// Look around first
+				if robot != nil {
+					// Look left
+					robot.SetHeadPose(0, 0, 0.3)
+					time.Sleep(400 * time.Millisecond)
+				}
+
+				// Capture and check left
+				imageData, err := cfg.Vision.CaptureFrame()
+				if err == nil {
+					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
+					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
+					if strings.Contains(strings.ToLower(desc), "yes") {
+						return fmt.Sprintf("I see someone on my left who might be %s. %s", person, desc), nil
+					}
+				}
+
+				// Look right
+				if robot != nil {
+					robot.SetHeadPose(0, 0, -0.3)
+					time.Sleep(400 * time.Millisecond)
+				}
+
+				imageData, err = cfg.Vision.CaptureFrame()
+				if err == nil {
+					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
+					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
+					if strings.Contains(strings.ToLower(desc), "yes") {
+						return fmt.Sprintf("I see someone on my right who might be %s. %s", person, desc), nil
+					}
+				}
+
+				// Look center
+				if robot != nil {
+					robot.SetHeadPose(0, 0, 0)
+					time.Sleep(300 * time.Millisecond)
+				}
+
+				imageData, err = cfg.Vision.CaptureFrame()
+				if err == nil {
+					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
+					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
+					if strings.Contains(strings.ToLower(desc), "yes") {
+						return fmt.Sprintf("I see someone in front of me who might be %s. %s", person, desc), nil
+					}
+				}
+
+				return fmt.Sprintf("I looked around but I don't see %s right now.", person), nil
+			},
+		},
 	}
 }
 
@@ -357,5 +581,22 @@ func (r *SimpleRobotController) GetDaemonStatus() (string, error) {
 	}
 	json.NewDecoder(resp.Body).Decode(&status)
 	return status.State, nil
+}
+
+// SetVolume sets the robot's speaker volume (0-100)
+func (r *SimpleRobotController) SetVolume(level int) error {
+	if level < 0 {
+		level = 0
+	}
+	if level > 100 {
+		level = 100
+	}
+	payload := fmt.Sprintf(`{"volume": %d}`, level)
+	resp, err := http.Post(r.BaseURL+"/api/volume/set", "application/json", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 

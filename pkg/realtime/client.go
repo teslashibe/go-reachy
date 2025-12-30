@@ -41,12 +41,14 @@ type Client struct {
 	sessionReady bool
 
 	// Callbacks
-	OnTranscript     func(text string, isFinal bool)
-	OnAudioDelta     func(audioBase64 string)
-	OnAudioDone      func()
-	OnFunctionCall   func(name string, args map[string]interface{}) string
-	OnError          func(err error)
-	OnSessionCreated func()
+	OnTranscript      func(text string, isFinal bool)
+	OnAudioDelta      func(audioBase64 string)
+	OnAudioDone       func()
+	OnFunctionCall    func(name string, args map[string]interface{}) string
+	OnError           func(err error)
+	OnSessionCreated  func()
+	OnSpeechStarted   func() // User started speaking
+	OnSpeechStopped   func() // User stopped speaking
 
 	// Internal state
 	closed bool
@@ -103,8 +105,8 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 	apiTools := make([]map[string]interface{}, len(c.tools))
 	for i, tool := range c.tools {
 		apiTools[i] = map[string]interface{}{
-			"type": "function",
-			"name": tool.Name,
+			"type":        "function",
+			"name":        tool.Name,
 			"description": tool.Description,
 			"parameters": map[string]interface{}{
 				"type":       "object",
@@ -117,18 +119,18 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 	msg := map[string]interface{}{
 		"type": "session.update",
 		"session": map[string]interface{}{
-			"modalities":         []string{"text", "audio"},
-			"instructions":       instructions,
-			"voice":              voice,
-			"input_audio_format": "pcm16",
+			"modalities":          []string{"text", "audio"},
+			"instructions":        instructions,
+			"voice":               voice,
+			"input_audio_format":  "pcm16",
 			"output_audio_format": "pcm16",
 			"input_audio_transcription": map[string]interface{}{
 				"model": "whisper-1",
 			},
 			"turn_detection": map[string]interface{}{
-				"type":              "server_vad",
-				"threshold":         0.5,
-				"prefix_padding_ms": 300,
+				"type":                "server_vad",
+				"threshold":           0.5,
+				"prefix_padding_ms":   300,
 				"silence_duration_ms": 500,
 			},
 			"tools":       apiTools,
@@ -239,11 +241,16 @@ func (c *Client) handleMessages() {
 			// Session configuration confirmed
 
 		case "input_audio_buffer.speech_started":
-			// User started speaking - could cancel current response
-			// c.CancelResponse()
+			// User started speaking - trigger callback for interruption
+			if c.OnSpeechStarted != nil {
+				c.OnSpeechStarted()
+			}
 
 		case "input_audio_buffer.speech_stopped":
 			// User stopped speaking
+			if c.OnSpeechStopped != nil {
+				c.OnSpeechStopped()
+			}
 
 		case "input_audio_buffer.committed":
 			// Audio buffer was committed
@@ -295,6 +302,8 @@ func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 	callID, _ := msg["call_id"].(string)
 	argsStr, _ := msg["arguments"].(string)
 
+	fmt.Printf("🔧 Tool called: %s (args: %s)\n", name, argsStr)
+
 	var args map[string]interface{}
 	json.Unmarshal([]byte(argsStr), &args)
 
@@ -306,10 +315,12 @@ func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 		if err != nil {
 			result = fmt.Sprintf("Error: %v", err)
 		}
+		fmt.Printf("🔧 Tool result: %s\n", result)
 	} else if c.OnFunctionCall != nil {
 		result = c.OnFunctionCall(name, args)
 	} else {
 		result = "Function not found"
+		fmt.Printf("⚠️  Tool not found: %s\n", name)
 	}
 
 	// Send result back to continue conversation
@@ -351,4 +362,3 @@ func (c *Client) IsConnected() bool {
 func (c *Client) IsReady() bool {
 	return c.sessionReady
 }
-
