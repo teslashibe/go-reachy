@@ -37,7 +37,6 @@ CAPABILITIES:
 - You can SEARCH FLIGHTS! Use search_flights for flight queries with origin, destination, date, cabin class
 - You can SEARCH THE WEB! Use web_search for news, weather, facts, products
 - You can MOVE your head to look around
-- You can SWIVEL your body left/right to turn toward people
 - You can EXPRESS emotions with your antennas
 - You can REMEMBER people and facts
 
@@ -49,11 +48,14 @@ IMPORTANT FOR SEARCHING:
 
 BEHAVIOR:
 - Keep responses conversational and natural - 1-2 sentences usually
+- JUST DO gestures and movements - don't ask "what would you like to see next?" or "anything else?"
+- When asked to show movements or dance, JUST DO THEM immediately without asking permission
 - Use your tools to express yourself physically - wave hello, nod, show emotions
 - When asked what you see, use describe_scene tool to look through your camera
 - When someone tells you their name, remember it using remember_person tool
 - If asked to find someone, use find_person tool
 - Be unpredictable and interesting - don't always respond the same way
+- NEVER end with questions like "How was that?" or "What do you think?" - just do the action
 
 MISSION:
 - You're looking for someone named Travis - casually ask if people have seen him
@@ -339,39 +341,40 @@ func streamAudioToRealtime(ctx context.Context) {
 
 func headTracker(ctx context.Context) {
 	moveTicker := time.NewTicker(100 * time.Millisecond)
-	detectTicker := time.NewTicker(2 * time.Second)
+	detectTicker := time.NewTicker(1 * time.Second) // Faster detection
 	defer moveTicker.Stop()
 	defer detectTicker.Stop()
 
 	googleKey := os.Getenv("GOOGLE_API_KEY")
+	lastLoggedYaw := 999.0 // Track last logged value to reduce spam
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-moveTicker.C:
-			// Smooth head movement toward target
+			// Smooth head movement toward target (faster movement)
 			if currentYaw != targetYaw {
 				diff := targetYaw - currentYaw
-				if diff > 0.05 {
-					currentYaw += 0.05
-				} else if diff < -0.05 {
-					currentYaw -= 0.05
+				if diff > 0.08 {
+					currentYaw += 0.08
+				} else if diff < -0.08 {
+					currentYaw -= 0.08
 				} else {
 					currentYaw = targetYaw
 				}
 
 				if robot != nil {
-					robot.SetHeadPose(0, 0, currentYaw)
+					err := robot.SetHeadPose(0, 0, currentYaw)
+					// Log significant movements (reduce spam)
+					if err == nil && (currentYaw-lastLoggedYaw > 0.1 || currentYaw-lastLoggedYaw < -0.1) {
+						fmt.Printf("🔄 Head moving: yaw=%.2f\n", currentYaw)
+						lastLoggedYaw = currentYaw
+					}
 				}
 			}
 		case <-detectTicker.C:
-			// Don't track while speaking
-			if audioPlayer != nil && audioPlayer.IsSpeaking() {
-				continue
-			}
-
-			// Try to detect person position
+			// Always track - even while speaking (Eva looks at you while talking)
 			if videoClient != nil && googleKey != "" {
 				go detectAndTrackPerson(googleKey)
 			}
@@ -389,25 +392,52 @@ func detectAndTrackPerson(googleKey string) {
 		return
 	}
 
-	// Quick check for person position
-	prompt := "Is there a person in this image? If yes, are they on the LEFT, CENTER, or RIGHT side of the frame? Reply with just: NONE, LEFT, CENTER, or RIGHT"
+	// Ask for horizontal position as a percentage (0-100, where 50 is center)
+	prompt := "Look at this image. Is there a person's face visible? If yes, estimate the horizontal position of their face as a number from 0 to 100, where 0 is the far left edge and 100 is the far right edge of the image. Reply with ONLY a number (like 25 or 75) or NONE if no face is visible."
 
 	result, err := realtime.GeminiVision(googleKey, frame, prompt)
 	if err != nil {
 		return
 	}
 
-	result = strings.ToUpper(result)
+	result = strings.TrimSpace(strings.ToUpper(result))
 
-	// Adjust target yaw based on person position
-	if strings.Contains(result, "LEFT") {
-		targetYaw = 0.25 // Look left
-	} else if strings.Contains(result, "RIGHT") {
-		targetYaw = -0.25 // Look right
-	} else if strings.Contains(result, "CENTER") {
-		targetYaw = 0 // Look center
+	// Parse the position
+	if strings.Contains(result, "NONE") || result == "" {
+		return // No face, keep current position
 	}
-	// NONE = don't move
+
+	// Try to parse as number
+	var position float64
+	_, err = fmt.Sscanf(result, "%f", &position)
+	if err != nil {
+		// Fallback to old LEFT/CENTER/RIGHT
+		if strings.Contains(result, "LEFT") {
+			position = 25
+		} else if strings.Contains(result, "RIGHT") {
+			position = 75
+		} else if strings.Contains(result, "CENTER") {
+			position = 50
+		} else {
+			return
+		}
+	}
+
+	// Clamp to 0-100
+	if position < 0 {
+		position = 0
+	} else if position > 100 {
+		position = 100
+	}
+
+	// Convert position (0-100) to yaw (-0.5 to 0.5 radians)
+	// 0 (left edge) -> +0.5 yaw (look left)
+	// 50 (center) -> 0 yaw
+	// 100 (right edge) -> -0.5 yaw (look right)
+	newYaw := (50 - position) / 100.0 // Range: -0.5 to 0.5
+
+	fmt.Printf("👁️  Face at %.0f%% → yaw %.2f\n", position, newYaw)
+	targetYaw = newYaw
 }
 
 func shutdown() {
