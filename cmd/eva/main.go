@@ -281,17 +281,33 @@ func streamCameraToWeb(ctx context.Context) {
 	defer ticker.Stop()
 
 	frameCount := 0
+	lastLogTime := time.Now()
+	var lastFrameSize int
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			frame, err := videoClient.GetFrame()
-			if err == nil && len(frame) > 0 {
+			if err != nil {
+				// Log errors periodically
+				if time.Since(lastLogTime) > 5*time.Second {
+					fmt.Printf("📷 GetFrame error: %v\n", err)
+					lastLogTime = time.Now()
+				}
+				continue
+			}
+			if len(frame) > 0 {
 				webServer.SendCameraFrame(frame)
 				frameCount++
 				if frameCount == 1 {
 					fmt.Printf("📷 First frame sent to dashboard (%d bytes)\n", len(frame))
+				}
+				// Log every 5 seconds if frame size changes
+				if len(frame) != lastFrameSize && time.Since(lastLogTime) > 5*time.Second {
+					fmt.Printf("📷 Streaming: %d frames sent, latest %d bytes\n", frameCount, len(frame))
+					lastLogTime = time.Now()
+					lastFrameSize = len(frame)
 				}
 			}
 		}

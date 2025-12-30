@@ -378,6 +378,8 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 	var frameBuffer bytes.Buffer
 	lastDecode := time.Now()
 	frameCount := 0
+	hasKeyframe := false
+	var keyframeBuffer bytes.Buffer
 
 	for !c.closed {
 		// Read RTP packet
@@ -400,24 +402,40 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 			h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
 			h264Buffer.Write(payload)
 
+			// NAL type 5 = IDR (keyframe), 7 = SPS, 8 = PPS
+			if nalType == 5 || nalType == 7 || nalType == 8 {
+				hasKeyframe = true
+			}
+
 		case nalType == 28: // FU-A (Fragmentation Unit)
 			fuHeader := payload[1]
 			startBit := (fuHeader & 0x80) != 0
 			endBit := (fuHeader & 0x40) != 0
-			nalType := fuHeader & 0x1F
+			fragNalType := fuHeader & 0x1F
 
 			if startBit {
 				// Start of fragmented NAL - add start code and reconstructed header
 				h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
-				h264Buffer.WriteByte((payload[0] & 0xE0) | nalType)
+				h264Buffer.WriteByte((payload[0] & 0xE0) | fragNalType)
+
+				// Check if this is a keyframe (IDR = type 5)
+				if fragNalType == 5 {
+					hasKeyframe = true
+				}
 			}
 			// Add fragment payload (skip FU indicator and header)
 			h264Buffer.Write(payload[2:])
 
 			if endBit {
-				// End of frame - decode
+				// End of frame
 				frameBuffer.Write(h264Buffer.Bytes())
 				h264Buffer.Reset()
+
+				// If we have a keyframe, save the complete buffer for decoding
+				if hasKeyframe {
+					keyframeBuffer.Reset()
+					keyframeBuffer.Write(frameBuffer.Bytes())
+				}
 			}
 
 		case nalType == 24: // STAP-A (Single-time Aggregation Packet)
@@ -431,16 +449,30 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 				}
 				h264Buffer.Write([]byte{0x00, 0x00, 0x00, 0x01})
 				h264Buffer.Write(payload[offset : offset+nalSize])
+
+				// Check NAL type in aggregated packet
+				if nalSize > 0 {
+					aggNalType := payload[offset] & 0x1F
+					if aggNalType == 5 || aggNalType == 7 || aggNalType == 8 {
+						hasKeyframe = true
+					}
+				}
 				offset += nalSize
 			}
 		}
 
-		// Decode accumulated NALs periodically
-		if time.Since(lastDecode) > 100*time.Millisecond && h264Buffer.Len() > 1000 {
-			c.decodeH264ToJPEG(h264Buffer.Bytes())
+		// Only decode when we have a keyframe and enough time has passed
+		if hasKeyframe && time.Since(lastDecode) > 150*time.Millisecond && keyframeBuffer.Len() > 1000 {
+			c.decodeH264ToJPEG(keyframeBuffer.Bytes())
 			frameCount++
-			h264Buffer.Reset()
 			lastDecode = time.Now()
+			// Log periodically
+			if frameCount%50 == 1 {
+				fmt.Printf("🎥 Decoded frame %d (buffer: %d bytes)\n", frameCount, keyframeBuffer.Len())
+			}
+			// Don't reset keyframeBuffer - keep it for next decode attempt
+			// Only reset hasKeyframe to wait for next keyframe
+			hasKeyframe = false
 		}
 	}
 }
@@ -466,10 +498,10 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 	f.Write(h264Data)
 	f.Close()
 
-	// Get file size
+	// Get file size - require more data for stable frames
 	info, _ := os.Stat(tmpH264)
-	if info == nil || info.Size() < 50000 {
-		// Wait until we have enough data
+	if info == nil || info.Size() < 100000 {
+		// Wait until we have enough data (100KB minimum)
 		return
 	}
 
@@ -490,15 +522,62 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 	// Read the JPEG
 	jpegData, err := os.ReadFile(tmpJPEG)
 	if err == nil && len(jpegData) > 1000 {
-		c.frameMutex.Lock()
-		c.latestFrame = jpegData
-		c.frameMutex.Unlock()
+		// Validate frame isn't gray by checking for color variance in the file
+		// Gray frames have very repetitive byte patterns
+		if len(jpegData) > 5000 && !isGrayFrame(jpegData) {
+			c.frameMutex.Lock()
+			c.latestFrame = jpegData
+			c.frameMutex.Unlock()
+		}
 
 		// Clear the H264 buffer after successful decode
 		os.Remove(tmpH264)
 	}
 
 	_ = output
+}
+
+// isGrayFrame checks if a JPEG is likely a gray/corrupt frame
+// by analyzing byte variance in the data section
+func isGrayFrame(jpegData []byte) bool {
+	if len(jpegData) < 1000 {
+		return true
+	}
+
+	// Check the middle section of the JPEG for variance
+	// Gray frames have very low byte variance
+	start := len(jpegData) / 4
+	end := len(jpegData) * 3 / 4
+	if end > len(jpegData) {
+		end = len(jpegData)
+	}
+
+	// Sample every 100th byte and check variance
+	var sum, count int
+	var values []byte
+	for i := start; i < end; i += 100 {
+		values = append(values, jpegData[i])
+		sum += int(jpegData[i])
+		count++
+	}
+
+	if count == 0 {
+		return true
+	}
+
+	avg := sum / count
+
+	// Calculate variance
+	var variance int
+	for _, v := range values {
+		diff := int(v) - avg
+		variance += diff * diff
+	}
+	variance /= count
+
+	// Gray frames have very low variance (< 100)
+	// Real images have much higher variance (> 500)
+	return variance < 200
 }
 
 // GetFrame returns the latest video frame as JPEG bytes
