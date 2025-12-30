@@ -87,12 +87,47 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect to Realtime API: %w", err)
 	}
 
+	// Set up ping/pong handlers to keep connection alive
+	c.ws.SetPingHandler(func(appData string) error {
+		// Respond to ping with pong
+		c.wsMu.Lock()
+		defer c.wsMu.Unlock()
+		return c.ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
+
+	// Set read deadline - reset on each message
+	c.ws.SetReadDeadline(time.Now().Add(120 * time.Second))
+
 	c.connected = true
 
 	// Start message handler
 	go c.handleMessages()
 
+	// Start keepalive pinger
+	go c.keepAlive()
+
 	return nil
+}
+
+// keepAlive sends periodic pings to keep connection alive
+func (c *Client) keepAlive() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for !c.closed {
+		select {
+		case <-ticker.C:
+			c.wsMu.Lock()
+			if c.ws != nil && !c.closed {
+				c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := c.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+					c.wsMu.Unlock()
+					return
+				}
+			}
+			c.wsMu.Unlock()
+		}
+	}
 }
 
 // ConfigureSession sets up the session with voice, instructions, and tools
@@ -215,6 +250,9 @@ func (c *Client) Close() {
 // handleMessages processes incoming WebSocket messages
 func (c *Client) handleMessages() {
 	for !c.closed {
+		// Reset read deadline on each message
+		c.ws.SetReadDeadline(time.Now().Add(120 * time.Second))
+
 		_, message, err := c.ws.ReadMessage()
 		if err != nil {
 			if !c.closed && c.OnError != nil {

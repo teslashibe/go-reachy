@@ -37,6 +37,7 @@ CAPABILITIES:
 - You can SEARCH FLIGHTS! Use search_flights for flight queries with origin, destination, date, cabin class
 - You can SEARCH THE WEB! Use web_search for news, weather, facts, products
 - You can MOVE your head to look around
+- You can SWIVEL your body left/right to turn toward people
 - You can EXPRESS emotions with your antennas
 - You can REMEMBER people and facts
 

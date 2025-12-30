@@ -16,6 +16,7 @@ import (
 type RobotController interface {
 	SetHeadPose(roll, pitch, yaw float64) error
 	SetAntennas(left, right float64) error
+	SetBodyYaw(yaw float64) error
 	GetDaemonStatus() (string, error)
 	SetVolume(level int) error
 }
@@ -424,6 +425,37 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					robot.SetHeadPose(0, 0, 0)
 				}
 				return "Shook head no", nil
+			},
+		},
+		{
+			Name:        "swivel_body",
+			Description: "Rotate your body left or right to face a different direction. Use this to turn toward someone or look at something to your side.",
+			Parameters: map[string]interface{}{
+				"direction": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"left", "right", "center"},
+					"description": "Direction to swivel: left, right, or center",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				dir, _ := args["direction"].(string)
+				var yaw float64
+
+				switch dir {
+				case "left":
+					yaw = 0.5 // ~30 degrees left
+				case "right":
+					yaw = -0.5 // ~30 degrees right
+				case "center":
+					yaw = 0
+				}
+
+				fmt.Printf("🔄 swivel_body called (direction: %s, yaw: %.2f)\n", dir, yaw)
+
+				if robot != nil {
+					robot.SetBodyYaw(yaw)
+				}
+				return fmt.Sprintf("Swiveled body %s", dir), nil
 			},
 		},
 		{
@@ -859,6 +891,28 @@ func (r *SimpleRobotController) SetVolume(level int) error {
 	}
 	payload := fmt.Sprintf(`{"volume": %d}`, level)
 	resp, err := http.Post(r.BaseURL+"/api/volume/set", "application/json", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// SetBodyYaw rotates the robot's body (swivel)
+func (r *SimpleRobotController) SetBodyYaw(yaw float64) error {
+	payload := map[string]interface{}{
+		"target_head_pose": map[string]float64{
+			"roll":  0,
+			"pitch": 0,
+			"yaw":   0,
+		},
+		"target_antennas":  []float64{0, 0},
+		"target_body_yaw":  yaw,
+		"duration":         0.5,
+	}
+
+	data, _ := json.Marshal(payload)
+	resp, err := http.Post(r.BaseURL+"/api/move/set_target", "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		return err
 	}
