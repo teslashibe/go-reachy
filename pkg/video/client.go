@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"os"
@@ -616,6 +618,21 @@ func (c *Client) WaitForFrame(timeout time.Duration) ([]byte, error) {
 // CaptureJPEG captures the current frame as JPEG (alias for WaitForFrame with short timeout)
 func (c *Client) CaptureJPEG() ([]byte, error) {
 	return c.WaitForFrame(500 * time.Millisecond)
+}
+
+// CaptureImage captures the current frame as an image.Image
+func (c *Client) CaptureImage() (image.Image, error) {
+	jpegData, err := c.CaptureJPEG()
+	if err != nil {
+		return nil, err
+	}
+
+	img, err := jpeg.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		return nil, fmt.Errorf("decode JPEG: %w", err)
+	}
+
+	return img, nil
 }
 
 // Close closes the WebRTC connection

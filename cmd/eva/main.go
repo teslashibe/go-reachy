@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
 	"os"
 	"os/signal"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
+	"github.com/teslashibe/go-reachy/pkg/inference"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tts"
@@ -485,6 +487,55 @@ func initTTSProvider(openaiKey string) (tts.Provider, error) {
 	return tts.NewChain(providers...)
 }
 
+// initInferenceProvider creates the inference provider for vision
+func initInferenceProvider() (inference.Provider, error) {
+	var providers []inference.Provider
+
+	// Check for Google API key (for Gemini vision)
+	googleKey := os.Getenv("GOOGLE_API_KEY")
+	if googleKey != "" {
+		gemini, err := inference.NewGemini(
+			inference.WithAPIKey(googleKey),
+		)
+		if err != nil {
+			fmt.Printf("⚠️  Gemini init failed: %v\n", err)
+		} else {
+			providers = append(providers, gemini)
+			fmt.Println("👁️  Vision: Gemini Flash")
+		}
+	}
+
+	// Check for OpenAI key (fallback for vision)
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey != "" {
+		client, err := inference.NewClient(
+			inference.WithAPIKey(openaiKey),
+			inference.WithModel("gpt-4o-mini"),
+			inference.WithVisionModel("gpt-4o"),
+		)
+		if err != nil {
+			fmt.Printf("⚠️  OpenAI inference init failed: %v\n", err)
+		} else {
+			providers = append(providers, client)
+			if len(providers) == 1 {
+				fmt.Println("👁️  Vision: OpenAI GPT-4o")
+			} else {
+				fmt.Println("👁️  Vision: OpenAI GPT-4o (fallback)")
+			}
+		}
+	}
+
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("no inference providers available (set GOOGLE_API_KEY or OPENAI_API_KEY)")
+	}
+
+	if len(providers) == 1 {
+		return providers[0], nil
+	}
+
+	return inference.NewChain(providers...)
+}
+
 func connectRealtime(apiKey string) error {
 	realtimeClient = realtime.NewClient(apiKey)
 
@@ -497,14 +548,21 @@ func connectRealtime(apiKey string) error {
 		audioPlayer.SetTTSProvider(ttsProvider)
 	}
 
+	// Initialize inference provider for vision
+	inferenceProvider, err := initInferenceProvider()
+	if err != nil {
+		fmt.Printf("⚠️  Inference init warning: %v\n", err)
+	}
+
 	// Register Eva's tools with vision and tracking support
 	toolsCfg := realtime.EvaToolsConfig{
-		Robot:        robot,
-		Memory:       memory,
-		Vision:       &videoVisionAdapter{videoClient},
-		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:  audioPlayer,
-		Tracker:      headTracker, // For body rotation sync
+		Robot:           robot,
+		Memory:          memory,
+		Vision:          &videoVisionAdapter{videoClient},
+		InferenceClient: inferenceProvider,
+		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:     audioPlayer,
+		Tracker:         headTracker, // For body rotation sync
 	}
 	tools := realtime.EvaTools(toolsCfg)
 	for _, tool := range tools {
@@ -713,4 +771,11 @@ func (v *videoVisionAdapter) CaptureFrame() ([]byte, error) {
 		return nil, fmt.Errorf("video client not connected")
 	}
 	return v.client.CaptureJPEG()
+}
+
+func (v *videoVisionAdapter) CaptureImage() (image.Image, error) {
+	if v.client == nil {
+		return nil, fmt.Errorf("video client not connected")
+	}
+	return v.client.CaptureImage()
 }

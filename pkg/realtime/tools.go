@@ -1,15 +1,16 @@
 package realtime
 
 import (
-	"bytes"
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"image"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/teslashibe/go-reachy/pkg/inference"
 )
 
 // RobotController interface for robot control
@@ -23,192 +24,8 @@ type RobotController interface {
 
 // VisionProvider interface for camera access
 type VisionProvider interface {
-	CaptureFrame() ([]byte, error) // Returns JPEG image data
-}
-
-// GeminiVision calls Gemini Flash to describe an image
-func GeminiVision(apiKey string, imageData []byte, prompt string) (string, error) {
-	if apiKey == "" {
-		return "", fmt.Errorf("GOOGLE_API_KEY not set")
-	}
-
-	// Encode image as base64
-	b64Image := base64.StdEncoding.EncodeToString(imageData)
-
-	// Build Gemini API request (matching format from working explore code)
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{"text": prompt},
-					{"inline_data": map[string]string{"mime_type": "image/jpeg", "data": b64Image}},
-				},
-			},
-		},
-		"generationConfig": map[string]interface{}{
-			"temperature":     0.7,
-			"maxOutputTokens": 1000, // Increased for better scene descriptions
-		},
-	}
-
-	jsonData, _ := json.Marshal(payload)
-
-	// Using Gemini 2.0 Flash - stable model
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", apiKey)
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read full response for debugging
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-		Error struct {
-			Message string `json:"message"`
-			Code    int    `json:"code"`
-		} `json:"error"`
-	}
-
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w (body: %s)", err, string(bodyBytes[:min(200, len(bodyBytes))]))
-	}
-
-	if result.Error.Message != "" {
-		return "", fmt.Errorf("Gemini error: %s", result.Error.Message)
-	}
-
-	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
-		return result.Candidates[0].Content.Parts[0].Text, nil
-	}
-
-	return "", fmt.Errorf("no response from Gemini (raw: %s)", string(bodyBytes[:min(300, len(bodyBytes))]))
-}
-
-// WebSearch uses Gemini with Google Search grounding to search the web
-func WebSearch(apiKey string, query string) (string, error) {
-	if apiKey == "" {
-		return "", fmt.Errorf("GOOGLE_API_KEY not set")
-	}
-
-	// Build request with search grounding enabled using dynamic retrieval
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{"text": query},
-				},
-			},
-		},
-		"tools": []map[string]interface{}{
-			{
-				"google_search": map[string]interface{}{},
-			},
-		},
-		"generationConfig": map[string]interface{}{
-			"temperature":     0.2, // Lower temp for factual responses
-			"maxOutputTokens": 300,
-		},
-		"systemInstruction": map[string]interface{}{
-			"parts": []map[string]interface{}{
-				{"text": "You are a helpful assistant that searches the web for real-time information. Always use Google Search to find current, accurate information. Provide specific details like prices, times, dates, and links when available. Be concise but informative."},
-			},
-		},
-	}
-
-	jsonData, _ := json.Marshal(payload)
-
-	// Use Gemini 2.0 Flash with grounding
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", apiKey)
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonData))
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
-		// Try to parse error
-		var errResp struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		json.Unmarshal(bodyBytes, &errResp)
-		if errResp.Error.Message != "" {
-			return "", fmt.Errorf("Gemini error: %s", errResp.Error.Message)
-		}
-		return "", fmt.Errorf("Gemini API error (status %d)", resp.StatusCode)
-	}
-
-	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-			GroundingMetadata struct {
-				WebSearchQueries []string `json:"webSearchQueries"`
-				SearchEntryPoint struct {
-					RenderedContent string `json:"renderedContent"`
-				} `json:"searchEntryPoint"`
-				GroundingChunks []struct {
-					Web struct {
-						URI   string `json:"uri"`
-						Title string `json:"title"`
-					} `json:"web"`
-				} `json:"groundingChunks"`
-			} `json:"groundingMetadata"`
-		} `json:"candidates"`
-	}
-
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
-		response := strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text)
-
-		// Add source links if available
-		metadata := result.Candidates[0].GroundingMetadata
-		if len(metadata.GroundingChunks) > 0 {
-			response += "\n\nSources: "
-			for i, chunk := range metadata.GroundingChunks {
-				if i > 2 {
-					break // Limit to 3 sources
-				}
-				if chunk.Web.Title != "" {
-					response += fmt.Sprintf("%s (%s), ", chunk.Web.Title, chunk.Web.URI)
-				}
-			}
-		}
-
-		return response, nil
-	}
-
-	return "", fmt.Errorf("no search results")
+	CaptureFrame() ([]byte, error)  // Returns JPEG image data
+	CaptureImage() (image.Image, error) // Returns image.Image for inference
 }
 
 // BodyYawNotifier is called when body yaw changes (for tracker coordination)
@@ -218,12 +35,13 @@ type BodyYawNotifier interface {
 
 // EvaToolsConfig holds dependencies for Eva's tools
 type EvaToolsConfig struct {
-	Robot        RobotController
-	Memory       *Memory
-	Vision       VisionProvider
-	GoogleAPIKey string
-	AudioPlayer  *AudioPlayer    // For timer announcements
-	Tracker      BodyYawNotifier // For body rotation sync with tracking
+	Robot           RobotController
+	Memory          *Memory
+	Vision          VisionProvider
+	InferenceClient inference.Provider // For vision and chat
+	GoogleAPIKey    string             // Fallback for search (until migrated)
+	AudioPlayer     *AudioPlayer       // For timer announcements
+	Tracker         BodyYawNotifier    // For body rotation sync with tracking
 }
 
 // EvaTools returns all tools available to Eva
@@ -590,19 +408,19 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					return "I cannot see right now - camera not connected", nil
 				}
 
-				if cfg.GoogleAPIKey == "" {
-					fmt.Println("👁️  Error: Google API key not set")
+				if cfg.InferenceClient == nil {
+					fmt.Println("👁️  Error: Inference provider is nil")
 					return "I cannot see right now - vision not configured", nil
 				}
 
-				// Capture frame
+				// Capture image
 				fmt.Println("👁️  Capturing frame...")
-				imageData, err := cfg.Vision.CaptureFrame()
+				img, err := cfg.Vision.CaptureImage()
 				if err != nil {
 					fmt.Printf("👁️  Frame capture error: %v\n", err)
 					return fmt.Sprintf("Could not capture image: %v", err), nil
 				}
-				fmt.Printf("👁️  Captured %d bytes\n", len(imageData))
+				fmt.Printf("👁️  Captured image: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
 
 				// Build prompt based on focus
 				var prompt string
@@ -615,16 +433,23 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					prompt = fmt.Sprintf("Look at this image and tell me if you can see: %s. Describe what you find. Be concise.", focus)
 				}
 
-				// Call Gemini
-				fmt.Println("👁️  Calling Gemini Flash...")
-				description, err := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
+				// Call inference provider vision
+				fmt.Println("👁️  Calling vision provider...")
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+
+				resp, err := cfg.InferenceClient.Vision(ctx, &inference.VisionRequest{
+					Image:     img,
+					Prompt:    prompt,
+					MaxTokens: 1000,
+				})
 				if err != nil {
-					fmt.Printf("👁️  Gemini error: %v\n", err)
+					fmt.Printf("👁️  Vision error: %v\n", err)
 					return fmt.Sprintf("Vision error: %v", err), nil
 				}
-				fmt.Printf("👁️  Gemini response: %s\n", description)
+				fmt.Printf("👁️  Vision response: %s\n", resp.Content)
 
-				return description, nil
+				return resp.Content, nil
 			},
 		},
 		{
@@ -648,7 +473,10 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					return "Web search not configured", nil
 				}
 
-				result, err := WebSearch(cfg.GoogleAPIKey, query)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				result, err := inference.GeminiSearch(ctx, cfg.GoogleAPIKey, query)
 				if err != nil {
 					fmt.Printf("🌐 Search error: %v\n", err)
 					return fmt.Sprintf("Search failed: %v", err), nil
@@ -702,7 +530,10 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 						"Search Google Flights or airline websites for real current availability.",
 					origin, destination, date, cabinClass)
 
-				result, err := WebSearch(cfg.GoogleAPIKey, query)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				result, err := inference.GeminiSearch(ctx, cfg.GoogleAPIKey, query)
 				if err != nil {
 					return fmt.Sprintf("Flight search failed: %v", err), nil
 				}
@@ -726,55 +557,53 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 					person = "anyone"
 				}
 
-				if cfg.Vision == nil || cfg.GoogleAPIKey == "" {
+				if cfg.Vision == nil || cfg.InferenceClient == nil {
 					return "I cannot see right now", nil
 				}
 
-				// Look around first
-				if robot != nil {
-					// Look left
-					robot.SetHeadPose(0, 0, 0.3)
-					time.Sleep(400 * time.Millisecond)
+				checkDirection := func(direction string, yaw float64) (bool, string) {
+					if robot != nil {
+						robot.SetHeadPose(0, 0, yaw)
+						time.Sleep(400 * time.Millisecond)
+					}
+
+					img, err := cfg.Vision.CaptureImage()
+					if err != nil {
+						return false, ""
+					}
+
+					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+
+					resp, err := cfg.InferenceClient.Vision(ctx, &inference.VisionRequest{
+						Image:     img,
+						Prompt:    prompt,
+						MaxTokens: 100,
+					})
+					if err != nil {
+						return false, ""
+					}
+
+					if strings.Contains(strings.ToLower(resp.Content), "yes") {
+						return true, resp.Content
+					}
+					return false, ""
 				}
 
-				// Capture and check left
-				imageData, err := cfg.Vision.CaptureFrame()
-				if err == nil {
-					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
-					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
-					if strings.Contains(strings.ToLower(desc), "yes") {
-						return fmt.Sprintf("I see someone on my left who might be %s. %s", person, desc), nil
-					}
+				// Look left
+				if found, desc := checkDirection("left", 0.3); found {
+					return fmt.Sprintf("I see someone on my left who might be %s. %s", person, desc), nil
 				}
 
 				// Look right
-				if robot != nil {
-					robot.SetHeadPose(0, 0, -0.3)
-					time.Sleep(400 * time.Millisecond)
-				}
-
-				imageData, err = cfg.Vision.CaptureFrame()
-				if err == nil {
-					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
-					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
-					if strings.Contains(strings.ToLower(desc), "yes") {
-						return fmt.Sprintf("I see someone on my right who might be %s. %s", person, desc), nil
-					}
+				if found, desc := checkDirection("right", -0.3); found {
+					return fmt.Sprintf("I see someone on my right who might be %s. %s", person, desc), nil
 				}
 
 				// Look center
-				if robot != nil {
-					robot.SetHeadPose(0, 0, 0)
-					time.Sleep(300 * time.Millisecond)
-				}
-
-				imageData, err = cfg.Vision.CaptureFrame()
-				if err == nil {
-					prompt := fmt.Sprintf("Is there a person in this image who might be %s? Answer briefly.", person)
-					desc, _ := GeminiVision(cfg.GoogleAPIKey, imageData, prompt)
-					if strings.Contains(strings.ToLower(desc), "yes") {
-						return fmt.Sprintf("I see someone in front of me who might be %s. %s", person, desc), nil
-					}
+				if found, desc := checkDirection("center", 0); found {
+					return fmt.Sprintf("I see someone in front of me who might be %s. %s", person, desc), nil
 				}
 
 				return fmt.Sprintf("I looked around but I don't see %s right now.", person), nil
