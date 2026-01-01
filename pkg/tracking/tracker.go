@@ -198,6 +198,9 @@ func (t *Tracker) detectAndUpdate() {
 
 // updateScanning implements scan behavior when no face is detected
 func (t *Tracker) updateScanning() {
+	// Scanning is slow enough that we can still detect faces
+	t.perception.SetMoving(false)
+	
 	// Check if we should start scanning
 	if !t.isScanning {
 		// Only start scanning after delay since last face
