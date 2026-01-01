@@ -168,6 +168,18 @@ func main() {
 	}
 	fmt.Println("✅")
 
+	// Initialize head tracking BEFORE connecting to realtime API (so tools can reference it)
+	fmt.Print("👁️  Initializing head tracking... ")
+	modelPath := "models/face_detection_yunet.onnx"
+	var err error
+	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
+	if err != nil {
+		fmt.Printf("⚠️  Disabled: %v\n", err)
+		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
+	} else {
+		fmt.Println("✅")
+	}
+
 	// Connect to OpenAI Realtime API
 	fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
 	if err := connectRealtime(openaiKey); err != nil {
@@ -198,14 +210,8 @@ func main() {
 	// Start audio streaming from WebRTC to Realtime API
 	go streamAudioToRealtime(ctx)
 
-	// Start head tracking with local face detection (no API key needed)
-	modelPath := "models/face_detection_yunet.onnx"
-	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
-	if err != nil {
-		fmt.Printf("⚠️  Head tracking disabled: %v\n", err)
-		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
-	} else {
+	// Start head tracking loop
+	if headTracker != nil {
 		go headTracker.Run(ctx)
 	}
 
@@ -384,13 +390,14 @@ func connectRealtime(apiKey string) error {
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
 
-	// Register Eva's tools with vision support
+	// Register Eva's tools with vision and tracking support
 	toolsCfg := realtime.EvaToolsConfig{
 		Robot:        robot,
 		Memory:       memory,
 		Vision:       &videoVisionAdapter{videoClient},
 		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
 		AudioPlayer:  audioPlayer,
+		Tracker:      headTracker, // For body rotation sync
 	}
 	tools := realtime.EvaTools(toolsCfg)
 	for _, tool := range tools {

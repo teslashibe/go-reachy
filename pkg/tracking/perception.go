@@ -34,8 +34,9 @@ func NewPerception(config Config, detector detection.Detector) *Perception {
 	}
 }
 
-// FrameToWorld converts a frame position (0-100%) to a world angle
-// currentYaw is the current head yaw in radians
+// FrameToWorld converts a frame position (0-100%) to a body-relative world angle.
+// currentYaw is the current head yaw in radians (relative to body).
+// The returned angle is body-relative, suitable for storing in the world model.
 func (p *Perception) FrameToWorld(framePosition float64, currentYaw float64) float64 {
 	// Frame offset from center: -0.5 to +0.5
 	frameOffset := (framePosition - 50) / 100.0
@@ -45,12 +46,24 @@ func (p *Perception) FrameToWorld(framePosition float64, currentYaw float64) flo
 	// At 100% position, we're at +FOV/2 from camera center
 	cameraAngle := frameOffset * p.CameraFOV
 
-	// Add current head yaw to get world angle
+	// Add current head yaw to get body-relative angle
 	// Note: positive yaw = looking left, so we subtract camera angle
 	// because positive frame position = right side of frame
-	worldAngle := currentYaw - cameraAngle
+	bodyRelativeAngle := currentYaw - cameraAngle
 
-	return worldAngle
+	return bodyRelativeAngle
+}
+
+// FrameToRoomAngle converts a frame position to a room-relative world angle.
+// This accounts for both head yaw and body yaw to give the absolute room position.
+func (p *Perception) FrameToRoomAngle(framePosition float64, headYaw float64, bodyYaw float64) float64 {
+	// First get body-relative angle
+	bodyRelativeAngle := p.FrameToWorld(framePosition, headYaw)
+
+	// Add body yaw to get room-relative angle
+	roomAngle := bodyYaw + bodyRelativeAngle
+
+	return roomAngle
 }
 
 // WorldToFrame converts a world angle to expected frame position
@@ -72,9 +85,18 @@ func (p *Perception) IsInFrame(worldAngle float64, currentYaw float64) bool {
 	return cameraAngle < p.CameraFOV/2
 }
 
-// DetectFace captures a frame and detects face position using local vision
-// Returns (framePosition, worldAngle, found)
+// DetectFace captures a frame and detects face position using local vision.
+// Returns (framePosition, worldAngle, found).
+// The worldAngle is body-relative (for backwards compatibility).
+// Use DetectFaceRoom for room-relative coordinates.
 func (p *Perception) DetectFace(video VideoSource, currentYaw float64) (float64, float64, bool) {
+	return p.DetectFaceRoom(video, currentYaw, 0)
+}
+
+// DetectFaceRoom captures a frame and detects face position using local vision.
+// Returns (framePosition, roomAngle, found).
+// The roomAngle is in room coordinates (accounts for body rotation).
+func (p *Perception) DetectFaceRoom(video VideoSource, headYaw float64, bodyYaw float64) (float64, float64, bool) {
 	if video == nil || p.detector == nil {
 		return 0, 0, false
 	}
@@ -115,10 +137,10 @@ func (p *Perception) DetectFace(video VideoSource, currentYaw float64) (float64,
 	p.lastValidPosition = position
 	p.consecutiveMisses = 0
 
-	// Convert to world coordinates
-	worldAngle := p.FrameToWorld(position, currentYaw)
+	// Convert to room coordinates
+	roomAngle := p.FrameToRoomAngle(position, headYaw, bodyYaw)
 
-	return position, worldAngle, true
+	return position, roomAngle, true
 }
 
 // GetConsecutiveMisses returns how many consecutive detections have failed

@@ -211,13 +211,19 @@ func WebSearch(apiKey string, query string) (string, error) {
 	return "", fmt.Errorf("no search results")
 }
 
+// BodyYawNotifier is called when body yaw changes (for tracker coordination)
+type BodyYawNotifier interface {
+	SetBodyYaw(yaw float64)
+}
+
 // EvaToolsConfig holds dependencies for Eva's tools
 type EvaToolsConfig struct {
 	Robot        RobotController
 	Memory       *Memory
 	Vision       VisionProvider
 	GoogleAPIKey string
-	AudioPlayer  *AudioPlayer // For timer announcements
+	AudioPlayer  *AudioPlayer    // For timer announcements
+	Tracker      BodyYawNotifier // For body rotation sync with tracking
 }
 
 // EvaTools returns all tools available to Eva
@@ -497,6 +503,12 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 				if robot != nil {
 					robot.SetBodyYaw(yaw)
 				}
+
+				// Notify tracker of body rotation for accurate world coordinates
+				if cfg.Tracker != nil {
+					cfg.Tracker.SetBodyYaw(yaw)
+				}
+
 				return fmt.Sprintf("Rotated body %s", dir), nil
 			},
 		},

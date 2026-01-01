@@ -2,6 +2,7 @@ package tracking
 
 import (
 	"math"
+	"time"
 )
 
 // PDController implements proportional-derivative control for smooth head tracking
@@ -24,6 +25,13 @@ type PDController struct {
 	currentYaw   float64
 	targetYaw    float64
 	isSettled    bool // True when within dead zone
+
+	// Interpolation state (for smooth return to neutral)
+	interpStart    time.Time
+	interpDuration time.Duration
+	interpFrom     float64
+	interpTo       float64
+	isInterpolating bool
 }
 
 // NewPDController creates a new PD controller with default values
@@ -38,11 +46,38 @@ func NewPDController(config Config) *PDController {
 	}
 }
 
-// SetTarget sets the desired world angle to look at
+// SetTarget sets the desired world angle to look at.
+// This cancels any active interpolation.
 func (c *PDController) SetTarget(worldAngle float64) {
+	// Cancel interpolation when we get a new target
+	c.isInterpolating = false
 	// Clamp to mechanical limits
 	c.targetYaw = clamp(worldAngle, -c.MaxYaw, c.MaxYaw)
 	c.isSettled = false
+}
+
+// InterpolateToNeutral starts smooth interpolation back to center.
+// The head will smoothly move from current position to 0 over the given duration.
+func (c *PDController) InterpolateToNeutral(duration time.Duration) {
+	c.interpStart = time.Now()
+	c.interpDuration = duration
+	c.interpFrom = c.currentYaw
+	c.interpTo = 0
+	c.isInterpolating = true
+}
+
+// InterpolateTo starts smooth interpolation to a target position.
+func (c *PDController) InterpolateTo(target float64, duration time.Duration) {
+	c.interpStart = time.Now()
+	c.interpDuration = duration
+	c.interpFrom = c.currentYaw
+	c.interpTo = clamp(target, -c.MaxYaw, c.MaxYaw)
+	c.isInterpolating = true
+}
+
+// IsInterpolating returns true if currently interpolating.
+func (c *PDController) IsInterpolating() bool {
+	return c.isInterpolating
 }
 
 // GetCurrentYaw returns the current head yaw
@@ -58,6 +93,11 @@ func (c *PDController) SetCurrentYaw(yaw float64) {
 // Update calculates the next yaw position
 // Returns the new yaw and whether the head should move
 func (c *PDController) Update() (float64, bool) {
+	// Handle interpolation mode
+	if c.isInterpolating {
+		return c.updateInterpolation()
+	}
+
 	// Calculate error (difference between target and current)
 	error := c.targetYaw - c.currentYaw
 
@@ -96,6 +136,26 @@ func (c *PDController) Update() (float64, bool) {
 	c.currentYaw = newYaw
 
 	return newYaw, true
+}
+
+// updateInterpolation handles smooth interpolation to target
+func (c *PDController) updateInterpolation() (float64, bool) {
+	elapsed := time.Since(c.interpStart)
+	
+	// Calculate interpolation progress (0 to 1)
+	t := float64(elapsed) / float64(c.interpDuration)
+	if t >= 1.0 {
+		// Interpolation complete
+		c.isInterpolating = false
+		c.currentYaw = c.interpTo
+		c.targetYaw = c.interpTo
+		c.isSettled = true
+		return c.interpTo, true
+	}
+
+	// Linear interpolation
+	c.currentYaw = c.interpFrom + (c.interpTo-c.interpFrom)*t
+	return c.currentYaw, true
 }
 
 // IsSettled returns true if the head is at the target (within dead zone)

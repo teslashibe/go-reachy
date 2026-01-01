@@ -22,6 +22,9 @@ type WorldModel struct {
 	focusTarget string // ID of entity Eva is focusing on
 	mu          sync.RWMutex
 
+	// Body orientation in room coordinates (radians)
+	bodyYaw float64
+
 	// Configuration
 	confidenceDecay float64       // How fast confidence decays per second
 	forgetThreshold float64       // Remove entities below this confidence
@@ -92,26 +95,45 @@ func (w *WorldModel) GetFocusTarget() *TrackedEntity {
 	return entity
 }
 
-// GetTargetWorldAngle returns the world angle Eva should look at
-// If no target, returns (0, false) to indicate no valid target
+// GetTargetWorldAngle returns the world angle Eva should look at.
+// The returned angle is body-relative (for head movement).
+// If no target, returns (0, false) to indicate no valid target.
 func (w *WorldModel) GetTargetWorldAngle() (float64, bool) {
 	entity := w.GetFocusTarget()
 	if entity == nil {
 		return 0, false
 	}
 
+	w.mu.RLock()
+	bodyYaw := w.bodyYaw
+	w.mu.RUnlock()
+
 	// Only predict if recently seen (within 500ms)
 	dt := time.Since(entity.LastSeen).Seconds()
+	var roomAngle float64
 	if dt > 0.5 {
 		// Face lost for too long - just return last known position
 		// Don't predict, as velocity estimation may be wrong
-		return entity.WorldAngle, true
+		roomAngle = entity.WorldAngle
+	} else {
+		// Predict current position based on velocity (only for very recent detections)
+		roomAngle = entity.WorldAngle + entity.Velocity*dt*0.5 // Dampen prediction
 	}
 
-	// Predict current position based on velocity (only for very recent detections)
-	predictedAngle := entity.WorldAngle + entity.Velocity*dt*0.5 // Dampen prediction
+	// Convert room angle to body-relative angle for head movement
+	bodyRelativeAngle := roomAngle - bodyYaw
 
-	return predictedAngle, true
+	return bodyRelativeAngle, true
+}
+
+// GetTargetRoomAngle returns the target's angle in room coordinates (absolute).
+// This is useful for understanding where the target is in the room.
+func (w *WorldModel) GetTargetRoomAngle() (float64, bool) {
+	entity := w.GetFocusTarget()
+	if entity == nil {
+		return 0, false
+	}
+	return entity.WorldAngle, true
 }
 
 // DecayConfidence reduces confidence of all entities over time
@@ -185,5 +207,19 @@ func (w *WorldModel) Clear() {
 	defer w.mu.Unlock()
 	w.entities = make(map[string]*TrackedEntity)
 	w.focusTarget = ""
+}
+
+// SetBodyYaw updates the body orientation in room coordinates
+func (w *WorldModel) SetBodyYaw(yaw float64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.bodyYaw = yaw
+}
+
+// GetBodyYaw returns the current body orientation in room coordinates
+func (w *WorldModel) GetBodyYaw() float64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.bodyYaw
 }
 
