@@ -462,7 +462,7 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 		}
 
 		// Only decode when we have a keyframe and enough time has passed
-		if hasKeyframe && time.Since(lastDecode) > 100*time.Millisecond && keyframeBuffer.Len() > 1000 {
+		if hasKeyframe && time.Since(lastDecode) > 33*time.Millisecond && keyframeBuffer.Len() > 1000 {
 			c.decodeH264ToJPEG(keyframeBuffer.Bytes())
 			frameCount++
 			lastDecode = time.Now()

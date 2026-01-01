@@ -277,7 +277,7 @@ func streamCameraToWeb(ctx context.Context) {
 
 	fmt.Println("📷 Camera streaming to dashboard started")
 
-	ticker := time.NewTicker(66 * time.Millisecond) // ~15 FPS
+	ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
 	defer ticker.Stop()
 
 	frameCount := 0
