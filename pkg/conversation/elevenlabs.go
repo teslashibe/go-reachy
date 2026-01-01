@@ -1,0 +1,531 @@
+package conversation
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+const (
+	elevenLabsBaseURL = "wss://api.elevenlabs.io/v1/convai/conversation"
+)
+
+// ElevenLabs implements Provider for the ElevenLabs Agents Platform.
+type ElevenLabs struct {
+	config *Config
+	logger *slog.Logger
+
+	mu        sync.RWMutex
+	conn      *websocket.Conn
+	state     ConnectionState
+	tools     []Tool
+	metrics   Metrics
+	cancelCtx context.CancelFunc
+
+	// Callbacks
+	onAudio        func(audio []byte)
+	onAudioDone    func()
+	onTranscript   func(role, text string, isFinal bool)
+	onToolCall     func(id, name string, args map[string]any)
+	onError        func(err error)
+	onInterruption func()
+
+	// Atomic counters for metrics
+	messagesSent     atomic.Int64
+	messagesReceived atomic.Int64
+}
+
+// NewElevenLabs creates a new ElevenLabs conversation provider.
+func NewElevenLabs(opts ...Option) (*ElevenLabs, error) {
+	cfg := DefaultConfig()
+	cfg.Apply(opts...)
+
+	if cfg.APIKey == "" {
+		return nil, ErrMissingAPIKey
+	}
+	if cfg.AgentID == "" {
+		return nil, ErrMissingAgentID
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+
+	return &ElevenLabs{
+		config: cfg,
+		logger: cfg.Logger.With("component", "conversation.elevenlabs"),
+		state:  StateDisconnected,
+	}, nil
+}
+
+// Connect establishes the WebSocket connection to ElevenLabs.
+func (e *ElevenLabs) Connect(ctx context.Context) error {
+	e.mu.Lock()
+	if e.state == StateConnected {
+		e.mu.Unlock()
+		return ErrAlreadyConnected
+	}
+	e.state = StateConnecting
+	e.mu.Unlock()
+
+	// Build WebSocket URL
+	wsURL, err := url.Parse(elevenLabsBaseURL)
+	if err != nil {
+		return fmt.Errorf("conversation.elevenlabs: invalid URL: %w", err)
+	}
+
+	q := wsURL.Query()
+	q.Set("agent_id", e.config.AgentID)
+	wsURL.RawQuery = q.Encode()
+
+	// Set up headers
+	headers := http.Header{}
+	headers.Set("xi-api-key", e.config.APIKey)
+
+	// Connect with timeout
+	dialer := websocket.Dialer{
+		HandshakeTimeout: e.config.Timeout,
+	}
+
+	e.logger.Info("connecting to ElevenLabs Agents Platform",
+		"agent_id", e.config.AgentID,
+	)
+
+	conn, resp, err := dialer.DialContext(ctx, wsURL.String(), headers)
+	if err != nil {
+		e.mu.Lock()
+		e.state = StateDisconnected
+		e.mu.Unlock()
+		if resp != nil {
+			return NewConnectionError(
+				fmt.Sprintf("dial failed with status %d", resp.StatusCode),
+				err,
+				resp.StatusCode >= 500,
+			)
+		}
+		return NewConnectionError("dial failed", err, true)
+	}
+
+	// Create cancellation context for message handler
+	msgCtx, cancel := context.WithCancel(context.Background())
+
+	e.mu.Lock()
+	e.conn = conn
+	e.state = StateConnected
+	e.cancelCtx = cancel
+	e.metrics.ConnectionTime = time.Now()
+	e.mu.Unlock()
+
+	// Start message handler
+	go e.handleMessages(msgCtx)
+
+	e.logger.Info("connected to ElevenLabs Agents Platform")
+
+	return nil
+}
+
+// Close gracefully closes the connection.
+func (e *ElevenLabs) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.state == StateDisconnected {
+		return nil
+	}
+
+	// Cancel message handler
+	if e.cancelCtx != nil {
+		e.cancelCtx()
+	}
+
+	// Close WebSocket
+	if e.conn != nil {
+		// Send close message
+		deadline := time.Now().Add(time.Second)
+		_ = e.conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			deadline,
+		)
+		e.conn.Close()
+		e.conn = nil
+	}
+
+	e.state = StateDisconnected
+	e.logger.Info("disconnected from ElevenLabs Agents Platform")
+
+	return nil
+}
+
+// IsConnected returns true if connected.
+func (e *ElevenLabs) IsConnected() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.state == StateConnected
+}
+
+// SendAudio sends audio to the conversation.
+func (e *ElevenLabs) SendAudio(audio []byte) error {
+	e.mu.RLock()
+	conn := e.conn
+	state := e.state
+	e.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return ErrNotConnected
+	}
+
+	// Encode audio as base64
+	encoded := base64.StdEncoding.EncodeToString(audio)
+
+	msg := elevenLabsMessage{
+		Type:  "audio",
+		Audio: encoded,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("conversation.elevenlabs: marshal failed: %w", err)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return NewConnectionError("send audio failed", err, true)
+	}
+
+	e.messagesSent.Add(1)
+	return nil
+}
+
+// OnAudio sets the audio callback.
+func (e *ElevenLabs) OnAudio(fn func(audio []byte)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onAudio = fn
+}
+
+// OnAudioDone sets the audio done callback.
+func (e *ElevenLabs) OnAudioDone(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onAudioDone = fn
+}
+
+// OnTranscript sets the transcript callback.
+func (e *ElevenLabs) OnTranscript(fn func(role, text string, isFinal bool)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onTranscript = fn
+}
+
+// OnToolCall sets the tool call callback.
+func (e *ElevenLabs) OnToolCall(fn func(id, name string, args map[string]any)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onToolCall = fn
+}
+
+// OnError sets the error callback.
+func (e *ElevenLabs) OnError(fn func(err error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onError = fn
+}
+
+// OnInterruption sets the interruption callback.
+func (e *ElevenLabs) OnInterruption(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onInterruption = fn
+}
+
+// ConfigureSession configures the conversation session.
+func (e *ElevenLabs) ConfigureSession(opts SessionOptions) error {
+	// ElevenLabs configures most options in the dashboard
+	// We can send a session update if needed
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Store tools for reference
+	e.tools = opts.Tools
+
+	return nil
+}
+
+// RegisterTool registers a tool.
+func (e *ElevenLabs) RegisterTool(tool Tool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tools = append(e.tools, tool)
+}
+
+// CancelResponse cancels the current response.
+func (e *ElevenLabs) CancelResponse() error {
+	e.mu.RLock()
+	conn := e.conn
+	state := e.state
+	e.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return ErrNotConnected
+	}
+
+	msg := elevenLabsMessage{
+		Type: "interrupt",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("conversation.elevenlabs: marshal failed: %w", err)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return NewConnectionError("cancel failed", err, true)
+	}
+
+	e.messagesSent.Add(1)
+	return nil
+}
+
+// SubmitToolResult submits the result of a tool call.
+func (e *ElevenLabs) SubmitToolResult(callID, result string) error {
+	e.mu.RLock()
+	conn := e.conn
+	state := e.state
+	e.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return ErrNotConnected
+	}
+
+	msg := elevenLabsMessage{
+		Type:       "tool_result",
+		ToolCallID: callID,
+		Result:     result,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("conversation.elevenlabs: marshal failed: %w", err)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return NewConnectionError("submit tool result failed", err, true)
+	}
+
+	e.messagesSent.Add(1)
+	e.logger.Debug("submitted tool result",
+		"call_id", callID,
+		"result_len", len(result),
+	)
+
+	return nil
+}
+
+// Capabilities returns provider capabilities.
+func (e *ElevenLabs) Capabilities() Capabilities {
+	return Capabilities{
+		SupportsToolCalls:    true,
+		SupportsInterruption: true,
+		SupportsCustomVoice:  true,
+		SupportsStreaming:    true,
+		InputSampleRate:      16000,
+		OutputSampleRate:     16000,
+		SupportedModels:      []string{"gpt-4o", "claude-3-5-sonnet", "gemini-2.0-flash"},
+	}
+}
+
+// handleMessages processes incoming WebSocket messages.
+func (e *ElevenLabs) handleMessages(ctx context.Context) {
+	defer func() {
+		e.mu.Lock()
+		if e.state == StateConnected {
+			e.state = StateDisconnected
+		}
+		e.mu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		e.mu.RLock()
+		conn := e.conn
+		e.mu.RUnlock()
+
+		if conn == nil {
+			return
+		}
+
+		// Set read deadline
+		_ = conn.SetReadDeadline(time.Now().Add(e.config.ReadTimeout))
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				e.logger.Info("connection closed normally")
+				return
+			}
+			e.logger.Error("read error", "error", err)
+			e.emitError(NewConnectionError("read failed", err, true))
+			return
+		}
+
+		e.messagesReceived.Add(1)
+
+		var msg elevenLabsIncoming
+		if err := json.Unmarshal(data, &msg); err != nil {
+			e.logger.Warn("failed to parse message", "error", err)
+			continue
+		}
+
+		e.handleMessage(msg)
+	}
+}
+
+// handleMessage processes a single message.
+func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
+	switch msg.Type {
+	case "audio":
+		if msg.Audio != "" {
+			audio, err := base64.StdEncoding.DecodeString(msg.Audio)
+			if err != nil {
+				e.logger.Warn("failed to decode audio", "error", err)
+				return
+			}
+			e.emitAudio(audio)
+		}
+
+	case "audio_done", "agent_response_done":
+		e.emitAudioDone()
+
+	case "user_transcript":
+		e.emitTranscript("user", msg.Text, msg.IsFinal)
+
+	case "agent_response":
+		e.emitTranscript("agent", msg.Text, msg.IsFinal)
+
+	case "tool_call":
+		e.emitToolCall(msg.ToolCallID, msg.ToolName, msg.Parameters)
+
+	case "interruption":
+		e.emitInterruption()
+
+	case "error":
+		e.emitError(NewAPIError(0, msg.Code, msg.Message))
+
+	case "ping":
+		// Respond to ping with pong
+		e.sendPong()
+
+	default:
+		e.logger.Debug("unhandled message type", "type", msg.Type)
+	}
+}
+
+// sendPong responds to a ping message.
+func (e *ElevenLabs) sendPong() {
+	e.mu.RLock()
+	conn := e.conn
+	e.mu.RUnlock()
+
+	if conn == nil {
+		return
+	}
+
+	msg := elevenLabsMessage{Type: "pong"}
+	data, _ := json.Marshal(msg)
+	_ = conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// Emit helpers
+
+func (e *ElevenLabs) emitAudio(audio []byte) {
+	e.mu.RLock()
+	fn := e.onAudio
+	e.mu.RUnlock()
+	if fn != nil {
+		fn(audio)
+	}
+}
+
+func (e *ElevenLabs) emitAudioDone() {
+	e.mu.RLock()
+	fn := e.onAudioDone
+	e.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+func (e *ElevenLabs) emitTranscript(role, text string, isFinal bool) {
+	e.mu.RLock()
+	fn := e.onTranscript
+	e.mu.RUnlock()
+	if fn != nil {
+		fn(role, text, isFinal)
+	}
+}
+
+func (e *ElevenLabs) emitToolCall(id, name string, args map[string]any) {
+	e.mu.RLock()
+	fn := e.onToolCall
+	e.mu.RUnlock()
+	if fn != nil {
+		fn(id, name, args)
+	}
+}
+
+func (e *ElevenLabs) emitInterruption() {
+	e.mu.RLock()
+	fn := e.onInterruption
+	e.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+func (e *ElevenLabs) emitError(err error) {
+	e.mu.RLock()
+	fn := e.onError
+	e.mu.RUnlock()
+	if fn != nil {
+		fn(err)
+	}
+}
+
+// Message types for ElevenLabs API
+
+type elevenLabsMessage struct {
+	Type       string `json:"type"`
+	Audio      string `json:"audio,omitempty"`
+	Text       string `json:"text,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Result     string `json:"result,omitempty"`
+}
+
+type elevenLabsIncoming struct {
+	Type       string         `json:"type"`
+	Audio      string         `json:"audio,omitempty"`
+	Text       string         `json:"text,omitempty"`
+	IsFinal    bool           `json:"is_final,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolName   string         `json:"tool_name,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+	Code       string         `json:"code,omitempty"`
+	Message    string         `json:"message,omitempty"`
+}
+
+// Ensure ElevenLabs implements Provider.
+var _ Provider = (*ElevenLabs)(nil)
+
