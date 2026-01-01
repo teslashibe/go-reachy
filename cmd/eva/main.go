@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	robotIP = "192.168.68.80"
+	robotIP = "192.168.68.74"
 	sshUser = "pollen"
 	sshPass = "root"
 )

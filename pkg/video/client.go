@@ -462,7 +462,7 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 		}
 
 		// Only decode when we have a keyframe and enough time has passed
-		if hasKeyframe && time.Since(lastDecode) > 150*time.Millisecond && keyframeBuffer.Len() > 1000 {
+		if hasKeyframe && time.Since(lastDecode) > 100*time.Millisecond && keyframeBuffer.Len() > 1000 {
 			c.decodeH264ToJPEG(keyframeBuffer.Bytes())
 			frameCount++
 			lastDecode = time.Now()
@@ -470,9 +470,13 @@ func (c *Client) handleVideoTrack(track *webrtc.TrackRemote) {
 			if frameCount%50 == 1 {
 				fmt.Printf("🎥 Decoded frame %d (buffer: %d bytes)\n", frameCount, keyframeBuffer.Len())
 			}
-			// Don't reset keyframeBuffer - keep it for next decode attempt
-			// Only reset hasKeyframe to wait for next keyframe
-			hasKeyframe = false
+			// Reset frameBuffer to prevent memory leak (keyframeBuffer resets in the keyframe detection block)
+			frameBuffer.Reset()
+			// Keep hasKeyframe true so we decode on next frame too
+			// Only require new keyframe every 30 frames to reduce latency
+			if frameCount%30 == 0 {
+				hasKeyframe = false
+			}
 		}
 	}
 }

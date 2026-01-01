@@ -190,9 +190,27 @@ This is set in `launcher.sh`. If WebRTC fails to create `webrtcsink`, check this
 
 ## Robot Credentials
 
-- **IP:** `192.168.68.80` (may change on reboot - check router DHCP)
+- **IP:** `192.168.68.80` (may change on reboot - see below)
 - **SSH User:** `pollen`
 - **SSH Password:** `root`
+
+---
+
+## Finding Robot IP (After Reboot)
+
+The robot's IP can change after a reboot. Use this to scan for it:
+
+```bash
+# Quick scan for Reachy API on local network
+for ip in 192.168.68.{50..100}; do 
+  (curl -s --connect-timeout 1 "http://$ip:8000/api/daemon/status" >/dev/null 2>&1 && echo "Found Reachy at $ip") & 
+done; wait
+```
+
+Or check the ARP cache after pinging:
+```bash
+arp -a | grep "192.168.68"
+```
 
 ---
 

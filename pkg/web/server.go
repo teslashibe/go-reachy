@@ -194,10 +194,17 @@ func (s *Server) SendCameraFrame(jpegData []byte) {
 
 // cameraBroadcaster broadcasts camera frames to all clients
 func (s *Server) cameraBroadcaster() {
+	frameCount := 0
 	for frame := range s.cameraFrameChan {
+		frameCount++
 		s.cameraClientsMu.RLock()
+		clientCount := len(s.cameraClients)
+		if frameCount%100 == 1 {
+			fmt.Printf("📺 Broadcasting frame %d (%d bytes) to %d clients\n", frameCount, len(frame), clientCount)
+		}
 		for client := range s.cameraClients {
 			if err := client.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				fmt.Printf("📺 Client write error: %v\n", err)
 				client.Close()
 				go func(c *websocket.Conn) {
 					s.cameraClientsMu.Lock()
@@ -247,4 +254,6 @@ func (s *Server) broadcastStatus() {
 		}
 	}
 }
+
+
 
