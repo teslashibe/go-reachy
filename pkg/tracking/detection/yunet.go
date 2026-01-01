@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/teslashibe/go-reachy/pkg/debug"
 	"gocv.io/x/gocv"
 )
 
@@ -94,7 +95,7 @@ func (d *YuNetDetector) Detect(jpeg []byte) ([]Detection, error) {
 	}
 
 	if len(detections) > 0 {
-		fmt.Printf("👁️  YuNet found %d face(s)\n", len(detections))
+		debug.Log("👁️  YuNet found %d face(s)\n", len(detections))
 	}
 
 	return detections, nil

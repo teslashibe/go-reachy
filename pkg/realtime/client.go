@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/teslashibe/go-reachy/pkg/debug"
 )
 
 const (
@@ -41,14 +43,14 @@ type Client struct {
 	sessionReady bool
 
 	// Callbacks
-	OnTranscript      func(text string, isFinal bool)
-	OnAudioDelta      func(audioBase64 string)
-	OnAudioDone       func()
-	OnFunctionCall    func(name string, args map[string]interface{}) string
-	OnError           func(err error)
-	OnSessionCreated  func()
-	OnSpeechStarted   func() // User started speaking
-	OnSpeechStopped   func() // User stopped speaking
+	OnTranscript     func(text string, isFinal bool)
+	OnAudioDelta     func(audioBase64 string)
+	OnAudioDone      func()
+	OnFunctionCall   func(name string, args map[string]interface{}) string
+	OnError          func(err error)
+	OnSessionCreated func()
+	OnSpeechStarted  func() // User started speaking
+	OnSpeechStopped  func() // User stopped speaking
 
 	// Internal state
 	closed bool
@@ -82,9 +84,18 @@ func (c *Client) Connect() error {
 	}
 
 	var err error
-	c.ws, _, err = dialer.Dial(url, header)
+	var resp *http.Response
+	c.ws, resp, err = dialer.Dial(url, header)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Realtime API: %w", err)
+	}
+
+	// Log headers from WebSocket handshake in debug mode
+	if resp != nil {
+		debug.Logln("🎤 OpenAI Response Headers:")
+		for key, values := range resp.Header {
+			debug.Log("🎤   %s: %v\n", key, values)
+		}
 	}
 
 	c.connected = true
@@ -239,26 +250,41 @@ func (c *Client) handleMessages() {
 
 		case "session.updated":
 			// Session configuration confirmed
+			debug.Logln("🎤 Session updated/configured")
 
 		case "input_audio_buffer.speech_started":
 			// User started speaking - trigger callback for interruption
+			debug.Logln("🎤 VAD: Speech started!")
 			if c.OnSpeechStarted != nil {
 				c.OnSpeechStarted()
 			}
 
 		case "input_audio_buffer.speech_stopped":
 			// User stopped speaking
+			debug.Logln("🎤 VAD: Speech stopped")
 			if c.OnSpeechStopped != nil {
 				c.OnSpeechStopped()
 			}
 
 		case "input_audio_buffer.committed":
 			// Audio buffer was committed
+			debug.Logln("🎤 Audio buffer committed")
 
 		case "conversation.item.input_audio_transcription.completed":
 			// Got transcription of user's speech
 			if transcript, ok := msg["transcript"].(string); ok && c.OnTranscript != nil {
 				c.OnTranscript(transcript, true)
+			}
+
+		case "conversation.item.input_audio_transcription.failed":
+			// Transcription failed - always log this as it's an error condition
+			if errData, ok := msg["error"].(map[string]interface{}); ok {
+				errMsg, _ := errData["message"].(string)
+				errCode, _ := errData["code"].(string)
+				errType, _ := errData["type"].(string)
+				fmt.Printf("⚠️  Transcription failed: %s (code: %s, type: %s)\n", errMsg, errCode, errType)
+			} else {
+				fmt.Printf("⚠️  Transcription failed: %v\n", msg)
 			}
 
 		case "response.audio.delta":
@@ -287,10 +313,23 @@ func (c *Client) handleMessages() {
 			// Full response complete
 
 		case "error":
+			// Always log errors
 			if errData, ok := msg["error"].(map[string]interface{}); ok {
-				if errMsg, ok := errData["message"].(string); ok && c.OnError != nil {
-					c.OnError(fmt.Errorf("API error: %s", errMsg))
+				if errMsg, ok := errData["message"].(string); ok {
+					fmt.Printf("⚠️  OpenAI error: %s\n", errMsg)
+					if c.OnError != nil {
+						c.OnError(fmt.Errorf("API error: %s", errMsg))
+					}
 				}
+			} else {
+				fmt.Printf("⚠️  OpenAI error: %v\n", msg)
+			}
+
+		default:
+			// Log unknown message types in debug mode
+			if msgType != "" && msgType != "response.audio.delta" && msgType != "response.audio_transcript.delta" {
+				// Don't spam with frequent audio deltas
+				debug.Log("🎤 Message: %s\n", msgType)
 			}
 		}
 	}

@@ -1,9 +1,9 @@
 package tracking
 
 import (
-	"fmt"
 	"math"
 
+	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 )
 
@@ -109,7 +109,7 @@ func (p *Perception) DetectFaceRoom(video VideoSource, headYaw float64, bodyYaw 
 	// Run local face detection
 	detections, err := p.detector.Detect(frame)
 	if err != nil {
-		fmt.Printf("👁️  Detection error: %v\n", err)
+		debug.Log("👁️  Detection error: %v\n", err)
 		p.consecutiveMisses++
 		return 0, 0, false
 	}

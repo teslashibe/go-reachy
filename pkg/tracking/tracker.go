@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 )
 
@@ -150,10 +151,10 @@ func (t *Tracker) Run(ctx context.Context) {
 
 	t.isRunning = true
 
-	fmt.Printf("👁️  Head tracker started (local YuNet face detection)\n")
-	fmt.Printf("    Detection: %v, Movement: %v, Range: ±%.1f rad\n",
+	fmt.Println("👁️  Head tracker started (local YuNet face detection)")
+	debug.Log("    Detection: %v, Movement: %v, Range: ±%.1f rad\n",
 		t.config.DetectionInterval, t.config.MovementInterval, t.config.YawRange)
-	fmt.Printf("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
+	debug.Log("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
 		t.config.Kp, t.config.Kd, t.config.ControlDeadZone)
 
 	lastDecay := time.Now()
@@ -194,7 +195,7 @@ func (t *Tracker) updateMovement() {
 	// We have a target - stop scanning and interpolation
 	if t.isScanning {
 		t.isScanning = false
-		fmt.Printf("👁️  Found face, stopping scan\n")
+		debug.Logln("👁️  Found face, stopping scan")
 	}
 	t.isInterpolating = false
 	t.lastFaceSeenAt = time.Now()
@@ -228,7 +229,7 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 		if err == nil {
 			// Log significant movements
 			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
-				fmt.Printf("🔄 Head: yaw=%.2f (target=%.2f, error=%.2f)\n",
+				debug.Log("🔄 Head: yaw=%.2f (target=%.2f, error=%.2f)\n",
 					yaw, targetAngle, t.controller.GetError())
 				t.lastLoggedYaw = yaw
 			}
@@ -250,7 +251,7 @@ func (t *Tracker) updateNoTarget() {
 			t.isInterpolating = true
 			t.interpStartedAt = time.Now()
 			t.controller.InterpolateToNeutral(1 * time.Second)
-			fmt.Printf("👁️  Face lost, returning to neutral\n")
+			debug.Logln("👁️  Face lost, returning to neutral")
 		}
 		return
 	}
@@ -268,7 +269,7 @@ func (t *Tracker) updateNoTarget() {
 			t.isScanning = true
 			t.scanStartTime = time.Now()
 			t.scanDirection = 1.0
-			fmt.Printf("👀 Starting scan for faces...\n")
+			debug.Logln("👀 Starting scan for faces...")
 			if t.state != nil {
 				t.state.AddLog("scan", "Scanning for faces")
 			}
@@ -292,7 +293,7 @@ func (t *Tracker) detectAndUpdate() {
 		// Log occasional misses
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
-			fmt.Printf("👁️  Lost face (5 consecutive misses)\n")
+			debug.Logln("👁️  Lost face (5 consecutive misses)")
 		}
 		return
 	}
@@ -302,7 +303,7 @@ func (t *Tracker) detectAndUpdate() {
 	t.world.UpdateEntity("primary", roomAngle, framePos)
 
 	// Log detection
-	fmt.Printf("👁️  Face at %.0f%% → room %.2f rad (head=%.2f, body=%.2f)\n",
+	debug.Log("👁️  Face at %.0f%% → room %.2f rad (head=%.2f, body=%.2f)\n",
 		framePos, roomAngle, currentYaw, bodyYaw)
 
 	// Update dashboard
@@ -326,11 +327,11 @@ func (t *Tracker) updateScanning() {
 	if newYaw > t.config.ScanRange {
 		newYaw = t.config.ScanRange
 		t.scanDirection = -1.0
-		fmt.Printf("👀 Scan: reversing to left\n")
+		debug.Logln("👀 Scan: reversing to left")
 	} else if newYaw < -t.config.ScanRange {
 		newYaw = -t.config.ScanRange
 		t.scanDirection = 1.0
-		fmt.Printf("👀 Scan: reversing to right\n")
+		debug.Logln("👀 Scan: reversing to right")
 	}
 
 	// Update controller state
@@ -341,7 +342,7 @@ func (t *Tracker) updateScanning() {
 
 	// Log occasionally
 	if math.Abs(newYaw-t.lastLoggedYaw) > 0.2 {
-		fmt.Printf("👀 Scanning: yaw=%.2f\n", newYaw)
+		debug.Log("👀 Scanning: yaw=%.2f\n", newYaw)
 		t.lastLoggedYaw = newYaw
 	}
 }

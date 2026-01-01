@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/video"
@@ -18,7 +20,7 @@ import (
 )
 
 const (
-	robotIP = "192.168.68.74"
+	robotIP = "192.168.68.77"
 	sshUser = "pollen"
 	sshPass = "root"
 )
@@ -120,8 +122,16 @@ func (a *webStateAdapter) AddLog(logType, message string) {
 }
 
 func main() {
+	// Parse flags
+	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	flag.Parse()
+	debug.Enabled = *debugFlag
+
 	fmt.Println("🤖 Eva 2.0 - Low-Latency Conversational Agent")
 	fmt.Println("==============================================")
+	if debug.Enabled {
+		fmt.Println("🐛 Debug mode enabled")
+	}
 
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	if openaiKey == "" {
@@ -507,12 +517,21 @@ func streamAudioToRealtime(ctx context.Context) {
 	var audioBuffer []int16
 	const chunkSize = 2400 // 100ms at 24kHz
 
+	// Counters for debug logging
+	var loopCount, emptyCount, sentCount int
+	lastLogTime := time.Now()
+
+	debug.Logln("🎵 Audio streaming goroutine started")
+
 	for {
 		select {
 		case <-ctx.Done():
+			debug.Logln("🎵 Audio streaming stopped (context cancelled)")
 			return
 		default:
 		}
+
+		loopCount++
 
 		// Don't send audio while speaking (to avoid echo)
 		speakingMu.Lock()
@@ -526,6 +545,9 @@ func streamAudioToRealtime(ctx context.Context) {
 
 		// Get audio from WebRTC (48kHz)
 		if videoClient == nil {
+			if loopCount == 1 {
+				debug.Logln("🎵 videoClient is nil!")
+			}
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
@@ -536,7 +558,18 @@ func streamAudioToRealtime(ctx context.Context) {
 		pcmData := videoClient.StopRecording()
 
 		if len(pcmData) == 0 {
+			emptyCount++
+			// Log every 5 seconds if getting empty audio
+			if time.Since(lastLogTime) > 5*time.Second {
+				debug.Log("🎵 Audio stats: loops=%d, empty=%d, sent=%d (empty audio!)\n", loopCount, emptyCount, sentCount)
+				lastLogTime = time.Now()
+			}
 			continue
+		}
+
+		// First time we get audio
+		if sentCount == 0 && emptyCount == 0 {
+			debug.Log("🎵 First audio chunk: %d samples\n", len(pcmData))
 		}
 
 		// Resample from 48kHz to 24kHz (OpenAI Realtime uses 24kHz)
@@ -550,8 +583,22 @@ func streamAudioToRealtime(ctx context.Context) {
 			audioBuffer = audioBuffer[chunkSize:]
 
 			// Send to Realtime API
-			if realtimeClient != nil && realtimeClient.IsConnected() {
-				realtimeClient.SendAudio(pcm16Bytes)
+			if realtimeClient == nil {
+				debug.Logln("🎵 realtimeClient is nil!")
+			} else if !realtimeClient.IsConnected() {
+				debug.Logln("🎵 realtimeClient not connected!")
+			} else {
+				if err := realtimeClient.SendAudio(pcm16Bytes); err != nil {
+					debug.Log("🎵 SendAudio error: %v\n", err)
+				} else {
+					sentCount++
+					// Log first send and then every 50 sends
+					if sentCount == 1 {
+						debug.Log("🎵 First audio sent to OpenAI! (%d bytes)\n", len(pcm16Bytes))
+					} else if sentCount%50 == 0 {
+						debug.Log("🎵 Audio stats: sent=%d chunks to OpenAI\n", sentCount)
+					}
+				}
 			}
 		}
 	}
