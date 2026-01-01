@@ -33,6 +33,11 @@ type Config struct {
 	ForgetThreshold float64       // Remove entities below this confidence
 	ForgetTimeout   time.Duration // Remove entities not seen for this long
 
+	// Scan behavior (when no face detected)
+	ScanStartDelay time.Duration // Start scanning after this long with no face
+	ScanSpeed      float64       // Radians per second when scanning
+	ScanRange      float64       // How far to scan left/right (radians)
+
 	// Logging
 	LogThreshold float64 // Only log movements larger than this (radians)
 }
@@ -65,6 +70,11 @@ func DefaultConfig() Config {
 		ConfidenceDecay: 0.3,               // Lose 30% confidence per second
 		ForgetThreshold: 0.1,               // Forget below 10% confidence
 		ForgetTimeout:   10 * time.Second,  // Forget after 10 seconds
+
+		// Scan behavior
+		ScanStartDelay: 2 * time.Second,    // Start scanning after 2s with no face
+		ScanSpeed:      0.3,                // 0.3 rad/sec when scanning
+		ScanRange:      1.0,                // Scan ±1.0 rad (±57°)
 
 		// Logging
 		LogThreshold: 0.05, // Log movements >0.05 rad (~3°)

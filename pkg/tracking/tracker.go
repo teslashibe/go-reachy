@@ -41,6 +41,12 @@ type Tracker struct {
 	mu            sync.RWMutex
 	lastLoggedYaw float64
 	isRunning     bool
+
+	// Scanning state
+	isScanning      bool
+	scanDirection   float64   // 1 = right, -1 = left
+	scanStartTime   time.Time
+	lastFaceSeenAt  time.Time
 }
 
 // New creates a new head tracker with world-coordinate awareness
@@ -119,10 +125,17 @@ func (t *Tracker) updateMovement() {
 	targetAngle, hasTarget := t.world.GetTargetWorldAngle()
 
 	if !hasTarget {
-		// No target - could implement scan behavior here
-		// For now, just hold position
+		// No target - check if we should scan
+		t.updateScanning()
 		return
 	}
+
+	// We have a target - stop scanning
+	if t.isScanning {
+		t.isScanning = false
+		fmt.Printf("👁️  Found face, stopping scan\n")
+	}
+	t.lastFaceSeenAt = time.Now()
 
 	// Update controller target
 	t.controller.SetTarget(targetAngle)
@@ -180,6 +193,62 @@ func (t *Tracker) detectAndUpdate() {
 	if t.state != nil {
 		t.state.UpdateFacePosition(framePos, worldAngle)
 		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → world %.2f", framePos, worldAngle))
+	}
+}
+
+// updateScanning implements scan behavior when no face is detected
+func (t *Tracker) updateScanning() {
+	// Check if we should start scanning
+	if !t.isScanning {
+		// Only start scanning after delay since last face
+		if t.lastFaceSeenAt.IsZero() {
+			t.lastFaceSeenAt = time.Now()
+		}
+		
+		timeSinceFace := time.Since(t.lastFaceSeenAt)
+		if timeSinceFace < t.config.ScanStartDelay {
+			return // Still waiting before scanning
+		}
+
+		// Start scanning
+		t.isScanning = true
+		t.scanStartTime = time.Now()
+		t.scanDirection = 1.0 // Start scanning right
+		fmt.Printf("👀 Starting scan for faces...\n")
+		if t.state != nil {
+			t.state.AddLog("scan", "Scanning for faces")
+		}
+	}
+
+	// Calculate scan position
+	currentYaw := t.controller.GetCurrentYaw()
+	
+	// Move in scan direction
+	dt := t.config.MovementInterval.Seconds()
+	scanStep := t.config.ScanSpeed * dt * t.scanDirection
+	newYaw := currentYaw + scanStep
+
+	// Reverse direction at scan limits
+	if newYaw > t.config.ScanRange {
+		newYaw = t.config.ScanRange
+		t.scanDirection = -1.0
+		fmt.Printf("👀 Scan: reversing to left\n")
+	} else if newYaw < -t.config.ScanRange {
+		newYaw = -t.config.ScanRange
+		t.scanDirection = 1.0
+		fmt.Printf("👀 Scan: reversing to right\n")
+	}
+
+	// Apply movement
+	if t.robot != nil {
+		t.robot.SetHeadPose(0, 0, newYaw)
+		t.controller.SetCurrentYaw(newYaw)
+		
+		// Log occasionally
+		if math.Abs(newYaw-t.lastLoggedYaw) > 0.2 {
+			fmt.Printf("👀 Scanning: yaw=%.2f\n", newYaw)
+			t.lastLoggedYaw = newYaw
+		}
 	}
 }
 
