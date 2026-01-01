@@ -184,10 +184,16 @@ func main() {
 	// Start audio streaming from WebRTC to Realtime API
 	go streamAudioToRealtime(ctx)
 
-	// Start head tracking with new tracking package
-	googleKey := os.Getenv("GOOGLE_API_KEY")
-	headTracker = tracking.New(tracking.DefaultConfig(), robot, videoClient, googleKey)
-	go headTracker.Run(ctx)
+	// Start head tracking with local face detection (no API key needed)
+	modelPath := "models/face_detection_yunet.onnx"
+	var err error
+	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
+	if err != nil {
+		fmt.Printf("⚠️  Head tracking disabled: %v\n", err)
+		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
+	} else {
+		go headTracker.Run(ctx)
+	}
 
 	// Start web dashboard
 	go startWebDashboard(ctx)

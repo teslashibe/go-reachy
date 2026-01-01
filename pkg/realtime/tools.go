@@ -870,7 +870,7 @@ func NewSimpleRobotController(robotIP string) *SimpleRobotController {
 	}
 }
 
-// SetHeadPose sets the robot's head position
+// SetHeadPose sets the robot's head position (preserves body yaw)
 func (r *SimpleRobotController) SetHeadPose(roll, pitch, yaw float64) error {
 	payload := map[string]interface{}{
 		"target_head_pose": map[string]float64{
@@ -878,8 +878,9 @@ func (r *SimpleRobotController) SetHeadPose(roll, pitch, yaw float64) error {
 			"pitch": pitch,
 			"yaw":   yaw,
 		},
-		"target_antennas": []float64{0, 0},
-		"duration":        0.3,
+		"target_antennas":  nil, // Don't change antennas
+		"target_body_yaw":  nil, // Don't change body yaw
+		"duration":         0.3,
 	}
 
 	data, _ := json.Marshal(payload)

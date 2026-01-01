@@ -6,6 +6,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 )
 
 // RobotController interface for head movement
@@ -26,13 +28,13 @@ type StateUpdater interface {
 
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
-	config     Config
-	robot      RobotController
-	video      VideoSource
-	state      StateUpdater
-	apiKey     string
+	config Config
+	robot  RobotController
+	video  VideoSource
+	state  StateUpdater
 
 	// Core components
+	detector   detection.Detector
 	world      *WorldModel
 	controller *PDController
 	perception *Perception
@@ -43,24 +45,45 @@ type Tracker struct {
 	isRunning     bool
 
 	// Scanning state
-	isScanning      bool
-	scanDirection   float64   // 1 = right, -1 = left
-	scanStartTime   time.Time
-	lastFaceSeenAt  time.Time
+	isScanning     bool
+	scanDirection  float64   // 1 = right, -1 = left
+	scanStartTime  time.Time
+	lastFaceSeenAt time.Time
 }
 
-// New creates a new head tracker with world-coordinate awareness
-func New(config Config, robot RobotController, video VideoSource, apiKey string) *Tracker {
+// New creates a new head tracker with local face detection
+func New(config Config, robot RobotController, video VideoSource, modelPath string) (*Tracker, error) {
+	// Initialize detector
+	detConfig := detection.Config{
+		ModelPath:        modelPath,
+		ConfidenceThresh: 0.5,
+		InputWidth:       320,
+		InputHeight:      320,
+	}
+
+	detector, err := detection.NewYuNet(detConfig)
+	if err != nil {
+		return nil, fmt.Errorf("init detector: %w", err)
+	}
+
 	return &Tracker{
 		config:        config,
 		robot:         robot,
 		video:         video,
-		apiKey:        apiKey,
+		detector:      detector,
 		world:         NewWorldModel(),
 		controller:    NewPDController(config),
-		perception:    NewPerception(config),
+		perception:    NewPerception(config, detector),
 		lastLoggedYaw: 999.0,
+	}, nil
+}
+
+// Close releases resources
+func (t *Tracker) Close() error {
+	if t.detector != nil {
+		return t.detector.Close()
 	}
+	return nil
 }
 
 // SetStateUpdater sets the dashboard state updater
@@ -89,7 +112,7 @@ func (t *Tracker) Run(ctx context.Context) {
 
 	t.isRunning = true
 
-	fmt.Printf("👁️  Head tracker started (world-aware mode)\n")
+	fmt.Printf("👁️  Head tracker started (local YuNet face detection)\n")
 	fmt.Printf("    Detection: %v, Movement: %v, Range: ±%.1f rad\n",
 		t.config.DetectionInterval, t.config.MovementInterval, t.config.YawRange)
 	fmt.Printf("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
@@ -107,7 +130,7 @@ func (t *Tracker) Run(ctx context.Context) {
 			t.updateMovement()
 
 		case <-detectTicker.C:
-			if t.video != nil && t.apiKey != "" {
+			if t.video != nil {
 				go t.detectAndUpdate()
 			}
 
@@ -140,10 +163,6 @@ func (t *Tracker) updateMovement() {
 	// Update controller target
 	t.controller.SetTarget(targetAngle)
 
-	// Tell perception we're about to move (for motion blur detection)
-	isMoving := !t.controller.IsSettled()
-	t.perception.SetMoving(isMoving)
-
 	// Get next yaw from PD controller
 	newYaw, shouldMove := t.controller.Update()
 
@@ -169,8 +188,8 @@ func (t *Tracker) updateMovement() {
 func (t *Tracker) detectAndUpdate() {
 	currentYaw := t.controller.GetCurrentYaw()
 
-	// Detect face in current frame
-	framePos, worldAngle, found := t.perception.DetectFace(t.video, t.apiKey, currentYaw)
+	// Detect face in current frame using local detector
+	framePos, worldAngle, found := t.perception.DetectFace(t.video, currentYaw)
 
 	if !found {
 		// Log occasional misses
@@ -198,16 +217,13 @@ func (t *Tracker) detectAndUpdate() {
 
 // updateScanning implements scan behavior when no face is detected
 func (t *Tracker) updateScanning() {
-	// Scanning is slow enough that we can still detect faces
-	t.perception.SetMoving(false)
-	
 	// Check if we should start scanning
 	if !t.isScanning {
 		// Only start scanning after delay since last face
 		if t.lastFaceSeenAt.IsZero() {
 			t.lastFaceSeenAt = time.Now()
 		}
-		
+
 		timeSinceFace := time.Since(t.lastFaceSeenAt)
 		if timeSinceFace < t.config.ScanStartDelay {
 			return // Still waiting before scanning
@@ -225,7 +241,7 @@ func (t *Tracker) updateScanning() {
 
 	// Calculate scan position
 	currentYaw := t.controller.GetCurrentYaw()
-	
+
 	// Move in scan direction
 	dt := t.config.MovementInterval.Seconds()
 	scanStep := t.config.ScanSpeed * dt * t.scanDirection
@@ -246,7 +262,7 @@ func (t *Tracker) updateScanning() {
 	if t.robot != nil {
 		t.robot.SetHeadPose(0, 0, newYaw)
 		t.controller.SetCurrentYaw(newYaw)
-		
+
 		// Log occasionally
 		if math.Abs(newYaw-t.lastLoggedYaw) > 0.2 {
 			fmt.Printf("👀 Scanning: yaw=%.2f\n", newYaw)
