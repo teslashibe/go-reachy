@@ -28,3 +28,4 @@ func NewBinaryMessage(data []byte) Message {
 	return Message{Type: BinaryMessage, Data: data}
 }
 
+
