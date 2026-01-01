@@ -65,3 +65,4 @@ pcmData := client.StopRecording() // []int16 at 48kHz
 - Reachy Mini daemon with WebRTC enabled
 - FFmpeg installed (for H.264 decoding)
 
+

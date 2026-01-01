@@ -60,3 +60,4 @@ status, _ := robot.GetDaemonStatus()
 - Reachy Mini daemon running
 - Zenoh port 7447 accessible
 
+

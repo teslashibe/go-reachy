@@ -101,3 +101,4 @@ type Config struct {
 - YuNet ONNX model: `models/face_detection_yunet.onnx`
 - go-eva daemon for audio DOA (optional)
 
+
