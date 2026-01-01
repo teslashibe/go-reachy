@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
@@ -205,7 +204,7 @@ func main() {
 	}
 
 	fmt.Println("\n🎤 Eva is listening! Speak to start a conversation...")
-	fmt.Println("   (Ctrl+C to exit)\n")
+	fmt.Println("   (Ctrl+C to exit)")
 
 	// Start audio streaming from WebRTC to Realtime API
 	go streamAudioToRealtime(ctx)
@@ -239,7 +238,7 @@ func main() {
 	<-ctx.Done()
 }
 
-func initialize(openaiKey string) error {
+func initialize(_ string) error {
 	// Create robot controller
 	robot = realtime.NewSimpleRobotController(robotIP)
 
@@ -265,7 +264,7 @@ func initialize(openaiKey string) error {
 	return nil
 }
 
-func startWebDashboard(ctx context.Context) {
+func startWebDashboard(_ context.Context) {
 	// Create web server
 	webServer = web.NewServer("8181")
 
@@ -557,15 +556,6 @@ func shutdown() {
 	if videoClient != nil {
 		videoClient.Close()
 	}
-}
-
-// Utility: convert PCM samples to bytes
-func pcmToBytes(samples []int16) []byte {
-	data := make([]byte, len(samples)*2)
-	for i, s := range samples {
-		binary.LittleEndian.PutUint16(data[i*2:], uint16(s))
-	}
-	return data
 }
 
 // videoVisionAdapter wraps video.Client to implement VisionProvider
