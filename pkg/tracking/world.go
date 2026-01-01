@@ -16,6 +16,14 @@ type TrackedEntity struct {
 	FramePosition float64   // Last known position in frame (0-100)
 }
 
+// AudioSource represents a detected sound direction
+type AudioSource struct {
+	Angle      float64   // Direction in Eva coordinates (0=front, +left, -right)
+	Confidence float64   // 0-1 confidence
+	Speaking   bool      // Voice activity detected
+	LastSeen   time.Time // When last updated
+}
+
 // WorldModel maintains a spatial map of tracked entities
 type WorldModel struct {
 	entities    map[string]*TrackedEntity
@@ -24,6 +32,9 @@ type WorldModel struct {
 
 	// Body orientation in room coordinates (radians)
 	bodyYaw float64
+
+	// Audio source (from go-eva DOA)
+	audioSource *AudioSource
 
 	// Configuration
 	confidenceDecay float64       // How fast confidence decays per second
@@ -221,5 +232,60 @@ func (w *WorldModel) GetBodyYaw() float64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.bodyYaw
+}
+
+// UpdateAudioSource updates the audio direction from go-eva
+func (w *WorldModel) UpdateAudioSource(angle float64, confidence float64, speaking bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.audioSource = &AudioSource{
+		Angle:      angle,
+		Confidence: confidence,
+		Speaking:   speaking,
+		LastSeen:   time.Now(),
+	}
+}
+
+// GetAudioSource returns the current audio source if valid
+func (w *WorldModel) GetAudioSource() *AudioSource {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	if w.audioSource == nil {
+		return nil
+	}
+
+	// Audio is stale after 1 second
+	if time.Since(w.audioSource.LastSeen) > 1*time.Second {
+		return nil
+	}
+
+	return w.audioSource
+}
+
+// GetTarget returns the best target angle using priority: Face > Audio > None
+// Returns (angle, source, ok) where source is "face", "audio", or ""
+func (w *WorldModel) GetTarget() (angle float64, source string, ok bool) {
+	// Priority 1: Face (visual tracking)
+	if faceAngle, hasTarget := w.GetTargetWorldAngle(); hasTarget {
+		return faceAngle, "face", true
+	}
+
+	// Priority 2: Audio (if speaking with good confidence)
+	audio := w.GetAudioSource()
+	if audio != nil && audio.Speaking && audio.Confidence > 0.3 {
+		// Audio angle is already in Eva coordinates, but needs body adjustment
+		w.mu.RLock()
+		bodyYaw := w.bodyYaw
+		w.mu.RUnlock()
+
+		// Audio angle is relative to Eva's current body orientation
+		// So we just use it directly as head offset
+		return audio.Angle - bodyYaw, "audio", true
+	}
+
+	// No target
+	return 0, "", false
 }
 

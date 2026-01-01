@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 )
@@ -49,6 +50,9 @@ type Tracker struct {
 	world      *WorldModel
 	controller *PDController
 	perception *Perception
+
+	// Audio DOA client (optional, from go-eva)
+	audioClient *audio.Client
 
 	// Offset mode: if set, output offsets instead of direct control
 	onOffset OffsetHandler
@@ -130,6 +134,13 @@ func (t *Tracker) GetBodyYaw() float64 {
 	return t.world.GetBodyYaw()
 }
 
+// SetAudioClient enables audio DOA integration with go-eva
+func (t *Tracker) SetAudioClient(client *audio.Client) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.audioClient = client
+}
+
 // GetCurrentYaw returns the current head yaw
 func (t *Tracker) GetCurrentYaw() float64 {
 	return t.controller.GetCurrentYaw()
@@ -145,9 +156,11 @@ func (t *Tracker) Run(ctx context.Context) {
 	moveTicker := time.NewTicker(t.config.MovementInterval)
 	detectTicker := time.NewTicker(t.config.DetectionInterval)
 	decayTicker := time.NewTicker(t.config.DecayInterval)
+	audioTicker := time.NewTicker(100 * time.Millisecond) // 10Hz audio polling
 	defer moveTicker.Stop()
 	defer detectTicker.Stop()
 	defer decayTicker.Stop()
+	defer audioTicker.Stop()
 
 	t.isRunning = true
 
@@ -156,6 +169,14 @@ func (t *Tracker) Run(ctx context.Context) {
 		t.config.DetectionInterval, t.config.MovementInterval, t.config.YawRange)
 	debug.Log("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
 		t.config.Kp, t.config.Kd, t.config.ControlDeadZone)
+
+	// Check for audio DOA
+	t.mu.RLock()
+	hasAudio := t.audioClient != nil
+	t.mu.RUnlock()
+	if hasAudio {
+		fmt.Println("🎤 Audio DOA enabled (go-eva integration)")
+	}
 
 	lastDecay := time.Now()
 
@@ -173,6 +194,9 @@ func (t *Tracker) Run(ctx context.Context) {
 				go t.detectAndUpdate()
 			}
 
+		case <-audioTicker.C:
+			go t.pollAudioDOA()
+
 		case <-decayTicker.C:
 			dt := time.Since(lastDecay).Seconds()
 			t.world.DecayConfidence(dt)
@@ -181,10 +205,35 @@ func (t *Tracker) Run(ctx context.Context) {
 	}
 }
 
+// pollAudioDOA fetches DOA from go-eva and updates the world model
+func (t *Tracker) pollAudioDOA() {
+	t.mu.RLock()
+	client := t.audioClient
+	t.mu.RUnlock()
+
+	if client == nil {
+		return
+	}
+
+	doa, err := client.GetDOA()
+	if err != nil {
+		// Don't spam logs for connection errors
+		return
+	}
+
+	// Update world model with audio source
+	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
+
+	// Log when speaking detected
+	if doa.Speaking {
+		debug.Log("🎤 DOA: %.2f rad, confidence=%.2f (speaking)\n", doa.Angle, doa.Confidence)
+	}
+}
+
 // updateMovement uses the PD controller to smoothly move toward target
 func (t *Tracker) updateMovement() {
-	// Get target from world model (body-relative angle)
-	targetAngle, hasTarget := t.world.GetTargetWorldAngle()
+	// Get target from world model (priority: Face > Audio > None)
+	targetAngle, source, hasTarget := t.world.GetTarget()
 
 	if !hasTarget {
 		// No target - check if we should scan or interpolate to neutral
@@ -195,10 +244,18 @@ func (t *Tracker) updateMovement() {
 	// We have a target - stop scanning and interpolation
 	if t.isScanning {
 		t.isScanning = false
-		debug.Logln("👁️  Found face, stopping scan")
+		if source == "face" {
+			debug.Logln("👁️  Found face, stopping scan")
+		} else if source == "audio" {
+			debug.Logln("🎤 Heard voice, turning toward sound")
+		}
 	}
 	t.isInterpolating = false
-	t.lastFaceSeenAt = time.Now()
+
+	// Only update lastFaceSeenAt for visual targets
+	if source == "face" {
+		t.lastFaceSeenAt = time.Now()
+	}
 
 	// Update controller target
 	t.controller.SetTarget(targetAngle)

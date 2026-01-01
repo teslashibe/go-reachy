@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
@@ -187,6 +188,16 @@ func main() {
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
 		fmt.Println("✅")
+
+		// Connect audio DOA from go-eva
+		fmt.Print("🎤 Connecting to go-eva audio DOA... ")
+		audioClient := audio.NewClient(robotIP)
+		if err := audioClient.Health(); err != nil {
+			fmt.Printf("⚠️  %v (audio DOA disabled)\n", err)
+		} else {
+			headTracker.SetAudioClient(audioClient)
+			fmt.Println("✅")
+		}
 	}
 
 	// Connect to OpenAI Realtime API
