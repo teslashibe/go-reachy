@@ -21,11 +21,19 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
 
-const (
-	robotIP = "192.168.68.77"
-	sshUser = "pollen"
-	sshPass = "root"
+var (
+	robotIP = getEnv("ROBOT_IP", "192.168.68.77")
+	sshUser = getEnv("SSH_USER", "pollen")
+	sshPass = getEnv("SSH_PASS", "root")
 )
+
+// getEnv returns environment variable or default value
+func getEnv(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
 
 // Eva's personality and instructions
 const evaInstructions = `You are Eva, a friendly and curious robot with expressive antenna ears and a camera. You're warm, engaging, and love meeting people.

@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Documentation
+*.md
+docs/
+
+# Test files
+*_test.go
+testdata/
+coverage.out
+
+# Build artifacts
+bin/
+dist/
+*.exe
+
+# Local config
+.env
+.env.local
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+

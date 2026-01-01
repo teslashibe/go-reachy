@@ -1,0 +1,32 @@
+# docker-compose.yml - Simple local Eva setup
+#
+# Usage:
+#   docker compose build
+#   docker compose up
+#
+# Environment variables (set in shell or .env file):
+#   OPENAI_API_KEY      - Required for conversation
+#   ELEVENLABS_API_KEY  - Optional for custom voice
+#   ELEVENLABS_VOICE_ID - Optional for custom voice
+#   GOOGLE_API_KEY      - Optional for vision features
+#   ROBOT_IP            - Robot IP (default: 192.168.68.77)
+
+version: "3.8"
+
+services:
+  eva:
+    build: .
+    container_name: eva
+    ports:
+      - "8181:8181"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - ROBOT_IP=${ROBOT_IP:-192.168.68.77}
+      - TZ=${TZ:-UTC}
+    # Use host network to access robot on local network
+    network_mode: host
+    restart: unless-stopped
+
