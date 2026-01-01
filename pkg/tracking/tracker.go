@@ -64,7 +64,7 @@ type Tracker struct {
 
 	// Scanning state
 	isScanning     bool
-	scanDirection  float64   // 1 = right, -1 = left
+	scanDirection  float64 // 1 = right, -1 = left
 	scanStartTime  time.Time
 	lastFaceSeenAt time.Time
 
@@ -205,6 +205,12 @@ func (t *Tracker) Run(ctx context.Context) {
 
 	lastDecay := time.Now()
 
+	// Build channel for audio polling (only if WebSocket failed)
+	var audioChan <-chan time.Time
+	if usePolling && audioTicker != nil {
+		audioChan = audioTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -228,16 +234,9 @@ func (t *Tracker) Run(ctx context.Context) {
 			t.world.DecayConfidence(dt)
 			lastDecay = time.Now()
 
-		default:
-			// Handle polling fallback if WebSocket failed
-			if usePolling && audioTicker != nil {
-				select {
-				case <-audioTicker.C:
-					go t.pollAudioDOA()
-				default:
-				}
-			}
-			time.Sleep(1 * time.Millisecond) // Prevent busy loop
+		case <-audioChan:
+			// Polling fallback (only used if WebSocket failed)
+			go t.pollAudioDOA()
 		}
 	}
 }
