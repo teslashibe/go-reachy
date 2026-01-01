@@ -52,3 +52,4 @@ EXPOSE 8181
 # Default command
 CMD ["/usr/local/bin/eva"]
 
+

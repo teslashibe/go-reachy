@@ -243,3 +243,4 @@ func (s *mockStream) Close() error {
 // Verify Mock implements Provider at compile time.
 var _ Provider = (*Mock)(nil)
 
+
