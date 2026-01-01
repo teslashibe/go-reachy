@@ -44,5 +44,6 @@ __debug_bin
 .env.local
 
 *.exe
-eva
+/eva
 travis
+/test-elevenlabs

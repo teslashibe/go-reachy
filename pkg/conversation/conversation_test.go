@@ -284,6 +284,52 @@ func TestFunctionalOptions(t *testing.T) {
 			t.Errorf("expected 2 tools, got %d", len(cfg.Tools))
 		}
 	})
+
+	// New ElevenLabs programmatic options
+	t.Run("with voice ID", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithVoiceID("voice-123")(cfg)
+
+		if cfg.VoiceID != "voice-123" {
+			t.Error("voice ID not set")
+		}
+	})
+
+	t.Run("with LLM", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithLLM("gemini-2.0-flash")(cfg)
+
+		if cfg.LLM != "gemini-2.0-flash" {
+			t.Error("LLM not set")
+		}
+	})
+
+	t.Run("with agent name", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithAgentName("eva-test")(cfg)
+
+		if cfg.AgentName != "eva-test" {
+			t.Error("agent name not set")
+		}
+	})
+
+	t.Run("with first message", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithFirstMessage("Hello, I'm Eva!")(cfg)
+
+		if cfg.FirstMessage != "Hello, I'm Eva!" {
+			t.Error("first message not set")
+		}
+	})
+
+	t.Run("with auto create agent", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithAutoCreateAgent(true)(cfg)
+
+		if !cfg.AutoCreateAgent {
+			t.Error("auto create agent not set")
+		}
+	})
 }
 
 func TestDefaultConfig(t *testing.T) {
@@ -483,4 +529,193 @@ func TestConcurrentMockAccess(t *testing.T) {
 	}
 }
 
+func TestNewElevenLabsValidation(t *testing.T) {
+	t.Run("missing API key", func(t *testing.T) {
+		_, err := NewElevenLabs()
+		if !errors.Is(err, ErrMissingAPIKey) {
+			t.Errorf("expected ErrMissingAPIKey, got %v", err)
+		}
+	})
 
+	t.Run("dashboard mode - missing agent ID", func(t *testing.T) {
+		_, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			// No AgentID, no AutoCreateAgent
+		)
+		if !errors.Is(err, ErrMissingAgentID) {
+			t.Errorf("expected ErrMissingAgentID, got %v", err)
+		}
+	})
+
+	t.Run("dashboard mode - valid", func(t *testing.T) {
+		provider, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithAgentID("agent-123"),
+		)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if provider == nil {
+			t.Error("provider should not be nil")
+		}
+	})
+
+	t.Run("programmatic mode - missing voice ID", func(t *testing.T) {
+		_, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithAutoCreateAgent(true),
+			// No VoiceID
+		)
+		if !errors.Is(err, ErrMissingVoiceID) {
+			t.Errorf("expected ErrMissingVoiceID, got %v", err)
+		}
+	})
+
+	t.Run("programmatic mode - valid", func(t *testing.T) {
+		provider, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithVoiceID("voice-123"),
+			WithLLM("gemini-2.0-flash"),
+			WithSystemPrompt("You are Eva"),
+			WithAutoCreateAgent(true),
+		)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if provider == nil {
+			t.Error("provider should not be nil")
+		}
+	})
+
+	t.Run("programmatic mode - default LLM", func(t *testing.T) {
+		provider, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithVoiceID("voice-123"),
+			WithAutoCreateAgent(true),
+		)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// Should default to gemini-2.0-flash
+		if provider.config.LLM != "gemini-2.0-flash" {
+			t.Errorf("expected default LLM gemini-2.0-flash, got %s", provider.config.LLM)
+		}
+	})
+
+	t.Run("programmatic mode - default agent name", func(t *testing.T) {
+		provider, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithVoiceID("voice-123"),
+			WithAutoCreateAgent(true),
+		)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// Should default to eva-agent
+		if provider.config.AgentName != "eva-agent" {
+			t.Errorf("expected default agent name eva-agent, got %s", provider.config.AgentName)
+		}
+	})
+}
+
+func TestBuildAgentConfig(t *testing.T) {
+	t.Run("basic config", func(t *testing.T) {
+		cfg := &Config{
+			AgentName:    "test-agent",
+			SystemPrompt: "You are a test agent",
+			VoiceID:      "voice-123",
+			LLM:          "gpt-4o",
+			FirstMessage: "Hello!",
+		}
+
+		agentCfg := buildAgentConfig(cfg, nil)
+
+		if agentCfg.Name != "test-agent" {
+			t.Errorf("expected name test-agent, got %s", agentCfg.Name)
+		}
+
+		if agentCfg.ConversationConfig.Agent.Prompt.Prompt != "You are a test agent" {
+			t.Error("system prompt not set correctly")
+		}
+
+		if agentCfg.ConversationConfig.TTS.VoiceID != "voice-123" {
+			t.Error("voice ID not set correctly")
+		}
+
+		if agentCfg.ConversationConfig.Agent.LLM.Model != "gpt-4o" {
+			t.Error("LLM not set correctly")
+		}
+
+		if agentCfg.ConversationConfig.Agent.FirstMessage != "Hello!" {
+			t.Error("first message not set correctly")
+		}
+	})
+
+	t.Run("with tools", func(t *testing.T) {
+		cfg := &Config{
+			AgentName:    "test-agent",
+			SystemPrompt: "Test",
+			VoiceID:      "voice-123",
+			LLM:          "gemini-2.0-flash",
+		}
+
+		tools := []Tool{
+			{
+				Name:        "get_time",
+				Description: "Gets the current time",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			{
+				Name:        "describe_scene",
+				Description: "Describes what Eva sees",
+				Parameters:  map[string]any{"type": "object"},
+			},
+		}
+
+		agentCfg := buildAgentConfig(cfg, tools)
+
+		if agentCfg.PlatformSettings == nil {
+			t.Fatal("platform settings should not be nil")
+		}
+
+		if len(agentCfg.PlatformSettings.Tools) != 2 {
+			t.Errorf("expected 2 tools, got %d", len(agentCfg.PlatformSettings.Tools))
+		}
+
+		if agentCfg.PlatformSettings.Tools[0].Name != "get_time" {
+			t.Error("first tool name mismatch")
+		}
+
+		if agentCfg.PlatformSettings.Tools[0].Type != "client" {
+			t.Error("tool type should be 'client'")
+		}
+	})
+
+	t.Run("turn detection mapping", func(t *testing.T) {
+		cfg := &Config{
+			AgentName:    "test-agent",
+			SystemPrompt: "Test",
+			VoiceID:      "voice-123",
+			LLM:          "gemini-2.0-flash",
+			TurnDetection: &TurnDetection{
+				Type:              "server_vad",
+				SilenceDurationMs: 500,
+			},
+		}
+
+		agentCfg := buildAgentConfig(cfg, nil)
+
+		if agentCfg.ConversationConfig.Turn == nil {
+			t.Fatal("turn config should not be nil")
+		}
+
+		// server_vad should be mapped to "turn"
+		if agentCfg.ConversationConfig.Turn.Mode != "turn" {
+			t.Errorf("expected mode 'turn', got %s", agentCfg.ConversationConfig.Turn.Mode)
+		}
+
+		if agentCfg.ConversationConfig.Turn.SilenceDurationMs != 500 {
+			t.Errorf("expected silence duration 500, got %d", agentCfg.ConversationConfig.Turn.SilenceDurationMs)
+		}
+	})
+}

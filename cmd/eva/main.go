@@ -562,29 +562,54 @@ func initInferenceProvider() (inference.Provider, error) {
 
 // initConversationProvider creates the conversation provider based on environment
 func initConversationProvider() (conversation.Provider, error) {
-	providerType := strings.ToLower(getEnv("CONVERSATION_PROVIDER", "openai"))
+	providerType := strings.ToLower(getEnv("CONVERSATION_PROVIDER", "elevenlabs"))
 
 	switch providerType {
 	case "elevenlabs", "11labs":
 		apiKey := os.Getenv("ELEVENLABS_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("ELEVENLABS_API_KEY required for ElevenLabs provider")
+		}
+
 		agentID := os.Getenv("ELEVENLABS_AGENT_ID")
+		voiceID := os.Getenv("ELEVENLABS_VOICE_ID")
+		llm := getEnv("ELEVENLABS_LLM", "gemini-2.0-flash")
 
-		if apiKey == "" || agentID == "" {
-			return nil, fmt.Errorf("ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID required for ElevenLabs provider")
+		// Mode 1: Programmatic agent (recommended) - VoiceID set, no AgentID
+		if voiceID != "" && agentID == "" {
+			provider, err := conversation.NewElevenLabs(
+				conversation.WithAPIKey(apiKey),
+				conversation.WithVoiceID(voiceID),
+				conversation.WithLLM(llm),
+				conversation.WithSystemPrompt(evaInstructions),
+				conversation.WithAgentName("eva-agent"),
+				conversation.WithAutoCreateAgent(true),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create ElevenLabs provider: %w", err)
+			}
+
+			fmt.Printf("🎤 Conversation: ElevenLabs (programmatic, %s)\n", llm)
+			return provider, nil
 		}
 
-		provider, err := conversation.NewElevenLabs(
-			conversation.WithAPIKey(apiKey),
-			conversation.WithAgentID(agentID),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ElevenLabs provider: %w", err)
+		// Mode 2: Dashboard agent (legacy) - AgentID set
+		if agentID != "" {
+			provider, err := conversation.NewElevenLabs(
+				conversation.WithAPIKey(apiKey),
+				conversation.WithAgentID(agentID),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create ElevenLabs provider: %w", err)
+			}
+
+			fmt.Println("🎤 Conversation: ElevenLabs Agents (dashboard)")
+			return provider, nil
 		}
 
-		fmt.Println("🎤 Conversation: ElevenLabs Agents (custom voice)")
-		return provider, nil
+		return nil, fmt.Errorf("ELEVENLABS_VOICE_ID (programmatic) or ELEVENLABS_AGENT_ID (dashboard) required")
 
-	case "openai", "":
+	case "openai":
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENAI_API_KEY required for OpenAI provider")
@@ -656,8 +681,26 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 		}
 	}
 
+	// Latency tracking for response time measurement
+	var (
+		userSpeechEndTime   time.Time
+		firstAudioTime      time.Time
+		firstTranscriptTime time.Time
+		audioChunkCount     int
+		responseStarted     bool
+	)
+
 	// Set up conversation callbacks
 	convProvider.OnAudio(func(audio []byte) {
+		// Track first audio response latency
+		if !responseStarted && !userSpeechEndTime.IsZero() {
+			firstAudioTime = time.Now()
+			latency := firstAudioTime.Sub(userSpeechEndTime)
+			debug.Log("⚡ First audio response latency: %v\n", latency)
+			responseStarted = true
+		}
+		audioChunkCount++
+
 		// Stream audio to robot
 		if err := audioPlayer.AppendAudioBytes(audio); err != nil {
 			debug.Log("⚠️  Audio append error: %v\n", err)
@@ -665,6 +708,18 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 	})
 
 	convProvider.OnAudioDone(func() {
+		// Log latency summary
+		if !userSpeechEndTime.IsZero() {
+			totalTime := time.Since(userSpeechEndTime)
+			debug.Log("📊 Response complete: %d audio chunks, total time: %v\n", audioChunkCount, totalTime)
+			if !firstAudioTime.IsZero() {
+				debug.Log("📊 Time to first audio: %v\n", firstAudioTime.Sub(userSpeechEndTime))
+			}
+			if !firstTranscriptTime.IsZero() {
+				debug.Log("📊 Time to first transcript: %v\n", firstTranscriptTime.Sub(userSpeechEndTime))
+			}
+		}
+
 		// End the Eva response line
 		if evaResponseStarted {
 			fmt.Println() // newline after streaming text
@@ -697,11 +752,21 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 			webServer.AddLog("speech", "Audio done")
 		}
 		evaCurrentResponse = ""
+
+		// Reset latency tracking for next turn
+		userSpeechEndTime = time.Time{}
+		firstAudioTime = time.Time{}
+		firstTranscriptTime = time.Time{}
 	})
 
 	convProvider.OnTranscript(func(role, text string, isFinal bool) {
 		if role == "user" && isFinal && text != "" {
-			// User's final transcript
+			// User's final transcript - start latency timer
+			userSpeechEndTime = time.Now()
+			responseStarted = false
+			audioChunkCount = 0
+			debug.Log("⏱️  User speech ended, waiting for response...\n")
+
 			fmt.Printf("👤 User: %s\n", text)
 			evaResponseStarted = false
 			// Update web dashboard
@@ -714,6 +779,13 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 				webServer.AddConversation("user", text)
 			}
 		} else if role == "agent" && text != "" {
+			// Track first transcript response latency
+			if !evaResponseStarted && !userSpeechEndTime.IsZero() {
+				firstTranscriptTime = time.Now()
+				latency := firstTranscriptTime.Sub(userSpeechEndTime)
+				debug.Log("⚡ First transcript latency: %v\n", latency)
+			}
+
 			// Eva's speech - stream continuously on one line
 			if !evaResponseStarted {
 				fmt.Print("🤖 Eva: ")
@@ -903,15 +975,20 @@ func streamAudioToConversation(ctx context.Context) {
 		targetRate = 24000 // Default to 24kHz
 	}
 
-	// Calculate chunk size based on sample rate (100ms)
-	chunkSize := targetRate / 10 // 100ms of samples
+	// Calculate chunk size based on sample rate (50ms for lower latency)
+	chunkSize := targetRate / 20 // 50ms of samples (was 100ms)
 
 	// Counters for debug logging
 	var loopCount, emptyCount, sentCount int
 	lastLogTime := time.Now()
 
-	debug.Logln("🎵 Audio streaming goroutine started")
-	debug.Log("🎵 Target sample rate: %d Hz, chunk size: %d\n", targetRate, chunkSize)
+	// Latency tracking
+	var lastSendTime time.Time
+	var totalLatency time.Duration
+	var latencyCount int
+
+	debug.Logln("🎵 Audio streaming goroutine started (low-latency mode)")
+	debug.Log("🎵 Target sample rate: %d Hz, chunk size: %d (50ms)\n", targetRate, chunkSize)
 
 	for {
 		select {
@@ -942,9 +1019,9 @@ func streamAudioToConversation(ctx context.Context) {
 			continue
 		}
 
-		// Record a small chunk
+		// Record a small chunk (50ms for lower latency)
 		videoClient.StartRecording()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		pcmData := videoClient.StopRecording()
 
 		if len(pcmData) == 0 {
@@ -978,15 +1055,30 @@ func streamAudioToConversation(ctx context.Context) {
 			} else if !convProvider.IsConnected() {
 				debug.Logln("🎵 convProvider not connected!")
 			} else {
+				sendStart := time.Now()
 				if err := convProvider.SendAudio(pcm16Bytes); err != nil {
 					debug.Log("🎵 SendAudio error: %v\n", err)
 				} else {
+					sendLatency := time.Since(sendStart)
 					sentCount++
-					// Log first send and then every 50 sends
+					totalLatency += sendLatency
+					latencyCount++
+
+					// Track time between sends
+					if !lastSendTime.IsZero() {
+						gap := time.Since(lastSendTime)
+						if gap > 100*time.Millisecond && sentCount > 10 {
+							debug.Log("⚠️  Audio gap detected: %v (should be ~50ms)\n", gap)
+						}
+					}
+					lastSendTime = time.Now()
+
+					// Log first send and then every 100 sends with latency stats
 					if sentCount == 1 {
-						debug.Log("🎵 First audio sent! (%d bytes)\n", len(pcm16Bytes))
-					} else if sentCount%50 == 0 {
-						debug.Log("🎵 Audio stats: sent=%d chunks\n", sentCount)
+						debug.Log("🎵 First audio sent! (%d bytes, latency: %v)\n", len(pcm16Bytes), sendLatency)
+					} else if sentCount%100 == 0 {
+						avgLatency := totalLatency / time.Duration(latencyCount)
+						debug.Log("🎵 Audio stats: sent=%d chunks, avg send latency: %v\n", sentCount, avgLatency)
 					}
 				}
 			}

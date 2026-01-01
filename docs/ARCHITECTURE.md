@@ -43,15 +43,19 @@ This document describes the audio, vision, and inference pipeline architecture f
 │  │   [WebRTC 48kHz] → Resample → [pkg/conversation Provider]                  │    │
 │  │                        ↓                                                    │    │
 │  │   ┌─────────────────────────────────────────────────────────────────────┐  │    │
-│  │   │              conversation.Provider (env: CONVERSATION_PROVIDER)      │  │    │
+│  │   │              conversation.Provider (UNIFIED INTERFACE)              │  │    │
 │  │   │                                                                      │  │    │
-│  │   │  ┌────────────────────┐     ┌─────────────────────┐                 │  │    │
-│  │   │  │ conversation.      │     │ conversation.       │                 │  │    │
-│  │   │  │ ElevenLabs         │  OR │ OpenAI              │                 │  │    │
-│  │   │  │ (custom voice)     │     │ (shimmer/alloy)     │                 │  │    │
-│  │   │  │ 16kHz PCM          │     │ 24kHz PCM           │                 │  │    │
-│  │   │  │ STT+LLM+TTS        │     │ Whisper+GPT-4o+TTS  │                 │  │    │
-│  │   │  └────────────────────┘     └─────────────────────┘                 │  │    │
+│  │   │  ┌────────────────────────────┐   ┌─────────────────────────────┐   │  │    │
+│  │   │  │ conversation.ElevenLabs    │   │ conversation.OpenAI         │   │  │    │
+│  │   │  │ ⭐ PRIMARY (RECOMMENDED)   │OR │ 🔄 FALLBACK                 │   │  │    │
+│  │   │  │                            │   │                             │   │  │    │
+│  │   │  │ • Custom/cloned voice      │   │ • Fixed voices (shimmer)    │   │  │    │
+│  │   │  │ • LLM: Gemini/Claude/GPT   │   │ • LLM: GPT-4o only          │   │  │    │
+│  │   │  │ • 16kHz PCM                │   │ • 24kHz PCM                 │   │  │    │
+│  │   │  │ • Programmatic config ✨    │   │ • Programmatic config       │   │  │    │
+│  │   │  └────────────────────────────┘   └─────────────────────────────┘   │  │    │
+│  │   │                                                                      │  │    │
+│  │   │  Both implement identical Provider interface - DROP-IN REPLACEMENT   │  │    │
 │  │   └─────────────────────────────────────────────────────────────────────┘  │    │
 │  │                                             ↓                              │    │
 │  │   Returns: Audio + Transcripts + Tool Calls                                │    │
@@ -122,18 +126,95 @@ This document describes the audio, vision, and inference pipeline architecture f
 
 | Component | Primary Provider | Fallback | Package |
 |-----------|-----------------|----------|---------|
-| **Live Conversation** | ElevenLabs Agents | OpenAI Realtime | `pkg/conversation/Provider` |
+| **Live Conversation** | ElevenLabs Agents ⭐ | OpenAI Realtime | `pkg/conversation/Provider` |
 | **Timer Announcements** | ElevenLabs | OpenAI TTS | `pkg/tts/Chain` |
 | **Vision (describe_scene)** | Gemini Flash | OpenAI GPT-4o | `pkg/inference/Chain` |
 | **Web Search** | Gemini + Google Search | None | `inference.GeminiSearch()` |
 | **Audio DOA** | go-eva daemon | None | `pkg/audio/Client` |
 
+## Conversation Provider: Drop-In Replacement
+
+Both ElevenLabs and OpenAI implement the **identical `conversation.Provider` interface**, making them fully interchangeable:
+
+```go
+type Provider interface {
+    Connect(ctx context.Context) error
+    Close() error
+    IsConnected() bool
+    
+    SendAudio(audio []byte) error
+    
+    OnAudio(fn func(audio []byte))
+    OnAudioDone(fn func())
+    OnTranscript(fn func(role, text string, isFinal bool))
+    OnToolCall(fn func(id, name string, args map[string]any))
+    OnError(fn func(err error))
+    OnInterruption(fn func())
+    
+    ConfigureSession(opts SessionOptions) error
+    RegisterTool(tool Tool)
+    CancelResponse() error
+    SubmitToolResult(callID, result string) error
+    
+    Capabilities() Capabilities
+}
+```
+
+### Provider Comparison
+
+| Feature | ElevenLabs ⭐ | OpenAI |
+|---------|--------------|--------|
+| **Voice** | Custom/cloned | Fixed (shimmer, alloy, etc.) |
+| **LLM Choice** | Gemini 2.5 Flash, Claude 3.5, GPT-4o | GPT-4o only |
+| **Sample Rate** | 16kHz | 24kHz |
+| **Latency** | ~200-400ms | ~300-500ms |
+| **Programmatic Config** | ✅ Full (after refactor) | ✅ Full |
+| **Tool Calling** | ✅ | ✅ |
+| **Interruption** | ✅ | ✅ |
+| **Custom Personality** | ✅ Code-defined | ✅ Code-defined |
+
+### Why ElevenLabs is Preferred
+
+1. **LLM Flexibility**: Use Gemini 2.5 Flash (faster, cheaper) or Claude 3.5 Sonnet (better reasoning)
+2. **Voice Quality**: Custom cloned voices for unique robot personality
+3. **Latency**: Slightly lower end-to-end latency
+4. **Programmatic**: Full configuration via API (see [TICKET-ELEVENLABS-PROGRAMMATIC.md](./TICKET-ELEVENLABS-PROGRAMMATIC.md))
+
+## Programmatic Configuration ✨ NEW
+
+With the ElevenLabs refactor, **all configuration lives in Go code** - no dashboard required:
+
+### Before (Dashboard Required)
+```go
+// ❌ Required creating agent in ElevenLabs dashboard
+provider, _ := conversation.NewElevenLabs(
+    conversation.WithAPIKey(os.Getenv("ELEVENLABS_API_KEY")),
+    conversation.WithAgentID(os.Getenv("ELEVENLABS_AGENT_ID")), // From dashboard!
+)
+// System prompt, tools, LLM configured in dashboard - not in code
+```
+
+### After (Fully Programmatic)
+```go
+// ✅ Everything configured in code
+provider, _ := conversation.NewElevenLabs(
+    conversation.WithAPIKey(os.Getenv("ELEVENLABS_API_KEY")),
+    conversation.WithVoiceID(os.Getenv("ELEVENLABS_VOICE_ID")),
+    conversation.WithLLM("gemini-2.0-flash"),  // Or "claude-3-5-sonnet", "gpt-4o"
+    conversation.WithSystemPrompt(evaInstructions),
+    conversation.WithTools(evaTools...),
+    conversation.WithAutoCreateAgent(true),
+)
+```
+
+See [TICKET-ELEVENLABS-PROGRAMMATIC.md](./TICKET-ELEVENLABS-PROGRAMMATIC.md) for implementation details.
+
 ## Package Responsibilities
 
-### `pkg/conversation` - Real-Time Voice Conversation Providers ✨ NEW
+### `pkg/conversation` - Real-Time Voice Conversation Providers
 - **Provider interface**: `Connect()`, `SendAudio()`, `OnAudio()`, `OnToolCall()`, etc.
-- **ElevenLabs**: ElevenLabs Agents Platform with custom cloned voice
-- **OpenAI**: OpenAI Realtime API (fallback)
+- **ElevenLabs**: ElevenLabs Agents Platform with custom cloned voice + LLM choice ⭐
+- **OpenAI**: OpenAI Realtime API (fallback, GPT-4o only)
 - **Mock**: For testing
 
 ### `pkg/realtime` - Audio Streaming & Tools
@@ -212,7 +293,7 @@ Flash      (fallback)
   ↓             ↓
   └──────┬──────┘
          ↓
-  Description text → Tool result → Realtime API
+  Description text → Tool result → Conversation Provider
 ```
 
 ### 3. Timer Announcement Flow
@@ -240,12 +321,12 @@ Timer expires → SpeakText("Timer done!")
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | **Conversation** ||||
-| `CONVERSATION_PROVIDER` | No | `openai` | Provider: `openai` or `elevenlabs` |
-| `CONVERSATION_VOICE` | No | `shimmer` | Voice for OpenAI conversation |
-| `OPENAI_API_KEY` | Yes | - | OpenAI Realtime API + fallbacks |
-| `ELEVENLABS_API_KEY` | No | - | ElevenLabs TTS + Conversation |
-| `ELEVENLABS_AGENT_ID` | No | - | ElevenLabs Agent ID (Conversation) |
-| `ELEVENLABS_VOICE_ID` | No | - | ElevenLabs Voice ID (TTS only) |
+| `CONVERSATION_PROVIDER` | No | `elevenlabs` | Provider: `elevenlabs` (recommended) or `openai` |
+| `ELEVENLABS_API_KEY` | Yes* | - | ElevenLabs API key |
+| `ELEVENLABS_VOICE_ID` | Yes* | - | Voice ID for ElevenLabs (from dashboard or API) |
+| `ELEVENLABS_LLM` | No | `gemini-2.0-flash` | LLM: `gemini-2.0-flash`, `claude-3-5-sonnet`, `gpt-4o` |
+| `OPENAI_API_KEY` | Yes | - | OpenAI API key (fallback + vision) |
+| `CONVERSATION_VOICE` | No | `shimmer` | Voice for OpenAI conversation (if used) |
 | **Vision** ||||
 | `GOOGLE_API_KEY` | No | - | Gemini vision + GeminiSearch |
 | **Robot** ||||
@@ -253,7 +334,20 @@ Timer expires → SpeakText("Timer done!")
 | `SSH_USER` | No | `pollen` | Robot SSH user |
 | `SSH_PASS` | No | `root` | Robot SSH password |
 
+*Required if using ElevenLabs as conversation provider
+
+### Deprecated Variables
+
+| Variable | Status | Replacement |
+|----------|--------|-------------|
+| `ELEVENLABS_AGENT_ID` | Deprecated | Auto-created via API |
+
 ## Fallback Chains
+
+### Conversation Chain
+```
+ElevenLabs Agents (if configured) → OpenAI Realtime
+```
 
 ### TTS Chain (for announcements)
 ```
@@ -264,54 +358,6 @@ ElevenLabs (if configured) → OpenAI TTS
 ```
 Gemini Flash (if configured) → OpenAI GPT-4o
 ```
-
-## Conversation Provider Abstraction ✅ IMPLEMENTED
-
-The `pkg/conversation` package abstracts the conversation loop:
-
-```go
-type Provider interface {
-    Connect(ctx context.Context) error
-    Close() error
-    IsConnected() bool
-    
-    SendAudio(audio []byte) error
-    
-    OnAudio(fn func(audio []byte))
-    OnAudioDone(fn func())
-    OnTranscript(fn func(role, text string, isFinal bool))
-    OnToolCall(fn func(id, name string, args map[string]any))
-    OnError(fn func(err error))
-    OnInterruption(fn func())
-    
-    ConfigureSession(opts SessionOptions) error
-    RegisterTool(tool Tool)
-    CancelResponse() error
-    SubmitToolResult(callID, result string) error
-    
-    Capabilities() Capabilities
-}
-```
-
-### Available Providers
-
-| Provider | File | Custom Voice | Sample Rate |
-|----------|------|--------------|-------------|
-| ElevenLabs Agents | `elevenlabs.go` | ✅ Custom cloned | 16kHz |
-| OpenAI Realtime | `openai.go` | ❌ Fixed voices | 24kHz |
-| Mock | `mock.go` | ✅ For testing | 16kHz |
-
-### Environment Variables for Conversation
-
-```bash
-CONVERSATION_PROVIDER=elevenlabs  # or "openai"
-ELEVENLABS_API_KEY=...
-ELEVENLABS_AGENT_ID=...           # From ElevenLabs dashboard
-OPENAI_API_KEY=...                # Fallback
-```
-
-### Future Providers
-- `local.go` - Local STT + LLM + TTS pipeline (Whisper + Llama + Piper)
 
 ## Main.go Integration
 
@@ -332,7 +378,7 @@ main()
   │
   ├── initConversationProvider()
   │     └── Based on CONVERSATION_PROVIDER env:
-  │           ├── "elevenlabs" → conversation.NewElevenLabs()
+  │           ├── "elevenlabs" → conversation.NewElevenLabs() ⭐ DEFAULT
   │           └── "openai"     → conversation.NewOpenAI()
   │
   ├── connectConversation()
@@ -394,8 +440,13 @@ convProvider.OnInterruption(func() {
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                   │
 │  CONVERSATION (full voice loop)                                   │
-│  ├── pkg/conversation/ElevenLabs (custom voice) ← PREFERRED      │
-│  └── pkg/conversation/OpenAI (fixed voices)     ← FALLBACK       │
+│  ├── pkg/conversation/ElevenLabs ⭐ PREFERRED                     │
+│  │     • Custom voice                                             │
+│  │     • LLM choice (Gemini/Claude/GPT-4o)                        │
+│  │     • Programmatic config                                      │
+│  └── pkg/conversation/OpenAI     🔄 FALLBACK                      │
+│        • Fixed voices                                             │
+│        • GPT-4o only                                              │
 │                                                                   │
 │  TTS (timer announcements)                                        │
 │  ├── pkg/tts/ElevenLabs (custom voice)          ← PREFERRED      │
@@ -410,3 +461,10 @@ convProvider.OnInterruption(func() {
 │                                                                   │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+## Related Documents
+
+- [TICKET-ELEVENLABS-PROGRAMMATIC.md](./TICKET-ELEVENLABS-PROGRAMMATIC.md) - Refactor ticket for programmatic config
+- [EVA-2.0.md](./EVA-2.0.md) - Eva 2.0 overview and tool calling
+- [SETUP.md](./SETUP.md) - Environment setup
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Common issues

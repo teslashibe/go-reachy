@@ -11,13 +11,29 @@ type Config struct {
 	APIKey string
 
 	// AgentID is the agent/assistant identifier (ElevenLabs).
+	// If empty and AutoCreateAgent is true, an agent will be created.
 	AgentID string
 
 	// Model is the LLM model to use.
 	Model string
 
-	// Voice is the voice ID for TTS.
+	// Voice is the voice ID for TTS (OpenAI).
 	Voice string
+
+	// VoiceID is the ElevenLabs voice ID for programmatic agent creation.
+	VoiceID string
+
+	// LLM is the language model to use (ElevenLabs: "gemini-2.0-flash", "claude-3-5-sonnet", "gpt-4o").
+	LLM string
+
+	// AgentName is the name for the agent (for dashboard reference).
+	AgentName string
+
+	// FirstMessage is the first message the agent will say (empty = wait for user).
+	FirstMessage string
+
+	// AutoCreateAgent enables automatic agent creation if AgentID is not provided.
+	AutoCreateAgent bool
 
 	// BaseURL overrides the default API endpoint.
 	BaseURL string
@@ -219,6 +235,44 @@ func WithMetrics(enabled bool) Option {
 	}
 }
 
+// WithVoiceID sets the ElevenLabs voice ID for programmatic agent creation.
+func WithVoiceID(id string) Option {
+	return func(c *Config) {
+		c.VoiceID = id
+	}
+}
+
+// WithLLM sets the language model for ElevenLabs agents.
+// Supported values: "gemini-2.0-flash", "claude-3-5-sonnet", "gpt-4o"
+func WithLLM(model string) Option {
+	return func(c *Config) {
+		c.LLM = model
+	}
+}
+
+// WithAgentName sets the agent name for dashboard reference.
+func WithAgentName(name string) Option {
+	return func(c *Config) {
+		c.AgentName = name
+	}
+}
+
+// WithFirstMessage sets the first message the agent will say.
+// If empty, the agent waits for the user to speak first.
+func WithFirstMessage(msg string) Option {
+	return func(c *Config) {
+		c.FirstMessage = msg
+	}
+}
+
+// WithAutoCreateAgent enables automatic agent creation if AgentID is not provided.
+// Requires VoiceID to be set.
+func WithAutoCreateAgent(enabled bool) Option {
+	return func(c *Config) {
+		c.AutoCreateAgent = enabled
+	}
+}
+
 // Common voice constants for convenience.
 const (
 	// OpenAI voices
@@ -233,5 +287,6 @@ const (
 	ModelFlashV2_5 = "eleven_flash_v2_5"
 	ModelTurboV2_5 = "eleven_turbo_v2_5"
 )
+
 
 

@@ -51,6 +51,12 @@ var (
 
 	// ErrInvalidAudio indicates the audio format is not supported.
 	ErrInvalidAudio = errors.New("conversation: invalid audio format")
+
+	// ErrAgentNotFound indicates the agent does not exist.
+	ErrAgentNotFound = errors.New("conversation: agent not found")
+
+	// ErrMissingVoiceID indicates the voice ID was not provided for programmatic agent creation.
+	ErrMissingVoiceID = errors.New("conversation: voice ID is required for programmatic agent creation")
 )
 
 // APIError represents an error from the conversation API.
@@ -185,5 +191,6 @@ func IsQuotaExceeded(err error) bool {
 	}
 	return false
 }
+
 
 

@@ -21,8 +21,9 @@ const (
 
 // ElevenLabs implements Provider for the ElevenLabs Agents Platform.
 type ElevenLabs struct {
-	config *Config
-	logger *slog.Logger
+	config    *Config
+	logger    *slog.Logger
+	apiClient *apiClient
 
 	mu        sync.RWMutex
 	conn      *websocket.Conn
@@ -30,6 +31,9 @@ type ElevenLabs struct {
 	tools     []Tool
 	metrics   Metrics
 	cancelCtx context.CancelFunc
+
+	// agentID is the resolved agent ID (either from config or auto-created)
+	agentID string
 
 	// Callbacks
 	onAudio        func(audio []byte)
@@ -45,6 +49,25 @@ type ElevenLabs struct {
 }
 
 // NewElevenLabs creates a new ElevenLabs conversation provider.
+//
+// There are two modes of operation:
+//
+// 1. Dashboard-configured agent (legacy):
+//
+//	provider, _ := NewElevenLabs(
+//	    WithAPIKey(apiKey),
+//	    WithAgentID(agentID),  // From ElevenLabs dashboard
+//	)
+//
+// 2. Programmatic agent (recommended):
+//
+//	provider, _ := NewElevenLabs(
+//	    WithAPIKey(apiKey),
+//	    WithVoiceID(voiceID),
+//	    WithLLM("gemini-2.0-flash"),
+//	    WithSystemPrompt(instructions),
+//	    WithAutoCreateAgent(true),
+//	)
 func NewElevenLabs(opts ...Option) (*ElevenLabs, error) {
 	cfg := DefaultConfig()
 	cfg.Apply(opts...)
@@ -52,21 +75,41 @@ func NewElevenLabs(opts ...Option) (*ElevenLabs, error) {
 	if cfg.APIKey == "" {
 		return nil, ErrMissingAPIKey
 	}
-	if cfg.AgentID == "" {
+
+	// Validate configuration based on mode
+	if cfg.AgentID == "" && !cfg.AutoCreateAgent {
 		return nil, ErrMissingAgentID
 	}
+
+	if cfg.AutoCreateAgent && cfg.VoiceID == "" {
+		return nil, ErrMissingVoiceID
+	}
+
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 
+	// Set default agent name if not provided
+	if cfg.AgentName == "" {
+		cfg.AgentName = "eva-agent"
+	}
+
+	// Set default LLM if not provided
+	if cfg.LLM == "" {
+		cfg.LLM = "gemini-2.0-flash"
+	}
+
 	return &ElevenLabs{
-		config: cfg,
-		logger: cfg.Logger.With("component", "conversation.elevenlabs"),
-		state:  StateDisconnected,
+		config:    cfg,
+		logger:    cfg.Logger.With("component", "conversation.elevenlabs"),
+		apiClient: newAPIClient(cfg.APIKey),
+		agentID:   cfg.AgentID, // May be empty if auto-create
+		state:     StateDisconnected,
 	}, nil
 }
 
 // Connect establishes the WebSocket connection to ElevenLabs.
+// If AutoCreateAgent is enabled and no AgentID is set, an agent will be created first.
 func (e *ElevenLabs) Connect(ctx context.Context) error {
 	e.mu.Lock()
 	if e.state == StateConnected {
@@ -76,6 +119,36 @@ func (e *ElevenLabs) Connect(ctx context.Context) error {
 	e.state = StateConnecting
 	e.mu.Unlock()
 
+	// Auto-create agent if needed
+	if e.agentID == "" && e.config.AutoCreateAgent {
+		e.logger.Info("creating agent programmatically",
+			"voice_id", e.config.VoiceID,
+			"llm", e.config.LLM,
+		)
+
+		agentCfg := buildAgentConfig(e.config, e.tools)
+		resp, err := e.apiClient.CreateAgent(ctx, agentCfg)
+		if err != nil {
+			e.mu.Lock()
+			e.state = StateDisconnected
+			e.mu.Unlock()
+			return fmt.Errorf("conversation.elevenlabs: create agent failed: %w", err)
+		}
+
+		e.agentID = resp.AgentID
+		e.logger.Info("agent created successfully",
+			"agent_id", e.agentID,
+		)
+	}
+
+	// Ensure we have an agent ID at this point
+	if e.agentID == "" {
+		e.mu.Lock()
+		e.state = StateDisconnected
+		e.mu.Unlock()
+		return ErrMissingAgentID
+	}
+
 	// Build WebSocket URL
 	wsURL, err := url.Parse(elevenLabsBaseURL)
 	if err != nil {
@@ -83,7 +156,7 @@ func (e *ElevenLabs) Connect(ctx context.Context) error {
 	}
 
 	q := wsURL.Query()
-	q.Set("agent_id", e.config.AgentID)
+	q.Set("agent_id", e.agentID)
 	wsURL.RawQuery = q.Encode()
 
 	// Set up headers
@@ -96,7 +169,7 @@ func (e *ElevenLabs) Connect(ctx context.Context) error {
 	}
 
 	e.logger.Info("connecting to ElevenLabs Agents Platform",
-		"agent_id", e.config.AgentID,
+		"agent_id", e.agentID,
 	)
 
 	conn, resp, err := dialer.DialContext(ctx, wsURL.String(), headers)
@@ -130,6 +203,11 @@ func (e *ElevenLabs) Connect(ctx context.Context) error {
 	e.logger.Info("connected to ElevenLabs Agents Platform")
 
 	return nil
+}
+
+// AgentID returns the current agent ID (may be auto-created).
+func (e *ElevenLabs) AgentID() string {
+	return e.agentID
 }
 
 // Close gracefully closes the connection.
@@ -528,5 +606,6 @@ type elevenLabsIncoming struct {
 
 // Ensure ElevenLabs implements Provider.
 var _ Provider = (*ElevenLabs)(nil)
+
 
 
