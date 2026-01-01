@@ -280,6 +280,8 @@ func startWebDashboard(ctx context.Context) {
 
 	// Configure tool trigger callback
 	webServer.OnToolTrigger = func(name string, args map[string]interface{}) (string, error) {
+		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
+
 		// Get tool config
 		cfg := realtime.EvaToolsConfig{
 			Robot:        robot,
@@ -287,15 +289,23 @@ func startWebDashboard(ctx context.Context) {
 			Vision:       &videoVisionAdapter{videoClient},
 			GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
 			AudioPlayer:  audioPlayer,
+			Tracker:      headTracker,
 		}
 
 		// Get tools and find the one requested
 		tools := realtime.EvaTools(cfg)
 		for _, tool := range tools {
 			if tool.Name == name {
-				return tool.Handler(args)
+				result, err := tool.Handler(args)
+				if err != nil {
+					fmt.Printf("🎮 Tool error: %v\n", err)
+				} else {
+					fmt.Printf("🎮 Tool result: %s\n", result)
+				}
+				return result, err
 			}
 		}
+		fmt.Printf("🎮 Tool not found: %s\n", name)
 		return "", fmt.Errorf("tool not found: %s", name)
 	}
 
