@@ -16,6 +16,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
+	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
@@ -422,11 +423,71 @@ func connectWebRTC() error {
 	return videoClient.Connect()
 }
 
+// initTTSProvider creates the TTS provider chain (ElevenLabs → OpenAI fallback)
+func initTTSProvider(openaiKey string) (tts.Provider, error) {
+	var providers []tts.Provider
+
+	// Check for ElevenLabs configuration
+	elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+	elevenLabsVoice := os.Getenv("ELEVENLABS_VOICE_ID")
+
+	if elevenLabsKey != "" && elevenLabsVoice != "" {
+		el, err := tts.NewElevenLabs(
+			tts.WithAPIKey(elevenLabsKey),
+			tts.WithVoice(elevenLabsVoice),
+			tts.WithModel(tts.ModelTurboV2_5),
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("⚠️  ElevenLabs init failed: %v\n", err)
+		} else {
+			providers = append(providers, el)
+			fmt.Println("🎤 TTS: ElevenLabs (custom voice)")
+		}
+	}
+
+	// Add OpenAI as fallback
+	if openaiKey != "" {
+		oai, err := tts.NewOpenAI(
+			tts.WithAPIKey(openaiKey),
+			tts.WithVoice(tts.VoiceShimmer),
+		)
+		if err != nil {
+			fmt.Printf("⚠️  OpenAI TTS init failed: %v\n", err)
+		} else {
+			providers = append(providers, oai)
+			if len(providers) == 1 {
+				fmt.Println("🎤 TTS: OpenAI (shimmer)")
+			} else {
+				fmt.Println("🎤 TTS: OpenAI (fallback)")
+			}
+		}
+	}
+
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("no TTS providers available")
+	}
+
+	// If only one provider, return it directly
+	if len(providers) == 1 {
+		return providers[0], nil
+	}
+
+	// Create chain for fallback
+	return tts.NewChain(providers...)
+}
+
 func connectRealtime(apiKey string) error {
 	realtimeClient = realtime.NewClient(apiKey)
 
-	// Set OpenAI key on audio player for timer announcements
-	audioPlayer.SetOpenAIKey(apiKey)
+	// Initialize TTS provider (ElevenLabs with OpenAI fallback)
+	ttsProvider, err := initTTSProvider(apiKey)
+	if err != nil {
+		fmt.Printf("⚠️  TTS init warning: %v\n", err)
+	}
+	if ttsProvider != nil {
+		audioPlayer.SetTTSProvider(ttsProvider)
+	}
 
 	// Register Eva's tools with vision and tracking support
 	toolsCfg := realtime.EvaToolsConfig{

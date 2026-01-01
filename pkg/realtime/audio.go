@@ -1,24 +1,26 @@
 package realtime
 
 import (
-	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/teslashibe/go-reachy/pkg/tts"
 )
 
 // AudioPlayer handles streaming audio playback to the robot
 type AudioPlayer struct {
-	robotIP   string
-	sshUser   string
-	sshPass   string
-	openaiKey string // For TTS
+	robotIP string
+	sshUser string
+	sshPass string
+
+	// TTS provider (ElevenLabs, OpenAI, etc.)
+	ttsProvider tts.Provider
 
 	// Streaming state
 	streamCmd   *exec.Cmd
@@ -44,9 +46,9 @@ func NewAudioPlayer(robotIP, sshUser, sshPass string) *AudioPlayer {
 	}
 }
 
-// SetOpenAIKey sets the OpenAI API key for TTS
-func (p *AudioPlayer) SetOpenAIKey(key string) {
-	p.openaiKey = key
+// SetTTSProvider sets the TTS provider for speech synthesis
+func (p *AudioPlayer) SetTTSProvider(provider tts.Provider) {
+	p.ttsProvider = provider
 }
 
 // AppendAudio streams audio data directly to the robot (base64 encoded PCM16 at 24kHz)
@@ -213,53 +215,46 @@ func (p *AudioPlayer) IsSpeaking() bool {
 	return p.speaking
 }
 
-// SpeakText uses OpenAI TTS to speak text directly (for timer announcements, etc.)
+// SpeakText uses the configured TTS provider to speak text directly (for timer announcements, etc.)
 func (p *AudioPlayer) SpeakText(text string) error {
-	if p.openaiKey == "" {
-		fmt.Println("🔔 Error: OpenAI API key not set for TTS")
-		return fmt.Errorf("OpenAI API key not set")
+	if p.ttsProvider == nil {
+		fmt.Println("🔔 Error: No TTS provider configured")
+		return fmt.Errorf("no TTS provider configured")
 	}
 
 	fmt.Printf("🔔 Speaking: %s\n", text)
-	fmt.Println("🔔 Calling OpenAI TTS...")
 
-	// Call OpenAI TTS API
-	payload := map[string]interface{}{
-		"model": "tts-1",
-		"voice": "shimmer",
-		"input": text,
-	}
-	jsonData, _ := json.Marshal(payload)
+	// Use the TTS provider to synthesize audio
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(jsonData))
-	req.Header.Set("Authorization", "Bearer "+p.openaiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	result, err := p.ttsProvider.Synthesize(ctx, text)
 	if err != nil {
-		return fmt.Errorf("TTS request failed: %w", err)
+		fmt.Printf("🔔 TTS error: %v\n", err)
+		return fmt.Errorf("TTS synthesis failed: %w", err)
 	}
-	defer resp.Body.Close()
+	fmt.Printf("🔔 Got %d bytes of audio from TTS\n", len(result.Audio))
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("TTS error (status %d): %s", resp.StatusCode, string(body))
+	// Determine GStreamer pipeline based on audio format
+	var pipeline string
+	switch result.Format.Encoding {
+	case tts.EncodingMP3:
+		// MP3 audio - decode with mpg123
+		pipeline = "gst-launch-1.0 fdsrc fd=0 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! alsasink device=default"
+	case tts.EncodingPCM16, tts.EncodingPCM22, tts.EncodingPCM24, tts.EncodingPCM44:
+		// Raw PCM - use rawaudioparse
+		pipeline = fmt.Sprintf("gst-launch-1.0 fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=%d num-channels=%d ! audioconvert ! audioresample ! alsasink device=default",
+			result.Format.SampleRate, result.Format.Channels)
+	default:
+		// Default to MP3 pipeline
+		pipeline = "gst-launch-1.0 fdsrc fd=0 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! alsasink device=default"
 	}
 
-	// Read the MP3 audio
-	audioData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Printf("🔔 Error reading TTS audio: %v\n", err)
-		return fmt.Errorf("failed to read audio: %w", err)
-	}
-	fmt.Printf("🔔 Got %d bytes of audio from TTS\n", len(audioData))
-
-	// Play via SSH and GStreamer (convert MP3 to playable format)
+	// Play via SSH and GStreamer
 	cmd := exec.Command("sshpass", "-p", p.sshPass,
 		"ssh", "-o", "StrictHostKeyChecking=no",
 		fmt.Sprintf("%s@%s", p.sshUser, p.robotIP),
-		"gst-launch-1.0 fdsrc fd=0 ! mpegaudioparse ! mpg123audiodec ! audioconvert ! audioresample ! alsasink device=default")
+		pipeline)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -272,20 +267,20 @@ func (p *AudioPlayer) SpeakText(text string) error {
 		return fmt.Errorf("failed to start playback: %w", err)
 	}
 
-	fmt.Println("🔔 Playing timer audio...")
+	fmt.Println("🔔 Playing audio...")
 
 	// Trigger callbacks
 	if p.OnPlaybackStart != nil {
 		p.OnPlaybackStart()
 	}
 
-	stdin.Write(audioData)
+	stdin.Write(result.Audio)
 	stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
 		fmt.Printf("🔔 Playback error: %v\n", err)
 	} else {
-		fmt.Println("🔔 Timer audio complete")
+		fmt.Println("🔔 Audio playback complete")
 	}
 
 	if p.OnPlaybackEnd != nil {
