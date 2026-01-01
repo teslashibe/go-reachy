@@ -1,5 +1,5 @@
 // Eva 2.0 - Low-latency conversational robot agent with tool use
-// Uses OpenAI Realtime API for speech-to-speech conversation
+// Supports OpenAI Realtime API and ElevenLabs Agents Platform
 package main
 
 import (
@@ -9,11 +9,13 @@ import (
 	"image"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
+	"github.com/teslashibe/go-reachy/pkg/conversation"
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/inference"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
@@ -97,13 +99,18 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
+	// Conversation provider (ElevenLabs or OpenAI)
+	convProvider conversation.Provider
+
+	// Legacy realtime client (for tool registration until fully migrated)
 	realtimeClient *realtime.Client
-	videoClient    *video.Client
-	audioPlayer    *realtime.AudioPlayer
-	robot          *realtime.SimpleRobotController
-	memory         *realtime.Memory
-	webServer      *web.Server
-	headTracker    *tracking.Tracker
+
+	videoClient *video.Client
+	audioPlayer *realtime.AudioPlayer
+	robot       *realtime.SimpleRobotController
+	memory      *realtime.Memory
+	webServer   *web.Server
+	headTracker *tracking.Tracker
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -111,6 +118,9 @@ var (
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
 	evaCurrentResponse string
+
+	// Tool handlers map for conversation provider
+	toolHandlers map[string]func(args map[string]any) (string, error)
 )
 
 // webStateAdapter adapts web.Server to tracking.StateUpdater interface
@@ -211,9 +221,18 @@ func main() {
 		}
 	}
 
-	// Connect to OpenAI Realtime API
-	fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
-	if err := connectRealtime(openaiKey); err != nil {
+	// Initialize conversation provider
+	fmt.Print("🧠 Initializing conversation provider... ")
+	convProvider, err = initConversationProvider()
+	if err != nil {
+		fmt.Printf("❌ Failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅")
+
+	// Connect to conversation API
+	fmt.Print("🔌 Connecting to conversation API... ")
+	if err := connectConversation(ctx, openaiKey); err != nil {
 		fmt.Printf("❌ Failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -221,25 +240,29 @@ func main() {
 
 	// Configure session
 	fmt.Print("⚙️  Configuring Eva's personality... ")
-	if err := realtimeClient.ConfigureSession(evaInstructions, "shimmer"); err != nil {
-		fmt.Printf("❌ Failed: %v\n", err)
-		os.Exit(1)
+	sessionOpts := conversation.SessionOptions{
+		SystemPrompt: evaInstructions,
+		Voice:        getEnv("CONVERSATION_VOICE", "shimmer"),
+	}
+	// Register tools with session
+	for name := range toolHandlers {
+		sessionOpts.Tools = append(sessionOpts.Tools, conversation.Tool{
+			Name: name,
+		})
+	}
+	if err := convProvider.ConfigureSession(sessionOpts); err != nil {
+		fmt.Printf("⚠️  Session config warning: %v\n", err)
 	}
 	fmt.Println("✅")
 
-	// Wait for session ready
-	for i := 0; i < 50; i++ {
-		if realtimeClient.IsReady() {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Wait for connection to stabilize
+	time.Sleep(500 * time.Millisecond)
 
 	fmt.Println("\n🎤 Eva is listening! Speak to start a conversation...")
 	fmt.Println("   (Ctrl+C to exit)")
 
-	// Start audio streaming from WebRTC to Realtime API
-	go streamAudioToRealtime(ctx)
+	// Start audio streaming from WebRTC to conversation provider
+	go streamAudioToConversation(ctx)
 
 	// Start head tracking loop
 	if headTracker != nil {
@@ -258,11 +281,12 @@ func main() {
 		if webServer != nil {
 			webServer.UpdateState(func(s *web.EvaState) {
 				s.RobotConnected = true
-				s.OpenAIConnected = realtimeClient != nil && realtimeClient.IsConnected()
+				s.OpenAIConnected = convProvider != nil && convProvider.IsConnected()
 				s.WebRTCConnected = videoClient != nil
 				s.Listening = true
 			})
-			webServer.AddLog("info", "Eva 2.0 started")
+			providerName := getEnv("CONVERSATION_PROVIDER", "openai")
+			webServer.AddLog("info", fmt.Sprintf("Eva 2.0 started (conversation: %s)", providerName))
 		}
 	}()
 
@@ -536,6 +560,214 @@ func initInferenceProvider() (inference.Provider, error) {
 	return inference.NewChain(providers...)
 }
 
+// initConversationProvider creates the conversation provider based on environment
+func initConversationProvider() (conversation.Provider, error) {
+	providerType := strings.ToLower(getEnv("CONVERSATION_PROVIDER", "openai"))
+
+	switch providerType {
+	case "elevenlabs", "11labs":
+		apiKey := os.Getenv("ELEVENLABS_API_KEY")
+		agentID := os.Getenv("ELEVENLABS_AGENT_ID")
+
+		if apiKey == "" || agentID == "" {
+			return nil, fmt.Errorf("ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID required for ElevenLabs provider")
+		}
+
+		provider, err := conversation.NewElevenLabs(
+			conversation.WithAPIKey(apiKey),
+			conversation.WithAgentID(agentID),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ElevenLabs provider: %w", err)
+		}
+
+		fmt.Println("🎤 Conversation: ElevenLabs Agents (custom voice)")
+		return provider, nil
+
+	case "openai", "":
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("OPENAI_API_KEY required for OpenAI provider")
+		}
+
+		provider, err := conversation.NewOpenAI(
+			conversation.WithAPIKey(apiKey),
+			conversation.WithVoice(conversation.VoiceShimmer),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create OpenAI provider: %w", err)
+		}
+
+		fmt.Println("🎤 Conversation: OpenAI Realtime (shimmer)")
+		return provider, nil
+
+	default:
+		return nil, fmt.Errorf("unknown conversation provider: %s (use 'openai' or 'elevenlabs')", providerType)
+	}
+}
+
+// connectConversation sets up callbacks and connects the conversation provider
+func connectConversation(ctx context.Context, openaiKey string) error {
+	// Initialize TTS provider (ElevenLabs with OpenAI fallback) for announcements
+	ttsProvider, err := initTTSProvider(openaiKey)
+	if err != nil {
+		fmt.Printf("⚠️  TTS init warning: %v\n", err)
+	}
+	if ttsProvider != nil {
+		audioPlayer.SetTTSProvider(ttsProvider)
+	}
+
+	// Initialize inference provider for vision tools
+	inferenceProvider, err := initInferenceProvider()
+	if err != nil {
+		fmt.Printf("⚠️  Inference init warning: %v\n", err)
+	}
+
+	// Build tool handlers map from Eva's tools
+	toolsCfg := realtime.EvaToolsConfig{
+		Robot:           robot,
+		Memory:          memory,
+		Vision:          &videoVisionAdapter{videoClient},
+		InferenceClient: inferenceProvider,
+		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:     audioPlayer,
+		Tracker:         headTracker,
+	}
+	tools := realtime.EvaTools(toolsCfg)
+
+	toolHandlers = make(map[string]func(args map[string]any) (string, error))
+	for _, tool := range tools {
+		// Register tool with conversation provider
+		convProvider.RegisterTool(conversation.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+		})
+
+		// Store handler for execution
+		handler := tool.Handler // Capture in closure
+		toolHandlers[tool.Name] = func(args map[string]any) (string, error) {
+			// Convert map[string]any to map[string]interface{}
+			argsIface := make(map[string]interface{})
+			for k, v := range args {
+				argsIface[k] = v
+			}
+			return handler(argsIface)
+		}
+	}
+
+	// Set up conversation callbacks
+	convProvider.OnAudio(func(audio []byte) {
+		// Stream audio to robot
+		if err := audioPlayer.AppendAudioBytes(audio); err != nil {
+			debug.Log("⚠️  Audio append error: %v\n", err)
+		}
+	})
+
+	convProvider.OnAudioDone(func() {
+		// End the Eva response line
+		if evaResponseStarted {
+			fmt.Println() // newline after streaming text
+			evaResponseStarted = false
+		}
+
+		// Update web dashboard with Eva's response
+		if webServer != nil && evaCurrentResponse != "" {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = true
+				s.Listening = false
+				s.LastEvaMessage = evaCurrentResponse
+			})
+			webServer.AddConversation("eva", evaCurrentResponse)
+			webServer.AddLog("speech", "Playing audio...")
+		}
+
+		fmt.Println("🗣️  [playing audio...]")
+		if err := audioPlayer.FlushAndPlay(); err != nil {
+			fmt.Printf("⚠️  Audio error: %v\n", err)
+		}
+		fmt.Println("🗣️  [done]")
+
+		// Update web dashboard
+		if webServer != nil {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = false
+				s.Listening = true
+			})
+			webServer.AddLog("speech", "Audio done")
+		}
+		evaCurrentResponse = ""
+	})
+
+	convProvider.OnTranscript(func(role, text string, isFinal bool) {
+		if role == "user" && isFinal && text != "" {
+			// User's final transcript
+			fmt.Printf("👤 User: %s\n", text)
+			evaResponseStarted = false
+			// Update web dashboard
+			if webServer != nil {
+				webServer.UpdateState(func(s *web.EvaState) {
+					s.LastUserMessage = text
+					s.Listening = true
+					s.Speaking = false
+				})
+				webServer.AddConversation("user", text)
+			}
+		} else if role == "agent" && text != "" {
+			// Eva's speech - stream continuously on one line
+			if !evaResponseStarted {
+				fmt.Print("🤖 Eva: ")
+				evaResponseStarted = true
+				evaCurrentResponse = ""
+			}
+			fmt.Print(text)
+			evaCurrentResponse += text
+		}
+	})
+
+	convProvider.OnToolCall(func(callID, name string, args map[string]any) {
+		fmt.Printf("🔧 Tool called: %s\n", name)
+
+		// Execute the tool
+		var result string
+		if handler, ok := toolHandlers[name]; ok {
+			var err error
+			result, err = handler(args)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+			}
+			fmt.Printf("🔧 Tool result: %s\n", result)
+		} else {
+			result = "Function not found"
+			fmt.Printf("⚠️  Tool not found: %s\n", name)
+		}
+
+		// Submit result back to conversation
+		if err := convProvider.SubmitToolResult(callID, result); err != nil {
+			fmt.Printf("⚠️  Failed to submit tool result: %v\n", err)
+		}
+	})
+
+	convProvider.OnError(func(err error) {
+		fmt.Printf("⚠️  Conversation error: %v\n", err)
+		if webServer != nil {
+			webServer.AddLog("error", err.Error())
+		}
+	})
+
+	convProvider.OnInterruption(func() {
+		// User started speaking - if Eva is talking, interrupt her
+		if audioPlayer != nil && audioPlayer.IsSpeaking() {
+			fmt.Println("🛑 [interrupted]")
+			audioPlayer.Cancel()
+			convProvider.CancelResponse()
+		}
+	})
+
+	// Connect to conversation service
+	return convProvider.Connect(ctx)
+}
+
 func connectRealtime(apiKey string) error {
 	realtimeClient = realtime.NewClient(apiKey)
 
@@ -660,16 +892,26 @@ func connectRealtime(apiKey string) error {
 	return realtimeClient.Connect()
 }
 
-func streamAudioToRealtime(ctx context.Context) {
+func streamAudioToConversation(ctx context.Context) {
 	// Buffer for accumulating audio
 	var audioBuffer []int16
-	const chunkSize = 2400 // 100ms at 24kHz
+
+	// Get sample rate from provider capabilities
+	caps := convProvider.Capabilities()
+	targetRate := caps.InputSampleRate
+	if targetRate == 0 {
+		targetRate = 24000 // Default to 24kHz
+	}
+
+	// Calculate chunk size based on sample rate (100ms)
+	chunkSize := targetRate / 10 // 100ms of samples
 
 	// Counters for debug logging
 	var loopCount, emptyCount, sentCount int
 	lastLogTime := time.Now()
 
 	debug.Logln("🎵 Audio streaming goroutine started")
+	debug.Log("🎵 Target sample rate: %d Hz, chunk size: %d\n", targetRate, chunkSize)
 
 	for {
 		select {
@@ -720,8 +962,8 @@ func streamAudioToRealtime(ctx context.Context) {
 			debug.Log("🎵 First audio chunk: %d samples\n", len(pcmData))
 		}
 
-		// Resample from 48kHz to 24kHz (OpenAI Realtime uses 24kHz)
-		resampled := realtime.Resample(pcmData, 48000, 24000)
+		// Resample from 48kHz to target rate
+		resampled := realtime.Resample(pcmData, 48000, targetRate)
 		audioBuffer = append(audioBuffer, resampled...)
 
 		// Send when we have enough
@@ -730,21 +972,21 @@ func streamAudioToRealtime(ctx context.Context) {
 			pcm16Bytes := realtime.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
 			audioBuffer = audioBuffer[chunkSize:]
 
-			// Send to Realtime API
-			if realtimeClient == nil {
-				debug.Logln("🎵 realtimeClient is nil!")
-			} else if !realtimeClient.IsConnected() {
-				debug.Logln("🎵 realtimeClient not connected!")
+			// Send to conversation provider
+			if convProvider == nil {
+				debug.Logln("🎵 convProvider is nil!")
+			} else if !convProvider.IsConnected() {
+				debug.Logln("🎵 convProvider not connected!")
 			} else {
-				if err := realtimeClient.SendAudio(pcm16Bytes); err != nil {
+				if err := convProvider.SendAudio(pcm16Bytes); err != nil {
 					debug.Log("🎵 SendAudio error: %v\n", err)
 				} else {
 					sentCount++
 					// Log first send and then every 50 sends
 					if sentCount == 1 {
-						debug.Log("🎵 First audio sent to OpenAI! (%d bytes)\n", len(pcm16Bytes))
+						debug.Log("🎵 First audio sent! (%d bytes)\n", len(pcm16Bytes))
 					} else if sentCount%50 == 0 {
-						debug.Log("🎵 Audio stats: sent=%d chunks to OpenAI\n", sentCount)
+						debug.Log("🎵 Audio stats: sent=%d chunks\n", sentCount)
 					}
 				}
 			}
@@ -753,6 +995,9 @@ func streamAudioToRealtime(ctx context.Context) {
 }
 
 func shutdown() {
+	if convProvider != nil {
+		convProvider.Close()
+	}
 	if realtimeClient != nil {
 		realtimeClient.Close()
 	}

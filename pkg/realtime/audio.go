@@ -57,7 +57,11 @@ func (p *AudioPlayer) AppendAudio(base64Audio string) error {
 	if err != nil {
 		return err
 	}
+	return p.AppendAudioBytes(decoded)
+}
 
+// AppendAudioBytes streams raw audio bytes directly to the robot (PCM16 at 24kHz)
+func (p *AudioPlayer) AppendAudioBytes(audio []byte) error {
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
 
@@ -70,7 +74,7 @@ func (p *AudioPlayer) AppendAudio(base64Audio string) error {
 
 	// Write audio data directly to the pipeline
 	if p.streamStdin != nil {
-		_, err = p.streamStdin.Write(decoded)
+		_, err := p.streamStdin.Write(audio)
 		if err != nil {
 			// Pipeline died, try to restart
 			p.stopStreamLocked()
