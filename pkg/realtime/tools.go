@@ -16,6 +16,7 @@ import (
 type RobotController interface {
 	SetHeadPose(roll, pitch, yaw float64) error
 	SetAntennas(left, right float64) error
+	SetBodyYaw(yaw float64) error
 	GetDaemonStatus() (string, error)
 	SetVolume(level int) error
 }
@@ -471,6 +472,35 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 			},
 		},
 		{
+			Name:        "rotate_body",
+			Description: "Rotate your body left or right. Use this to turn your whole body to face someone or something.",
+			Parameters: map[string]interface{}{
+				"direction": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"left", "right", "center"},
+					"description": "Direction to rotate body",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				dir, _ := args["direction"].(string)
+				var yaw float64
+
+				switch dir {
+				case "left":
+					yaw = 0.5 // ~30°
+				case "right":
+					yaw = -0.5
+				case "center":
+					yaw = 0
+				}
+
+				if robot != nil {
+					robot.SetBodyYaw(yaw)
+				}
+				return fmt.Sprintf("Rotated body %s", dir), nil
+			},
+		},
+		{
 			Name:        "nod_yes",
 			Description: "Nod your head to agree with something.",
 			Parameters:  map[string]interface{}{},
@@ -878,9 +908,9 @@ func (r *SimpleRobotController) SetHeadPose(roll, pitch, yaw float64) error {
 			"pitch": pitch,
 			"yaw":   yaw,
 		},
-		"target_antennas":  nil, // Don't change antennas
-		"target_body_yaw":  nil, // Don't change body yaw
-		"duration":         0.3,
+		"target_antennas": nil, // Don't change antennas
+		"target_body_yaw": nil, // Don't change body yaw
+		"duration":        0.3,
 	}
 
 	data, _ := json.Marshal(payload)
@@ -938,6 +968,24 @@ func (r *SimpleRobotController) SetVolume(level int) error {
 	}
 	payload := fmt.Sprintf(`{"volume": %d}`, level)
 	resp, err := http.Post(r.BaseURL+"/api/volume/set", "application/json", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// SetBodyYaw rotates the robot's body (base) left or right
+func (r *SimpleRobotController) SetBodyYaw(yaw float64) error {
+	payload := map[string]interface{}{
+		"target_head_pose": nil,
+		"target_antennas":  nil,
+		"target_body_yaw":  yaw,
+		"duration":         0.5,
+	}
+
+	data, _ := json.Marshal(payload)
+	resp, err := http.Post(r.BaseURL+"/api/move/set_target", "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		return err
 	}
