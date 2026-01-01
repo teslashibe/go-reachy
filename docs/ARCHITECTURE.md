@@ -40,15 +40,21 @@ This document describes the audio, vision, and inference pipeline architecture f
 │  ┌────────────────────────────────────────────────────────────────────────────┐    │
 │  │                     AUDIO STREAMING PIPELINE                                │    │
 │  │                                                                             │    │
-│  │   [WebRTC 48kHz] → Resample to 24kHz → [Conversation Provider]             │    │
-│  │                                              │                              │    │
-│  │   CURRENT: OpenAI Realtime API              │                              │    │
-│  │   • Speech-to-Text (Whisper)                │                              │    │
-│  │   • LLM Processing (GPT-4o)                 │                              │    │
-│  │   • Text-to-Speech (shimmer voice)          │                              │    │
-│  │   • Tool Calling                            │                              │    │
-│  │                                             ▼                              │    │
-│  │   Returns: Audio (PCM24) + Transcripts + Tool Calls                        │    │
+│  │   [WebRTC 48kHz] → Resample → [pkg/conversation Provider]                  │    │
+│  │                        ↓                                                    │    │
+│  │   ┌─────────────────────────────────────────────────────────────────────┐  │    │
+│  │   │              conversation.Provider (env: CONVERSATION_PROVIDER)      │  │    │
+│  │   │                                                                      │  │    │
+│  │   │  ┌────────────────────┐     ┌─────────────────────┐                 │  │    │
+│  │   │  │ conversation.      │     │ conversation.       │                 │  │    │
+│  │   │  │ ElevenLabs         │  OR │ OpenAI              │                 │  │    │
+│  │   │  │ (custom voice)     │     │ (shimmer/alloy)     │                 │  │    │
+│  │   │  │ 16kHz PCM          │     │ 24kHz PCM           │                 │  │    │
+│  │   │  │ STT+LLM+TTS        │     │ Whisper+GPT-4o+TTS  │                 │  │    │
+│  │   │  └────────────────────┘     └─────────────────────┘                 │  │    │
+│  │   └─────────────────────────────────────────────────────────────────────┘  │    │
+│  │                                             ↓                              │    │
+│  │   Returns: Audio + Transcripts + Tool Calls                                │    │
 │  └─────────────────────────────────────┬───────────────────────────────────────┘    │
 │                                        │                                            │
 │            ┌───────────────────────────┼───────────────────────────┐                │
@@ -165,21 +171,30 @@ This document describes the audio, vision, and inference pipeline architecture f
 
 ### 1. Main Conversation Loop
 ```
-User speaks → Robot Mic → WebRTC → go-reachy
+User speaks → Robot Mic → WebRTC → go-reachy (cmd/eva/main.go)
                                       ↓
-                              Resample 48kHz→24kHz
+                              streamAudioToConversation()
                                       ↓
-                              OpenAI Realtime API
+                              Resample 48kHz → Provider rate
+                              (16kHz ElevenLabs, 24kHz OpenAI)
+                                      ↓
+                              convProvider.SendAudio()
                                       ↓
                     ┌─────────────────┼─────────────────┐
-                    ↓                 ↓                 ↓
-               Audio PCM24      Transcripts       Tool Calls
-                    ↓                                   ↓
-            SSH+GStreamer                        Execute Tool
-                    ↓                                   ↓
-            Robot Speaker                        Tool Result
-                                                       ↓
-                                              Back to Realtime API
+                    │                 │                 │
+                    ▼                 ▼                 ▼
+       ┌────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+       │ OnAudio()      │  │ OnTranscript()  │  │ OnToolCall()    │
+       │ Audio bytes    │  │ user/agent text │  │ id, name, args  │
+       └───────┬────────┘  └────────┬────────┘  └────────┬────────┘
+               ↓                    ↓                    ↓
+       AppendAudioBytes()      Print to           toolHandlers[name]()
+               ↓               console                   ↓
+       SSH + GStreamer                           Execute Tool
+               ↓                                         ↓
+       Robot Speaker                             SubmitToolResult()
+                                                         ↓
+                                                 Back to Provider
 ```
 
 ### 2. Vision Tool Flow
@@ -222,17 +237,21 @@ Timer expires → SpeakText("Timer done!")
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `CONVERSATION_PROVIDER` | No | Conversation provider: `elevenlabs` or `openai` (default) |
-| `OPENAI_API_KEY` | Yes | OpenAI Realtime API, TTS fallback, Vision fallback |
-| `GOOGLE_API_KEY` | No | Gemini vision (primary), GeminiSearch |
-| `ELEVENLABS_API_KEY` | No | Custom voice TTS + Conversation |
-| `ELEVENLABS_VOICE_ID` | No | Which ElevenLabs voice to use (TTS) |
-| `ELEVENLABS_AGENT_ID` | No | ElevenLabs Agent ID (Conversation) |
-| `ROBOT_IP` | No | Reachy Mini IP (default: 192.168.68.77) |
-| `SSH_USER` | No | Robot SSH user (default: pollen) |
-| `SSH_PASS` | No | Robot SSH password (default: root) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| **Conversation** ||||
+| `CONVERSATION_PROVIDER` | No | `openai` | Provider: `openai` or `elevenlabs` |
+| `CONVERSATION_VOICE` | No | `shimmer` | Voice for OpenAI conversation |
+| `OPENAI_API_KEY` | Yes | - | OpenAI Realtime API + fallbacks |
+| `ELEVENLABS_API_KEY` | No | - | ElevenLabs TTS + Conversation |
+| `ELEVENLABS_AGENT_ID` | No | - | ElevenLabs Agent ID (Conversation) |
+| `ELEVENLABS_VOICE_ID` | No | - | ElevenLabs Voice ID (TTS only) |
+| **Vision** ||||
+| `GOOGLE_API_KEY` | No | - | Gemini vision + GeminiSearch |
+| **Robot** ||||
+| `ROBOT_IP` | No | `192.168.68.77` | Reachy Mini IP |
+| `SSH_USER` | No | `pollen` | Robot SSH user |
+| `SSH_PASS` | No | `root` | Robot SSH password |
 
 ## Fallback Chains
 
@@ -293,3 +312,101 @@ OPENAI_API_KEY=...                # Fallback
 
 ### Future Providers
 - `local.go` - Local STT + LLM + TTS pipeline (Whisper + Llama + Piper)
+
+## Main.go Integration
+
+The `cmd/eva/main.go` file wires everything together:
+
+### Initialization Flow
+
+```
+main()
+  ├── initialize()
+  │     └── Create robot, memory, audioPlayer
+  │
+  ├── connectWebRTC()
+  │     └── video.NewClient() → WebRTC stream
+  │
+  ├── tracking.New()
+  │     └── Face detection + audio DOA
+  │
+  ├── initConversationProvider()
+  │     └── Based on CONVERSATION_PROVIDER env:
+  │           ├── "elevenlabs" → conversation.NewElevenLabs()
+  │           └── "openai"     → conversation.NewOpenAI()
+  │
+  ├── connectConversation()
+  │     ├── initTTSProvider()      → tts.Chain (ElevenLabs → OpenAI)
+  │     ├── initInferenceProvider() → inference.Chain (Gemini → OpenAI)
+  │     ├── Build toolHandlers map from realtime.EvaTools()
+  │     ├── Set up callbacks (OnAudio, OnTranscript, OnToolCall, etc.)
+  │     └── convProvider.Connect()
+  │
+  └── Start goroutines:
+        ├── streamAudioToConversation()
+        ├── headTracker.Run()
+        ├── startWebDashboard()
+        └── streamCameraToWeb()
+```
+
+### Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `initConversationProvider()` | Creates ElevenLabs or OpenAI provider based on env |
+| `connectConversation()` | Sets up callbacks and connects |
+| `streamAudioToConversation()` | Captures WebRTC audio, resamples, sends to provider |
+| `initTTSProvider()` | Creates ElevenLabs → OpenAI TTS chain |
+| `initInferenceProvider()` | Creates Gemini → OpenAI inference chain |
+
+### Callback Wiring
+
+```go
+// Audio from agent → Robot speaker
+convProvider.OnAudio(func(audio []byte) {
+    audioPlayer.AppendAudioBytes(audio)
+})
+
+// Transcript events → Console + Dashboard
+convProvider.OnTranscript(func(role, text string, isFinal bool) {
+    if role == "user" { fmt.Printf("👤 User: %s\n", text) }
+    if role == "agent" { fmt.Print(text) }
+})
+
+// Tool calls → Execute → Return result
+convProvider.OnToolCall(func(callID, name string, args map[string]any) {
+    result, _ := toolHandlers[name](args)
+    convProvider.SubmitToolResult(callID, result)
+})
+
+// Interruption → Cancel audio
+convProvider.OnInterruption(func() {
+    audioPlayer.Cancel()
+    convProvider.CancelResponse()
+})
+```
+
+## Complete Provider Stack
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         EVA PROVIDERS                             │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  CONVERSATION (full voice loop)                                   │
+│  ├── pkg/conversation/ElevenLabs (custom voice) ← PREFERRED      │
+│  └── pkg/conversation/OpenAI (fixed voices)     ← FALLBACK       │
+│                                                                   │
+│  TTS (timer announcements)                                        │
+│  ├── pkg/tts/ElevenLabs (custom voice)          ← PREFERRED      │
+│  └── pkg/tts/OpenAI (shimmer)                   ← FALLBACK       │
+│                                                                   │
+│  INFERENCE (vision + search)                                      │
+│  ├── pkg/inference/Gemini (fast, grounded)      ← PREFERRED      │
+│  └── pkg/inference/Client (OpenAI compatible)   ← FALLBACK       │
+│                                                                   │
+│  AUDIO DOA (spatial tracking)                                     │
+│  └── pkg/audio/Client → go-eva daemon           ← REQUIRED       │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
