@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/teslashibe/go-reachy/pkg/realtime"
+	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
@@ -76,16 +76,35 @@ var (
 	robot          *realtime.SimpleRobotController
 	memory         *realtime.Memory
 	webServer      *web.Server
+	headTracker    *tracking.Tracker
 
 	speaking   bool
 	speakingMu sync.Mutex
-	currentYaw float64
-	targetYaw  float64
 
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
 	evaCurrentResponse string
 )
+
+// webStateAdapter adapts web.Server to tracking.StateUpdater interface
+type webStateAdapter struct {
+	server *web.Server
+}
+
+func (a *webStateAdapter) UpdateFacePosition(position, yaw float64) {
+	if a.server != nil {
+		a.server.UpdateState(func(s *web.EvaState) {
+			s.FacePosition = position
+			s.HeadYaw = yaw
+		})
+	}
+}
+
+func (a *webStateAdapter) AddLog(logType, message string) {
+	if a.server != nil {
+		a.server.AddLog(logType, message)
+	}
+}
 
 func main() {
 	fmt.Println("🤖 Eva 2.0 - Low-Latency Conversational Agent")
@@ -165,8 +184,10 @@ func main() {
 	// Start audio streaming from WebRTC to Realtime API
 	go streamAudioToRealtime(ctx)
 
-	// Start head tracking
-	go headTracker(ctx)
+	// Start head tracking with new tracking package
+	googleKey := os.Getenv("GOOGLE_API_KEY")
+	headTracker = tracking.New(tracking.DefaultConfig(), robot, videoClient, googleKey)
+	go headTracker.Run(ctx)
 
 	// Start web dashboard
 	go startWebDashboard(ctx)
@@ -249,6 +270,11 @@ func startWebDashboard(ctx context.Context) {
 			return nil, fmt.Errorf("video client not connected")
 		}
 		return videoClient.GetFrame()
+	}
+
+	// Connect head tracker to web dashboard for state updates
+	if headTracker != nil {
+		headTracker.SetStateUpdater(&webStateAdapter{webServer})
 	}
 
 	// Start server (blocks)
@@ -494,116 +520,6 @@ func streamAudioToRealtime(ctx context.Context) {
 				realtimeClient.SendAudio(pcm16Bytes)
 			}
 		}
-	}
-}
-
-func headTracker(ctx context.Context) {
-	moveTicker := time.NewTicker(100 * time.Millisecond)
-	detectTicker := time.NewTicker(1 * time.Second) // Faster detection
-	defer moveTicker.Stop()
-	defer detectTicker.Stop()
-
-	googleKey := os.Getenv("GOOGLE_API_KEY")
-	lastLoggedYaw := 999.0 // Track last logged value to reduce spam
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-moveTicker.C:
-			// Smooth head movement toward target (faster movement)
-			if currentYaw != targetYaw {
-				diff := targetYaw - currentYaw
-				if diff > 0.08 {
-					currentYaw += 0.08
-				} else if diff < -0.08 {
-					currentYaw -= 0.08
-				} else {
-					currentYaw = targetYaw
-				}
-
-				if robot != nil {
-					err := robot.SetHeadPose(0, 0, currentYaw)
-					// Log significant movements (reduce spam)
-					if err == nil && (currentYaw-lastLoggedYaw > 0.1 || currentYaw-lastLoggedYaw < -0.1) {
-						fmt.Printf("🔄 Head moving: yaw=%.2f\n", currentYaw)
-						lastLoggedYaw = currentYaw
-					}
-				}
-			}
-		case <-detectTicker.C:
-			// Always track - even while speaking (Eva looks at you while talking)
-			if videoClient != nil && googleKey != "" {
-				go detectAndTrackPerson(googleKey)
-			}
-		}
-	}
-}
-
-func detectAndTrackPerson(googleKey string) {
-	if videoClient == nil {
-		return
-	}
-
-	frame, err := videoClient.CaptureJPEG()
-	if err != nil {
-		return
-	}
-
-	// Ask for horizontal position as a percentage (0-100, where 50 is center)
-	prompt := "Look at this image. Is there a person's face visible? If yes, estimate the horizontal position of their face as a number from 0 to 100, where 0 is the far left edge and 100 is the far right edge of the image. Reply with ONLY a number (like 25 or 75) or NONE if no face is visible."
-
-	result, err := realtime.GeminiVision(googleKey, frame, prompt)
-	if err != nil {
-		return
-	}
-
-	result = strings.TrimSpace(strings.ToUpper(result))
-
-	// Parse the position
-	if strings.Contains(result, "NONE") || result == "" {
-		return // No face, keep current position
-	}
-
-	// Try to parse as number
-	var position float64
-	_, err = fmt.Sscanf(result, "%f", &position)
-	if err != nil {
-		// Fallback to old LEFT/CENTER/RIGHT
-		if strings.Contains(result, "LEFT") {
-			position = 25
-		} else if strings.Contains(result, "RIGHT") {
-			position = 75
-		} else if strings.Contains(result, "CENTER") {
-			position = 50
-		} else {
-			return
-		}
-	}
-
-	// Clamp to 0-100
-	if position < 0 {
-		position = 0
-	} else if position > 100 {
-		position = 100
-	}
-
-	// Convert position (0-100) to yaw (-0.5 to 0.5 radians)
-	// 0 (left edge) -> +0.5 yaw (look left)
-	// 50 (center) -> 0 yaw
-	// 100 (right edge) -> -0.5 yaw (look right)
-	newYaw := (50 - position) / 100.0 // Range: -0.5 to 0.5
-
-	fmt.Printf("👁️  Face at %.0f%% → yaw %.2f\n", position, newYaw)
-	targetYaw = newYaw
-
-	// Update web dashboard
-	if webServer != nil {
-		webServer.UpdateState(func(s *web.EvaState) {
-			s.FacePosition = position
-			s.HeadYaw = newYaw
-		})
-		webServer.AddLog("face", fmt.Sprintf("Face at %.0f%% → yaw %.2f", position, newYaw))
 	}
 }
 
