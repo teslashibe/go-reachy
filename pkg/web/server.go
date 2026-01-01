@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/websocket/v2"
+	"github.com/teslashibe/go-reachy/pkg/hub"
 )
 
 // EvaState represents the current state of Eva for the dashboard
@@ -56,16 +57,10 @@ type Server struct {
 	conversation   []ConversationEntry
 	conversationMu sync.RWMutex
 
-	// WebSocket clients
-	logClients      map[*websocket.Conn]bool
-	logClientsMu    sync.RWMutex
-	cameraClients   map[*websocket.Conn]bool
-	cameraClientsMu sync.RWMutex
-	statusClients   map[*websocket.Conn]bool
-	statusClientsMu sync.RWMutex
-
-	// Camera frame channel
-	cameraFrameChan chan []byte
+	// Hubs for websocket broadcast (thread-safe!)
+	statusHub *hub.Hub
+	logHub    *hub.Hub
+	cameraHub *hub.Hub
 
 	// Tool trigger callback
 	OnToolTrigger func(name string, args map[string]interface{}) (string, error)
@@ -77,13 +72,12 @@ type Server struct {
 // NewServer creates a new web dashboard server
 func NewServer(port string) *Server {
 	s := &Server{
-		port:            port,
-		logs:            make([]LogEntry, 0, 500),
-		conversation:    make([]ConversationEntry, 0, 100),
-		logClients:      make(map[*websocket.Conn]bool),
-		cameraClients:   make(map[*websocket.Conn]bool),
-		statusClients:   make(map[*websocket.Conn]bool),
-		cameraFrameChan: make(chan []byte, 5),
+		port:         port,
+		logs:         make([]LogEntry, 0, 500),
+		conversation: make([]ConversationEntry, 0, 100),
+		statusHub:    hub.New("status"),
+		logHub:       hub.New("logs"),
+		cameraHub:    hub.New("camera"),
 	}
 
 	app := fiber.New(fiber.Config{
@@ -125,7 +119,12 @@ func NewServer(port string) *Server {
 // Start starts the web server
 func (s *Server) Start() error {
 	fmt.Printf("🌐 Web dashboard: http://localhost:%s\n", s.port)
-	go s.cameraBroadcaster()
+
+	// Start all hubs
+	go s.statusHub.Run()
+	go s.logHub.Run()
+	go s.cameraHub.Run()
+
 	return s.app.Listen(":" + s.port)
 }
 
@@ -142,10 +141,11 @@ func (s *Server) StartAsync() {
 func (s *Server) UpdateState(update func(*EvaState)) {
 	s.stateMu.Lock()
 	update(&s.state)
+	state := s.state // Copy for broadcast
 	s.stateMu.Unlock()
 
-	// Broadcast to status clients
-	s.broadcastStatus()
+	// Broadcast via hub (thread-safe!)
+	s.statusHub.BroadcastJSON(state)
 }
 
 // AddLog adds a log entry and broadcasts to clients
@@ -163,8 +163,8 @@ func (s *Server) AddLog(logType, message string) {
 	}
 	s.logsMu.Unlock()
 
-	// Broadcast to log clients
-	s.broadcastLog(entry)
+	// Broadcast via hub (thread-safe!)
+	s.logHub.BroadcastJSON(entry)
 }
 
 // AddConversation adds a conversation entry
@@ -185,75 +185,21 @@ func (s *Server) AddConversation(role, message string) {
 
 // SendCameraFrame sends a camera frame to all connected clients
 func (s *Server) SendCameraFrame(jpegData []byte) {
-	select {
-	case s.cameraFrameChan <- jpegData:
-	default:
-		// Drop frame if channel is full
-	}
+	// Broadcast via hub (thread-safe!)
+	s.cameraHub.BroadcastBinary(jpegData)
 }
 
-// cameraBroadcaster broadcasts camera frames to all clients
-func (s *Server) cameraBroadcaster() {
-	frameCount := 0
-	for frame := range s.cameraFrameChan {
-		frameCount++
-		s.cameraClientsMu.RLock()
-		clientCount := len(s.cameraClients)
-		if frameCount%100 == 1 {
-			fmt.Printf("📺 Broadcasting frame %d (%d bytes) to %d clients\n", frameCount, len(frame), clientCount)
-		}
-		for client := range s.cameraClients {
-			if err := client.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-				fmt.Printf("📺 Client write error: %v\n", err)
-				client.Close()
-				go func(c *websocket.Conn) {
-					s.cameraClientsMu.Lock()
-					delete(s.cameraClients, c)
-					s.cameraClientsMu.Unlock()
-				}(client)
-			}
-		}
-		s.cameraClientsMu.RUnlock()
-	}
+// GetStatusHub returns the status hub for external use
+func (s *Server) GetStatusHub() *hub.Hub {
+	return s.statusHub
 }
 
-// broadcastLog sends a log entry to all connected log clients
-func (s *Server) broadcastLog(entry LogEntry) {
-	s.logClientsMu.RLock()
-	defer s.logClientsMu.RUnlock()
-
-	for client := range s.logClients {
-		if err := client.WriteJSON(entry); err != nil {
-			client.Close()
-			go func(c *websocket.Conn) {
-				s.logClientsMu.Lock()
-				delete(s.logClients, c)
-				s.logClientsMu.Unlock()
-			}(client)
-		}
-	}
+// GetLogHub returns the log hub for external use
+func (s *Server) GetLogHub() *hub.Hub {
+	return s.logHub
 }
 
-// broadcastStatus sends status update to all connected status clients
-func (s *Server) broadcastStatus() {
-	s.stateMu.RLock()
-	state := s.state
-	s.stateMu.RUnlock()
-
-	s.statusClientsMu.RLock()
-	defer s.statusClientsMu.RUnlock()
-
-	for client := range s.statusClients {
-		if err := client.WriteJSON(state); err != nil {
-			client.Close()
-			go func(c *websocket.Conn) {
-				s.statusClientsMu.Lock()
-				delete(s.statusClients, c)
-				s.statusClientsMu.Unlock()
-			}(client)
-		}
-	}
+// GetCameraHub returns the camera hub for external use
+func (s *Server) GetCameraHub() *hub.Hub {
+	return s.cameraHub
 }
-
-
-

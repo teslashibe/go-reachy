@@ -3,6 +3,7 @@ package web
 import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	"github.com/teslashibe/go-reachy/pkg/hub"
 )
 
 // ToolInfo describes an available tool
@@ -87,78 +88,33 @@ func (s *Server) handleGetConversation(c *fiber.Ctx) error {
 
 // handleLogsWS handles WebSocket connections for live logs
 func (s *Server) handleLogsWS(c *websocket.Conn) {
-	// Register client
-	s.logClientsMu.Lock()
-	s.logClients[c] = true
-	s.logClientsMu.Unlock()
-
-	// Send recent logs
+	// Send recent logs first (before registering with hub)
 	s.logsMu.RLock()
 	for _, entry := range s.logs {
 		c.WriteJSON(entry)
 	}
 	s.logsMu.RUnlock()
 
-	// Keep connection alive
-	for {
-		_, _, err := c.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-
-	// Unregister client
-	s.logClientsMu.Lock()
-	delete(s.logClients, c)
-	s.logClientsMu.Unlock()
+	// Create hub client and run (blocks until disconnect)
+	client := hub.NewClient(s.logHub, c)
+	client.Run()
 }
 
 // handleCameraWS handles WebSocket connections for camera feed
 func (s *Server) handleCameraWS(c *websocket.Conn) {
-	// Register client
-	s.cameraClientsMu.Lock()
-	s.cameraClients[c] = true
-	s.cameraClientsMu.Unlock()
-
-	// Keep connection alive
-	for {
-		_, _, err := c.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-
-	// Unregister client
-	s.cameraClientsMu.Lock()
-	delete(s.cameraClients, c)
-	s.cameraClientsMu.Unlock()
+	// Create hub client and run (blocks until disconnect)
+	client := hub.NewClient(s.cameraHub, c)
+	client.Run()
 }
 
 // handleStatusWS handles WebSocket connections for status updates
 func (s *Server) handleStatusWS(c *websocket.Conn) {
-	// Register client
-	s.statusClientsMu.Lock()
-	s.statusClients[c] = true
-	s.statusClientsMu.Unlock()
-
-	// Send current status
+	// Send current status first (before registering with hub)
 	s.stateMu.RLock()
 	c.WriteJSON(s.state)
 	s.stateMu.RUnlock()
 
-	// Keep connection alive
-	for {
-		_, _, err := c.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-
-	// Unregister client
-	s.statusClientsMu.Lock()
-	delete(s.statusClients, c)
-	s.statusClientsMu.Unlock()
+	// Create hub client and run (blocks until disconnect)
+	client := hub.NewClient(s.statusHub, c)
+	client.Run()
 }
-
-
-
