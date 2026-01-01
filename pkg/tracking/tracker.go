@@ -141,6 +141,17 @@ func (t *Tracker) SetAudioClient(client *audio.Client) {
 	t.audioClient = client
 }
 
+// handleAudioDOA is called when a DOA reading is received via WebSocket
+func (t *Tracker) handleAudioDOA(doa *audio.DOAResult) {
+	// Update world model with audio source
+	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
+
+	// Log when speaking detected
+	if doa.Speaking {
+		debug.Log("🎤 DOA (ws): %.2f rad, confidence=%.2f (speaking)\n", doa.Angle, doa.Confidence)
+	}
+}
+
 // GetCurrentYaw returns the current head yaw
 func (t *Tracker) GetCurrentYaw() float64 {
 	return t.controller.GetCurrentYaw()
@@ -156,11 +167,9 @@ func (t *Tracker) Run(ctx context.Context) {
 	moveTicker := time.NewTicker(t.config.MovementInterval)
 	detectTicker := time.NewTicker(t.config.DetectionInterval)
 	decayTicker := time.NewTicker(t.config.DecayInterval)
-	audioTicker := time.NewTicker(100 * time.Millisecond) // 10Hz audio polling
 	defer moveTicker.Stop()
 	defer detectTicker.Stop()
 	defer decayTicker.Stop()
-	defer audioTicker.Stop()
 
 	t.isRunning = true
 
@@ -170,12 +179,28 @@ func (t *Tracker) Run(ctx context.Context) {
 	debug.Log("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
 		t.config.Kp, t.config.Kd, t.config.ControlDeadZone)
 
-	// Check for audio DOA
+	// Start audio DOA streaming (WebSocket) or fall back to polling
 	t.mu.RLock()
-	hasAudio := t.audioClient != nil
+	audioClient := t.audioClient
 	t.mu.RUnlock()
-	if hasAudio {
-		fmt.Println("🎤 Audio DOA enabled (go-eva integration)")
+
+	var audioTicker *time.Ticker
+	usePolling := false
+
+	if audioClient != nil {
+		// Try WebSocket streaming first
+		err := audioClient.StreamDOA(ctx, t.handleAudioDOA)
+		if err != nil {
+			fmt.Printf("🎤 WebSocket DOA failed (%v), falling back to polling\n", err)
+			usePolling = true
+			audioTicker = time.NewTicker(100 * time.Millisecond) // 10Hz polling fallback
+		} else {
+			fmt.Println("🎤 Audio DOA streaming (WebSocket, 10Hz push)")
+		}
+	}
+
+	if audioTicker != nil {
+		defer audioTicker.Stop()
 	}
 
 	lastDecay := time.Now()
@@ -184,6 +209,10 @@ func (t *Tracker) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			t.isRunning = false
+			// Close WebSocket connection
+			if audioClient != nil {
+				audioClient.Close()
+			}
 			return
 
 		case <-moveTicker.C:
@@ -194,13 +223,21 @@ func (t *Tracker) Run(ctx context.Context) {
 				go t.detectAndUpdate()
 			}
 
-		case <-audioTicker.C:
-			go t.pollAudioDOA()
-
 		case <-decayTicker.C:
 			dt := time.Since(lastDecay).Seconds()
 			t.world.DecayConfidence(dt)
 			lastDecay = time.Now()
+
+		default:
+			// Handle polling fallback if WebSocket failed
+			if usePolling && audioTicker != nil {
+				select {
+				case <-audioTicker.C:
+					go t.pollAudioDOA()
+				default:
+				}
+			}
+			time.Sleep(1 * time.Millisecond) // Prevent busy loop
 		}
 	}
 }
