@@ -145,7 +145,7 @@ func main() {
 
 	// Initialize components
 	fmt.Print("🔧 Initializing... ")
-	if err := initialize(openaiKey); err != nil {
+	if err := initialize(); err != nil {
 		fmt.Printf("❌ Failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -238,7 +238,7 @@ func main() {
 	<-ctx.Done()
 }
 
-func initialize(_ string) error {
+func initialize() error {
 	// Create robot controller
 	robot = realtime.NewSimpleRobotController(robotIP)
 
@@ -264,7 +264,7 @@ func initialize(_ string) error {
 	return nil
 }
 
-func startWebDashboard(_ context.Context) {
+func startWebDashboard(ctx context.Context) {
 	// Create web server
 	webServer = web.NewServer("8181")
 
@@ -302,9 +302,17 @@ func startWebDashboard(_ context.Context) {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
 	}
 
-	// Start server (blocks)
-	if err := webServer.Start(); err != nil {
-		fmt.Printf("⚠️  Web server error: %v\n", err)
+	// Start server in goroutine
+	go func() {
+		if err := webServer.Start(); err != nil {
+			fmt.Printf("⚠️  Web server error: %v\n", err)
+		}
+	}()
+
+	// Wait for context cancellation and gracefully shutdown
+	<-ctx.Done()
+	if err := webServer.Shutdown(); err != nil {
+		fmt.Printf("⚠️  Web server shutdown error: %v\n", err)
 	}
 }
 

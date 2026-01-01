@@ -203,3 +203,8 @@ func (s *Server) GetLogHub() *hub.Hub {
 func (s *Server) GetCameraHub() *hub.Hub {
 	return s.cameraHub
 }
+
+// Shutdown gracefully stops the web server
+func (s *Server) Shutdown() error {
+	return s.app.Shutdown()
+}
