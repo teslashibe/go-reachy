@@ -277,3 +277,4 @@ func (s *bufferStream) Format() AudioFormat {
 
 // Verify OpenAI implements Provider at compile time.
 var _ Provider = (*OpenAI)(nil)
+

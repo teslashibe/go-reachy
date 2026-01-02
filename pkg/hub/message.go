@@ -27,3 +27,4 @@ func NewJSONMessage(data []byte) Message {
 func NewBinaryMessage(data []byte) Message {
 	return Message{Type: BinaryMessage, Data: data}
 }
+

@@ -192,3 +192,4 @@ func TestChainIntegration(t *testing.T) {
 		t.Logf("✅ Chain synthesized: %d bytes", len(result.Audio))
 	})
 }
+

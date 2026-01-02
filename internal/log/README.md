@@ -49,3 +49,4 @@ func main() {
 - `GO_ENV=production`: Use JSON output (for log aggregation)
 - Default: Use text output (human-readable)
 
+

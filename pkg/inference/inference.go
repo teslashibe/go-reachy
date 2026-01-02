@@ -195,3 +195,4 @@ type Usage struct {
 	CompletionTokens int
 	TotalTokens      int
 }
+

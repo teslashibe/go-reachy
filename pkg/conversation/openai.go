@@ -612,3 +612,4 @@ func (o *OpenAI) emitError(err error) {
 
 // Ensure OpenAI implements Provider.
 var _ Provider = (*OpenAI)(nil)
+

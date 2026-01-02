@@ -123,3 +123,4 @@ func (c *Config) Validate() error {
 	// API key is optional for local providers like Ollama
 	return nil
 }
+

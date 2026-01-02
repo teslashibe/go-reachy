@@ -503,3 +503,4 @@ type embeddingResponse struct {
 
 // Verify Client implements Provider at compile time.
 var _ Provider = (*Client)(nil)
+

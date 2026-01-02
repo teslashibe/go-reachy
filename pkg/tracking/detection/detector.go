@@ -78,3 +78,4 @@ func SelectBest(dets []Detection) *Detection {
 
 	return best
 }
+

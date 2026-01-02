@@ -276,3 +276,4 @@ func TestClientNoAPIKey(t *testing.T) {
 	}
 	client.Close()
 }
+

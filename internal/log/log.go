@@ -76,3 +76,4 @@ func Error(msg string, args ...any) {
 func With(args ...any) *slog.Logger {
 	return L().With(args...)
 }
+

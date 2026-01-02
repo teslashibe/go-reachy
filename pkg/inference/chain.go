@@ -234,3 +234,4 @@ func (c *Chain) Providers() []Provider {
 
 // Verify Chain implements Provider at compile time.
 var _ Provider = (*Chain)(nil)
+

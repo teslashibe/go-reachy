@@ -66,3 +66,4 @@ func Post(url, contentType string, body []byte) (*http.Response, error) {
 func Do(req *http.Request) (*http.Response, error) {
 	return Client.Do(req)
 }
+
