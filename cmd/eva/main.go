@@ -103,13 +103,14 @@ var (
 	memory         *realtime.Memory
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
-	ttsProvider    tts.Provider
+	ttsProvider    tts.Provider           // HTTP TTS provider
+	ttsStreaming   *tts.ElevenLabsWS      // WebSocket streaming TTS
 	objectDetector *detection.YOLODetector
 
 	speaking   bool
 	speakingMu sync.Mutex
 
-	// TTS mode: "realtime", "elevenlabs", or "openai-tts"
+	// TTS mode: "realtime", "elevenlabs", "elevenlabs-streaming", or "openai-tts"
 	ttsMode string
 
 	// Track if we've started printing Eva's response
@@ -141,7 +142,7 @@ func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
 	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
-	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime (OpenAI Realtime audio), elevenlabs, openai-tts")
+	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	flag.Parse()
 	debug.Enabled = *debugFlag
@@ -209,6 +210,56 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("🎙️  TTS: ElevenLabs (voice: %s)\n", voiceID)
+	case "elevenlabs-streaming":
+		elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+		if elevenLabsKey == "" {
+			fmt.Println("❌ Set ELEVENLABS_API_KEY for ElevenLabs TTS!")
+			os.Exit(1)
+		}
+		voiceID := *ttsVoice
+		if voiceID == "" {
+			voiceID = os.Getenv("ELEVENLABS_VOICE_ID")
+		}
+		if voiceID == "" {
+			voiceID = "charlotte"
+		}
+		// Map named presets to voice IDs
+		voicePresets := map[string]string{
+			"charlotte": "XB0fDUnXU5powFXDhCwa",
+			"aria":      "9BWtsMINqrJLrRacOk9x",
+			"sarah":     "EXAVITQu4vr4xnSDxMaL",
+			"lily":      "pFZP5JQG7iQjIQuC4Bku",
+			"rachel":    "21m00Tcm4TlvDq8ikWAM",
+			"domi":      "AZnzlk1XvdvUeBnXmlld",
+			"bella":     "EXAVITQu4vr4xnSDxMaL",
+			"elli":      "MF3mGyEYCl7XYWbV9V6O",
+			"josh":      "TxGEqnHWrfWFTfGW9XjX",
+			"adam":      "pNInz6obpgDQGcFmaJgB",
+			"sam":       "yoZ06aMxZJJ28mfd3POQ",
+		}
+		if preset, ok := voicePresets[voiceID]; ok {
+			fmt.Printf("   Voice preset: %s\n", voiceID)
+			voiceID = preset
+		}
+		var err error
+		ttsStreaming, err = tts.NewElevenLabsWS(
+			tts.WithAPIKey(elevenLabsKey),
+			tts.WithVoice(voiceID),
+			tts.WithModel(tts.ModelFlashV2_5),
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ ElevenLabs streaming init failed: %v\n", err)
+			os.Exit(1)
+		}
+		// Pre-warm WebSocket connection
+		fmt.Printf("🎙️  TTS: ElevenLabs WebSocket Streaming (voice: %s)\n", voiceID)
+		fmt.Println("   Pre-warming WebSocket connection...")
+		if err := ttsStreaming.Connect(context.Background()); err != nil {
+			fmt.Printf("⚠️  WebSocket pre-warm failed (will retry): %v\n", err)
+		} else {
+			fmt.Println("   WebSocket connected ✓")
+		}
 	case "openai-tts":
 		var err error
 		ttsProvider, err = tts.NewOpenAI(
@@ -222,7 +273,7 @@ func main() {
 		}
 		fmt.Println("🎙️  TTS: OpenAI TTS API")
 	default:
-		fmt.Printf("❌ Unknown TTS provider: %s (use: realtime, elevenlabs, openai-tts)\n", ttsMode)
+		fmt.Printf("❌ Unknown TTS provider: %s (use: realtime, elevenlabs, elevenlabs-streaming, openai-tts)\n", ttsMode)
 		os.Exit(1)
 	}
 
@@ -377,6 +428,25 @@ func initialize() error {
 		speakingMu.Lock()
 		speaking = false
 		speakingMu.Unlock()
+	}
+
+	// Wire up streaming TTS audio callback (if using WebSocket streaming)
+	if ttsStreaming != nil {
+		ttsStreaming.OnAudio = func(pcmData []byte) {
+			// Stream audio chunks directly to the player for lowest latency
+			if err := audioPlayer.AppendPCMChunk(pcmData); err != nil {
+				debug.Log("⚠️  Streaming audio chunk error: %v\n", err)
+			}
+		}
+		ttsStreaming.OnConnected = func() {
+			debug.Log("🔌 ElevenLabs WebSocket connected\n")
+		}
+		ttsStreaming.OnDisconnect = func() {
+			debug.Log("🔌 ElevenLabs WebSocket disconnected\n")
+		}
+		ttsStreaming.OnError = func(err error) {
+			fmt.Printf("⚠️  Streaming TTS error: %v\n", err)
+		}
 	}
 
 	return nil
@@ -565,6 +635,13 @@ func connectRealtime(apiKey string) error {
 			}
 			fmt.Print(text)
 			evaCurrentResponse += text
+
+			// Stream text to ElevenLabs WebSocket for lowest latency
+			if ttsMode == "elevenlabs-streaming" && ttsStreaming != nil {
+				if err := ttsStreaming.SendText(text); err != nil {
+					debug.Log("⚠️  Streaming TTS send error: %v\n", err)
+				}
+			}
 		}
 	}
 
@@ -648,7 +725,18 @@ func connectRealtime(apiKey string) error {
 			webServer.AddLog("speech", "Synthesizing with "+ttsMode+"...")
 		}
 
-		// Use external TTS provider (ElevenLabs or OpenAI TTS)
+		// Streaming TTS: just flush to signal end of text
+		if ttsMode == "elevenlabs-streaming" && ttsStreaming != nil {
+			debug.Log("🗣️  Flushing streaming TTS...\n")
+			if err := ttsStreaming.Flush(); err != nil {
+				fmt.Printf("⚠️  Streaming TTS flush error: %v\n", err)
+			}
+			// Audio playback handled by ttsStreaming.OnAudio callback
+			evaCurrentResponse = ""
+			return
+		}
+
+		// Use HTTP TTS provider (ElevenLabs or OpenAI TTS)
 		if ttsProvider != nil {
 			fmt.Printf("🗣️  [synthesizing with %s...]\n", ttsMode)
 			go func(text string) {
@@ -803,6 +891,9 @@ func shutdown() {
 	}
 	if ttsProvider != nil {
 		ttsProvider.Close()
+	}
+	if ttsStreaming != nil {
+		ttsStreaming.Close()
 	}
 }
 

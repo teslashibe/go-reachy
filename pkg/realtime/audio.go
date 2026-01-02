@@ -213,6 +213,36 @@ func (p *AudioPlayer) IsSpeaking() bool {
 	return p.speaking
 }
 
+// AppendPCMChunk appends a raw PCM audio chunk for streaming playback.
+// Used by WebSocket TTS for low-latency streaming.
+func (p *AudioPlayer) AppendPCMChunk(pcmData []byte) error {
+	if len(pcmData) == 0 {
+		return nil
+	}
+
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+
+	// Start streaming pipeline if not already running
+	if !p.streaming {
+		if err := p.startStream(); err != nil {
+			return fmt.Errorf("start stream: %w", err)
+		}
+	}
+
+	// Write audio data directly to the pipeline
+	if p.streamStdin != nil {
+		_, err := p.streamStdin.Write(pcmData)
+		if err != nil {
+			// Pipeline died, try to restart
+			p.stopStreamLocked()
+			return fmt.Errorf("write to stream: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // PlayPCM plays raw PCM16 audio data at 24kHz via UDP to the robot's audio system
 func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
 	if len(pcmData) == 0 {
