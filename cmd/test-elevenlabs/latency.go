@@ -95,27 +95,27 @@ func runLatencyTest(apiKey, voiceID string) error {
 	// Generate synthetic audio (16kHz PCM16 sine wave - simulates speech)
 	// This creates a 1-second audio clip that sounds like a tone
 	sampleRate := 16000
-	duration := 1.0 // seconds
+	duration := 1.0    // seconds
 	frequency := 440.0 // Hz (A4 note)
-	
+
 	samples := int(float64(sampleRate) * duration)
 	audio := make([]byte, samples*2) // 16-bit = 2 bytes per sample
-	
+
 	for i := 0; i < samples; i++ {
 		// Generate sine wave
 		t := float64(i) / float64(sampleRate)
 		sample := int16(32767 * 0.5 * math.Sin(2*math.Pi*frequency*t))
-		
+
 		// Little-endian encoding
 		audio[i*2] = byte(sample)
 		audio[i*2+1] = byte(sample >> 8)
 	}
 
 	fmt.Println("📤 Sending 1 second of test audio (440Hz tone)...")
-	
+
 	// Send audio in 50ms chunks (matching our low-latency setting)
 	chunkSize := sampleRate / 20 * 2 // 50ms of audio in bytes
-	
+
 	mu.Lock()
 	audioSendTime = time.Now()
 	mu.Unlock()
@@ -125,11 +125,11 @@ func runLatencyTest(apiKey, voiceID string) error {
 		if end > len(audio) {
 			end = len(audio)
 		}
-		
+
 		if err := provider.SendAudio(audio[i:end]); err != nil {
 			fmt.Printf("⚠️  Send error: %v\n", err)
 		}
-		
+
 		// Simulate real-time sending
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -151,7 +151,7 @@ func runLatencyTest(apiKey, voiceID string) error {
 	fmt.Println("\n" + "=" + string(make([]byte, 50)))
 	fmt.Println("📊 LATENCY SUMMARY")
 	fmt.Println("=" + string(make([]byte, 50)))
-	
+
 	if !firstTranscriptTime.IsZero() {
 		fmt.Printf("   Time to first transcript: %v\n", firstTranscriptTime.Sub(audioSendTime))
 	}
@@ -170,4 +170,3 @@ func runLatencyTest(apiKey, voiceID string) error {
 
 	return nil
 }
-

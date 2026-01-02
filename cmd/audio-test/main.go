@@ -30,7 +30,7 @@ var (
 func main() {
 	fmt.Println("🎤 Audio Test v2 (hraban/opus)")
 	fmt.Println("===============================")
-	fmt.Println("Testing WebRTC audio capture with full libopus support\n")
+	fmt.Println("Testing WebRTC audio capture with full libopus support")
 
 	// Handle Ctrl+C
 	sigChan := make(chan os.Signal, 1)
@@ -283,7 +283,7 @@ func main() {
 		}
 	}()
 
-	fmt.Println("\nWaiting for audio... (will record 5s after 3s warmup)\n")
+	fmt.Println("\nWaiting for audio... (will record 5s after 3s warmup)")
 
 	<-sigChan
 	fmt.Printf("\n\n📊 Final Stats:\n")

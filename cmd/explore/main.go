@@ -33,7 +33,7 @@ const openaiTTSAPI = "https://api.openai.com/v1/audio/speech"
 func main() {
 	fmt.Println("🔭 Reachy Mini Explorer")
 	fmt.Println("=======================")
-	fmt.Println("I'll look around and tell you what I see!\n")
+	fmt.Println("I'll look around and tell you what I see!")
 
 	// Check API key
 	apiKey := os.Getenv("GEMINI_API_KEY")

@@ -63,7 +63,7 @@ func main() {
 
 	// Continuous mode
 	fmt.Println("\n🎬 Continuous mode (Ctrl+C to stop)")
-	fmt.Println("   Updating frame_latest.jpg...\n")
+	fmt.Println("   Updating frame_latest.jpg...")
 
 	frameCount := 1
 	startTime := time.Now()

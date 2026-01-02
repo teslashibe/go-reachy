@@ -81,7 +81,7 @@ func main() {
 
 	// Step 2: Continuous capture loop
 	fmt.Println("\n🎬 Starting continuous capture (Ctrl+C to stop)...")
-	fmt.Println("   Frames will be saved to reachy_frame.jpg\n")
+	fmt.Println("   Frames will be saved to reachy_frame.jpg")
 
 	frameCount := 0
 	startTime := time.Now()

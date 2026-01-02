@@ -47,7 +47,7 @@ func main() {
 	time.Sleep(2 * time.Second)
 	fmt.Println("✅")
 
-	fmt.Println("\n🎵 Let's dance! (Ctrl+C to stop)\n")
+	fmt.Println("\n🎵 Let's dance! (Ctrl+C to stop)")
 
 	// Dance loop!
 	danceRoutine(baseURL)

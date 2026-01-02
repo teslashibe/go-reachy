@@ -60,7 +60,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	fmt.Println("\n🎬 Receiving frames (Ctrl+C to stop)...\n")
+	fmt.Println("\n🎬 Receiving frames (Ctrl+C to stop)...")
 
 	// Simple frame reader - look for JPEG markers
 	reader := bufio.NewReader(conn)

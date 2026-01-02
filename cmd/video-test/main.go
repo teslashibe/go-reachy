@@ -30,7 +30,7 @@ func main() {
 	}
 	defer client.Close()
 
-	fmt.Println("\n🎬 Measuring frame rate (Ctrl+C to stop)...\n")
+	fmt.Println("\n🎬 Measuring frame rate (Ctrl+C to stop)...")
 
 	frameCount := 0
 	startTime := time.Now()

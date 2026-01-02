@@ -126,7 +126,7 @@ func main() {
 	speak("Hello! I'm Eva, and I'm on a mission to find Travis. Have you seen him around?", openaiKey)
 	waveAntenna()
 
-	fmt.Println("\n🔍 Watching and listening continuously...\n")
+	fmt.Println("\n🔍 Watching and listening continuously...")
 
 	lastSpoke := time.Now()
 	cooldown := 8 * time.Second

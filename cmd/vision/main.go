@@ -38,7 +38,7 @@ func main() {
 		fmt.Println("   Then: export GEMINI_API_KEY=your-key")
 		os.Exit(1)
 	}
-	fmt.Println("API Key: ✅\n")
+	fmt.Println("API Key: ✅")
 
 	// Handle Ctrl+C
 	ctx, cancel := context.WithCancel(context.Background())
@@ -51,7 +51,7 @@ func main() {
 	}()
 
 	// Main loop
-	fmt.Println("🔄 Starting vision loop (Ctrl+C to stop)\n")
+	fmt.Println("🔄 Starting vision loop (Ctrl+C to stop)")
 
 	for {
 		select {
@@ -81,7 +81,7 @@ func main() {
 			fmt.Println("✅")
 			fmt.Println("╭───────────────────────────────────────────")
 			fmt.Printf("│ 👁️  I see: %s\n", description)
-			fmt.Println("╰───────────────────────────────────────────\n")
+			fmt.Println("╰───────────────────────────────────────────")
 
 			// Wait before next capture
 			time.Sleep(3 * time.Second)
