@@ -16,15 +16,24 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
+	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
 
 const (
-	robotIP = "192.168.68.77"
-	sshUser = "pollen"
-	sshPass = "root"
+	defaultRobotIP = "192.168.68.77"
+	sshUser        = "pollen"
+	sshPass        = "root"
 )
+
+var robotIP = defaultRobotIP
+
+func init() {
+	if ip := os.Getenv("ROBOT_IP"); ip != "" {
+		robotIP = ip
+	}
+}
 
 // Eva's personality and instructions
 const evaInstructions = `You are Eva, a friendly and curious robot with expressive antenna ears and a camera. You're warm, engaging, and love meeting people.
@@ -93,9 +102,13 @@ var (
 	memory         *realtime.Memory
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
+	ttsProvider    tts.Provider
 
 	speaking   bool
 	speakingMu sync.Mutex
+
+	// TTS mode: "realtime", "elevenlabs", or "openai-tts"
+	ttsMode string
 
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
@@ -125,8 +138,14 @@ func (a *webStateAdapter) AddLog(logType, message string) {
 func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
+	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime (OpenAI Realtime audio), elevenlabs, openai-tts")
+	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	flag.Parse()
 	debug.Enabled = *debugFlag
+	if *robotIPFlag != "" {
+		robotIP = *robotIPFlag
+	}
 
 	fmt.Println("🤖 Eva 2.0 - Low-Latency Conversational Agent")
 	fmt.Println("==============================================")
@@ -137,6 +156,71 @@ func main() {
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	if openaiKey == "" {
 		fmt.Println("❌ Set OPENAI_API_KEY!")
+		os.Exit(1)
+	}
+
+	// Set TTS mode
+	ttsMode = *ttsFlag
+	switch ttsMode {
+	case "realtime":
+		fmt.Println("🎙️  TTS: OpenAI Realtime (streaming audio)")
+	case "elevenlabs":
+		elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+		if elevenLabsKey == "" {
+			fmt.Println("❌ Set ELEVENLABS_API_KEY for ElevenLabs TTS!")
+			os.Exit(1)
+		}
+		voiceID := *ttsVoice
+		if voiceID == "" {
+			voiceID = os.Getenv("ELEVENLABS_VOICE_ID")
+		}
+		if voiceID == "" {
+			voiceID = "charlotte" // Default
+		}
+		// Map named presets to voice IDs
+		voicePresets := map[string]string{
+			"charlotte": "XB0fDUnXU5powFXDhCwa", // British female, warm
+			"aria":      "9BWtsMINqrJLrRacOk9x", // American female, expressive
+			"sarah":     "EXAVITQu4vr4xnSDxMaL", // American female, soft
+			"lily":      "pFZP5JQG7iQjIQuC4Bku", // British female, warm
+			"rachel":    "21m00Tcm4TlvDq8ikWAM", // American female, calm
+			"domi":      "AZnzlk1XvdvUeBnXmlld", // American female, strong
+			"bella":     "EXAVITQu4vr4xnSDxMaL", // American female, soft
+			"elli":      "MF3mGyEYCl7XYWbV9V6O", // American female, young
+			"josh":      "TxGEqnHWrfWFTfGW9XjX", // American male, deep
+			"adam":      "pNInz6obpgDQGcFmaJgB", // American male, deep
+			"sam":       "yoZ06aMxZJJ28mfd3POQ", // American male, raspy
+		}
+		if preset, ok := voicePresets[voiceID]; ok {
+			fmt.Printf("   Voice preset: %s\n", voiceID)
+			voiceID = preset
+		}
+		var err error
+		ttsProvider, err = tts.NewElevenLabs(
+			tts.WithAPIKey(elevenLabsKey),
+			tts.WithVoice(voiceID),
+			tts.WithModel(tts.ModelFlashV2_5), // Fastest model (~150ms)
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ ElevenLabs init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("🎙️  TTS: ElevenLabs (voice: %s)\n", voiceID)
+	case "openai-tts":
+		var err error
+		ttsProvider, err = tts.NewOpenAI(
+			tts.WithAPIKey(openaiKey),
+			tts.WithVoice("shimmer"),
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ OpenAI TTS init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🎙️  TTS: OpenAI TTS API")
+	default:
+		fmt.Printf("❌ Unknown TTS provider: %s (use: realtime, elevenlabs, openai-tts)\n", ttsMode)
 		os.Exit(1)
 	}
 
@@ -470,8 +554,11 @@ func connectRealtime(apiKey string) error {
 	}
 
 	realtimeClient.OnAudioDelta = func(audioBase64 string) {
-		if err := audioPlayer.AppendAudio(audioBase64); err != nil {
-			fmt.Printf("⚠️  Audio append error: %v\n", err)
+		// Only use OpenAI audio in realtime mode
+		if ttsMode == "realtime" {
+			if err := audioPlayer.AppendAudio(audioBase64); err != nil {
+				fmt.Printf("⚠️  Audio append error: %v\n", err)
+			}
 		}
 	}
 
@@ -493,11 +580,31 @@ func connectRealtime(apiKey string) error {
 			webServer.AddLog("speech", "Playing audio...")
 		}
 
-		fmt.Println("🗣️  [playing audio...]")
-		if err := audioPlayer.FlushAndPlay(); err != nil {
-			fmt.Printf("⚠️  Audio error: %v\n", err)
+		if ttsMode == "realtime" {
+			// Use OpenAI Realtime audio
+			fmt.Println("🗣️  [playing audio...]")
+			if err := audioPlayer.FlushAndPlay(); err != nil {
+				fmt.Printf("⚠️  Audio error: %v\n", err)
+			}
+			fmt.Println("🗣️  [done]")
+		} else if ttsProvider != nil && evaCurrentResponse != "" {
+			// Use external TTS provider (ElevenLabs or OpenAI TTS)
+			fmt.Printf("🗣️  [synthesizing with %s...]\n", ttsMode)
+			go func(text string) {
+				result, err := ttsProvider.Synthesize(context.Background(), text)
+				if err != nil {
+					fmt.Printf("⚠️  TTS error: %v\n", err)
+					return
+				}
+				debug.Log("🗣️  TTS: %d bytes, %v latency\n", len(result.Audio), result.LatencyMs)
+				
+				// Play the PCM audio
+				if err := audioPlayer.PlayPCM(result.Audio); err != nil {
+					fmt.Printf("⚠️  Audio playback error: %v\n", err)
+				}
+				fmt.Println("🗣️  [done]")
+			}(evaCurrentResponse)
 		}
-		fmt.Println("🗣️  [done]")
 
 		// Update web dashboard
 		if webServer != nil {
@@ -631,6 +738,9 @@ func shutdown() {
 	}
 	if videoClient != nil {
 		videoClient.Close()
+	}
+	if ttsProvider != nil {
+		ttsProvider.Close()
 	}
 }
 

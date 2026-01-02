@@ -213,6 +213,59 @@ func (p *AudioPlayer) IsSpeaking() bool {
 	return p.speaking
 }
 
+// PlayPCM plays raw PCM16 audio data at 24kHz via UDP to the robot's audio system
+func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
+	if len(pcmData) == 0 {
+		return nil
+	}
+
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+
+	// Trigger callbacks
+	if p.OnPlaybackStart != nil {
+		p.speakingMu.Lock()
+		p.speaking = true
+		p.speakingMu.Unlock()
+		p.OnPlaybackStart()
+	}
+
+	// GStreamer pipeline - same format as streaming audio (via UDP to port 5000)
+	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
+
+	cmd := exec.Command("sshpass", "-p", p.sshPass,
+		"ssh", "-o", "StrictHostKeyChecking=no",
+		fmt.Sprintf("%s@%s", p.sshUser, p.robotIP),
+		pipeline)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start playback: %w", err)
+	}
+
+	// Write PCM data
+	stdin.Write(pcmData)
+	stdin.Close()
+
+	// Wait for playback to complete
+	if err := cmd.Wait(); err != nil {
+		// Ignore exit errors from gstreamer
+	}
+
+	if p.OnPlaybackEnd != nil {
+		p.speakingMu.Lock()
+		p.speaking = false
+		p.speakingMu.Unlock()
+		p.OnPlaybackEnd()
+	}
+
+	return nil
+}
+
 // SpeakText uses OpenAI TTS to speak text directly (for timer announcements, etc.)
 func (p *AudioPlayer) SpeakText(text string) error {
 	if p.openaiKey == "" {
