@@ -46,8 +46,8 @@ type WorldModel struct {
 func NewWorldModel() *WorldModel {
 	return &WorldModel{
 		entities:        make(map[string]*TrackedEntity),
-		confidenceDecay: 0.3,            // Lose 30% confidence per second
-		forgetThreshold: 0.1,            // Forget below 10% confidence
+		confidenceDecay: 0.3,              // Lose 30% confidence per second
+		forgetThreshold: 0.1,              // Forget below 10% confidence
 		forgetTimeout:   10 * time.Second, // Forget after 10 seconds
 	}
 }
@@ -288,4 +288,3 @@ func (w *WorldModel) GetTarget() (angle float64, source string, ok bool) {
 	// No target
 	return 0, "", false
 }
-

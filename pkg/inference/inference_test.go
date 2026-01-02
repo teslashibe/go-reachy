@@ -260,6 +260,3 @@ func TestMockLastCall(t *testing.T) {
 		t.Errorf("Expected method 'Chat', got %s", last.Method)
 	}
 }
-
-
-

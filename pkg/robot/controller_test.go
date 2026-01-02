@@ -15,7 +15,7 @@ func floatEquals(a, b float64) bool {
 
 // mockRobot records all commands for testing
 type mockRobot struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	headCalls []struct{ roll, pitch, yaw float64 }
 	antCalls  []struct{ left, right float64 }
 	bodyCalls []float64
@@ -61,9 +61,9 @@ func (m *mockRobot) headCallCount() int {
 func TestOffset_Add(t *testing.T) {
 	a := Offset{Roll: 0.1, Pitch: 0.2, Yaw: 0.3}
 	b := Offset{Roll: 0.05, Pitch: -0.1, Yaw: 0.2}
-	
+
 	result := a.Add(b)
-	
+
 	if !floatEquals(result.Roll, 0.15) {
 		t.Errorf("Roll: got %v, want 0.15", result.Roll)
 	}
@@ -78,14 +78,14 @@ func TestOffset_Add(t *testing.T) {
 func TestController_FusesPoses(t *testing.T) {
 	mock := &mockRobot{}
 	ctrl := NewController(mock, 10*time.Millisecond)
-	
+
 	// Set base and tracking offsets
 	ctrl.SetBaseHead(Offset{Roll: 0, Pitch: 0, Yaw: 0.3})
 	ctrl.SetTrackingOffset(Offset{Roll: 0, Pitch: 0, Yaw: 0.2})
-	
+
 	// Run one tick
 	ctrl.tick()
-	
+
 	// Check combined output
 	roll, pitch, yaw := mock.lastHead()
 	if roll != 0 {
@@ -101,12 +101,12 @@ func TestController_FusesPoses(t *testing.T) {
 
 func TestController_BodyYaw(t *testing.T) {
 	ctrl := NewController(nil, 10*time.Millisecond)
-	
+
 	// Initial value should be 0
 	if ctrl.BodyYaw() != 0 {
 		t.Errorf("Initial BodyYaw: got %v, want 0", ctrl.BodyYaw())
 	}
-	
+
 	// Set and get
 	ctrl.SetBodyYaw(0.5)
 	if ctrl.BodyYaw() != 0.5 {
@@ -116,9 +116,9 @@ func TestController_BodyYaw(t *testing.T) {
 
 func TestController_BodyYaw_ThreadSafe(t *testing.T) {
 	ctrl := NewController(nil, 10*time.Millisecond)
-	
+
 	var wg sync.WaitGroup
-	
+
 	// Concurrent writers
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
@@ -129,7 +129,7 @@ func TestController_BodyYaw_ThreadSafe(t *testing.T) {
 			}
 		}(float64(i) * 0.1)
 	}
-	
+
 	// Concurrent readers
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
@@ -140,7 +140,7 @@ func TestController_BodyYaw_ThreadSafe(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	wg.Wait()
 	// If we get here without deadlock/race, test passes
 }
@@ -148,20 +148,20 @@ func TestController_BodyYaw_ThreadSafe(t *testing.T) {
 func TestController_RunStop(t *testing.T) {
 	mock := &mockRobot{}
 	ctrl := NewController(mock, 5*time.Millisecond)
-	
+
 	// Start controller in goroutine
 	done := make(chan struct{})
 	go func() {
 		ctrl.Run()
 		close(done)
 	}()
-	
+
 	// Let it run for a bit
 	time.Sleep(50 * time.Millisecond)
-	
+
 	// Stop it
 	ctrl.Stop()
-	
+
 	// Should exit promptly
 	select {
 	case <-done:
@@ -169,7 +169,7 @@ func TestController_RunStop(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Controller did not stop within timeout")
 	}
-	
+
 	// Should have made some calls
 	if mock.headCallCount() < 5 {
 		t.Errorf("Expected at least 5 head calls, got %d", mock.headCallCount())
@@ -179,15 +179,15 @@ func TestController_RunStop(t *testing.T) {
 func TestController_Rate(t *testing.T) {
 	mock := &mockRobot{}
 	ctrl := NewController(mock, 10*time.Millisecond) // 100Hz
-	
+
 	go func() {
 		ctrl.Run()
 	}()
-	
+
 	// Run for 100ms
 	time.Sleep(100 * time.Millisecond)
 	ctrl.Stop()
-	
+
 	// At 100Hz for 100ms, expect ~10 calls (with some tolerance)
 	count := mock.headCallCount()
 	if count < 8 || count > 15 {
@@ -197,12 +197,12 @@ func TestController_Rate(t *testing.T) {
 
 func TestController_CombinedHead(t *testing.T) {
 	ctrl := NewController(nil, 10*time.Millisecond)
-	
+
 	ctrl.SetBaseHead(Offset{Roll: 0.1, Pitch: 0.2, Yaw: 0.3})
 	ctrl.SetTrackingOffset(Offset{Roll: 0.05, Pitch: -0.1, Yaw: 0.1})
-	
+
 	combined := ctrl.CombinedHead()
-	
+
 	if !floatEquals(combined.Roll, 0.15) {
 		t.Errorf("Combined Roll: got %v, want 0.15", combined.Roll)
 	}
@@ -216,10 +216,9 @@ func TestController_CombinedHead(t *testing.T) {
 
 func TestController_NilRobot(t *testing.T) {
 	ctrl := NewController(nil, 10*time.Millisecond)
-	
+
 	// Should not panic with nil robot
 	ctrl.SetBaseHead(Offset{Yaw: 0.5})
 	ctrl.tick()
 	// If we get here, test passes
 }
-

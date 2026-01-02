@@ -102,7 +102,7 @@ func TestSelectBest(t *testing.T) {
 		{
 			name: "high confidence beats larger area",
 			detections: []Detection{
-				{X: 0.0, Y: 0.0, W: 0.4, H: 0.4, Confidence: 0.5}, // Larger but low conf
+				{X: 0.0, Y: 0.0, W: 0.4, H: 0.4, Confidence: 0.5},  // Larger but low conf
 				{X: 0.3, Y: 0.3, W: 0.2, H: 0.2, Confidence: 0.95}, // Smaller but high conf
 			},
 			expectNil: false,
@@ -161,4 +161,3 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("DefaultConfig: InputHeight should be positive, got %d", cfg.InputHeight)
 	}
 }
-

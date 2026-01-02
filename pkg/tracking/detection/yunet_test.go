@@ -1,10 +1,10 @@
 package detection
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/jpeg"
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -228,4 +228,3 @@ func createSolidJPEG(width, height int, c color.Color) []byte {
 	jpeg.Encode(&buf, img, nil)
 	return buf.Bytes()
 }
-

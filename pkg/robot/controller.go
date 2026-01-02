@@ -1,3 +1,5 @@
+// Package robot provides control interfaces for the Reachy Mini robot.
+// It handles head movements, antenna control, and motor coordination.
 package robot
 
 import (
@@ -147,4 +149,3 @@ func (c *Controller) tick() {
 func (c *Controller) Stop() {
 	close(c.stop)
 }
-

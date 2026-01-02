@@ -86,9 +86,9 @@ func TestPerception_FrameToRoomAngle(t *testing.T) {
 		{
 			name:          "body rotated, head compensating",
 			framePosition: 50,
-			headYaw:       0.3, // Head turned left relative to body
+			headYaw:       0.3,  // Head turned left relative to body
 			bodyYaw:       -0.3, // Body turned right
-			expected:      0,   // Net: face is straight ahead in room
+			expected:      0,    // Net: face is straight ahead in room
 		},
 		{
 			name:          "face on left of frame, body and head rotated",
@@ -97,7 +97,7 @@ func TestPerception_FrameToRoomAngle(t *testing.T) {
 			bodyYaw:       0.3,
 			// Body-relative: 0.2 + FOV/2 = 0.2 + ~0.785 = ~0.985
 			// Room: 0.3 + 0.985 = ~1.285
-			expected:      0.3 + 0.2 + cfg.CameraFOV/2,
+			expected: 0.3 + 0.2 + cfg.CameraFOV/2,
 		},
 	}
 
@@ -117,22 +117,21 @@ func TestPerception_FrameToRoomAngle_BodyYawMaintainsAccuracy(t *testing.T) {
 
 	// Scenario: Face is detected at room angle 0.5
 	// Body rotates, but the room angle should stay the same
-	
+
 	// Initial: face at center of frame, head at 0.5, body at 0
 	// Room angle = 0 + 0.5 + 0 = 0.5
 	roomAngle1 := p.FrameToRoomAngle(50, 0.5, 0)
-	
+
 	// After body rotates to 0.3:
 	// If head compensates to 0.2 (to keep looking at same spot)
 	// Room angle = 0.3 + 0.2 + 0 = 0.5
 	roomAngle2 := p.FrameToRoomAngle(50, 0.2, 0.3)
-	
+
 	if math.Abs(roomAngle1-roomAngle2) > 0.01 {
 		t.Errorf("Room angle should be maintained: got %v and %v", roomAngle1, roomAngle2)
 	}
-	
+
 	if math.Abs(roomAngle1-0.5) > 0.01 {
 		t.Errorf("Expected room angle 0.5, got %v", roomAngle1)
 	}
 }
-

@@ -1,3 +1,5 @@
+// Package realtime provides real-time audio processing and playback for Eva.
+// It includes audio buffering, resampling, and SSH-based playback to the robot.
 package realtime
 
 import (

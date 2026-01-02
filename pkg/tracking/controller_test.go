@@ -156,4 +156,3 @@ func TestPDController_PDControl_StillWorks(t *testing.T) {
 		t.Errorf("Expected positive yaw movement toward 0.5, got %v", yaw)
 	}
 }
-

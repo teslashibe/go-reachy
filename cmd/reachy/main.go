@@ -1,3 +1,6 @@
+// Reachy - Basic robot controller with speech integration
+//
+// Deprecated: Use cmd/eva for the main conversational agent.
 package main
 
 import (
@@ -70,4 +73,3 @@ func main() {
 
 	fmt.Println("👋 Goodbye!")
 }
-

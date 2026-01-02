@@ -1,3 +1,5 @@
+// Package speech provides speech recognition and synthesis capabilities for Eva.
+// It handles voice activity detection and integrates with the robot controller.
 package speech
 
 import (
@@ -24,7 +26,7 @@ func NewHandler(apiKey string, r *robot.Reachy) *Handler {
 // Run starts the speech processing loop
 func (h *Handler) Run(ctx context.Context) {
 	log.Println("Speech handler started")
-	
+
 	// TODO: Implement OpenAI Realtime API WebSocket connection
 	// This would:
 	// 1. Connect to OpenAI's Realtime API via WebSocket
@@ -42,12 +44,11 @@ func (h *Handler) Run(ctx context.Context) {
 func (h *Handler) ProcessCommand(command string) (string, error) {
 	// TODO: Implement command processing
 	// This would send the command to OpenAI and handle tool calls
-	
+
 	// Example tool handling:
 	// - "dance" -> h.robot.Dance("random")
 	// - "be happy" -> h.robot.PlayEmotion("happy")
 	// - "look left" -> h.robot.SetHead(...)
-	
+
 	return "Command received: " + command, nil
 }
-

@@ -17,10 +17,10 @@ import (
 // Note: Uses HTTP/WebSocket since zenoh-go doesn't exist yet
 // TODO: Switch to native Zenoh when zenoh-go is available
 type ZenohClient struct {
-	httpBase  string
-	wsBase    string
-	prefix    string
-	debug     bool
+	httpBase string
+	wsBase   string
+	prefix   string
+	debug    bool
 
 	wsConn        *websocket.Conn
 	connected     chan struct{}
@@ -201,9 +201,9 @@ func (zc *ZenohClient) Publish(topic string, data []byte) error {
 // SendMoveCommand sends a movement command via HTTP
 func (zc *ZenohClient) SendMoveCommand(head [4]float64, antennas [2]float64, bodyYaw float64) error {
 	cmd := map[string]interface{}{
-		"head":      head,
-		"antennas":  antennas,
-		"body_yaw":  bodyYaw,
+		"head":     head,
+		"antennas": antennas,
+		"body_yaw": bodyYaw,
 	}
 
 	data, err := json.Marshal(cmd)
@@ -212,7 +212,7 @@ func (zc *ZenohClient) SendMoveCommand(head [4]float64, antennas [2]float64, bod
 	}
 
 	// POST to move endpoint
-	resp, err := http.Post(zc.httpBase+"/api/move/target", "application/json", 
+	resp, err := http.Post(zc.httpBase+"/api/move/target", "application/json",
 		io.NopCloser(jsonReader(data)))
 	if err != nil {
 		return err
@@ -268,4 +268,3 @@ func (zc *ZenohClient) WaitForConnection(timeout time.Duration) error {
 		return fmt.Errorf("connection timeout after %v", timeout)
 	}
 }
-

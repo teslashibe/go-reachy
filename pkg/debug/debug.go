@@ -19,4 +19,3 @@ func Logln(msg string) {
 		fmt.Println(msg)
 	}
 }
-

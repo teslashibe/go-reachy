@@ -194,6 +194,3 @@ func WithLatency(m *Mock, delay time.Duration) *Mock {
 
 // Verify Mock implements Provider at compile time.
 var _ Provider = (*Mock)(nil)
-
-
-

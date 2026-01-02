@@ -1,3 +1,6 @@
+// Dance - Reachy Mini dance demo with antenna movements
+//
+// Makes the robot perform a dance routine with head and antenna animations.
 package main
 
 import (

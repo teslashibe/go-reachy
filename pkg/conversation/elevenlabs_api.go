@@ -286,4 +286,3 @@ func buildAgentConfig(cfg *Config, tools []Tool) AgentConfig {
 
 	return agentCfg
 }
-

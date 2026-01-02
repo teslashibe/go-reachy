@@ -1,3 +1,6 @@
+// Package tracking provides face detection and head tracking for Eva.
+// It uses YuNet for face detection and implements smooth head movement
+// to follow detected faces in the camera feed.
 package tracking
 
 import (
@@ -20,17 +23,17 @@ type PDController struct {
 	DeadZone float64 // Ignore errors smaller than this (radians)
 
 	// State
-	lastError    float64
-	lastOutput   float64
-	currentYaw   float64
-	targetYaw    float64
-	isSettled    bool // True when within dead zone
+	lastError  float64
+	lastOutput float64
+	currentYaw float64
+	targetYaw  float64
+	isSettled  bool // True when within dead zone
 
 	// Interpolation state (for smooth return to neutral)
-	interpStart    time.Time
-	interpDuration time.Duration
-	interpFrom     float64
-	interpTo       float64
+	interpStart     time.Time
+	interpDuration  time.Duration
+	interpFrom      float64
+	interpTo        float64
 	isInterpolating bool
 }
 
@@ -141,7 +144,7 @@ func (c *PDController) Update() (float64, bool) {
 // updateInterpolation handles smooth interpolation to target
 func (c *PDController) updateInterpolation() (float64, bool) {
 	elapsed := time.Since(c.interpStart)
-	
+
 	// Calculate interpolation progress (0 to 1)
 	t := float64(elapsed) / float64(c.interpDuration)
 	if t >= 1.0 {
@@ -178,4 +181,3 @@ func clamp(value, min, max float64) float64 {
 	}
 	return value
 }
-

@@ -1,3 +1,6 @@
+// Video-simple - Simple SSH-based video capture from Reachy Mini
+//
+// Captures frames using SSH + GStreamer without WebRTC.
 package main
 
 import (

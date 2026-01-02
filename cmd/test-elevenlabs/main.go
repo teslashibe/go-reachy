@@ -376,4 +376,3 @@ func sendTextMessage(apiKey, agentID, message string) error {
 
 	return nil
 }
-

@@ -14,16 +14,16 @@ import (
 
 // EvaState represents the current state of Eva for the dashboard
 type EvaState struct {
-	RobotConnected   bool    `json:"robot_connected"`
-	OpenAIConnected  bool    `json:"openai_connected"`
-	WebRTCConnected  bool    `json:"webrtc_connected"`
-	Speaking         bool    `json:"speaking"`
-	Listening        bool    `json:"listening"`
-	HeadYaw          float64 `json:"head_yaw"`
-	FacePosition     float64 `json:"face_position"` // 0-100%
-	ActiveTimer      string  `json:"active_timer"`
-	LastUserMessage  string  `json:"last_user_message"`
-	LastEvaMessage   string  `json:"last_eva_message"`
+	RobotConnected  bool    `json:"robot_connected"`
+	OpenAIConnected bool    `json:"openai_connected"`
+	WebRTCConnected bool    `json:"webrtc_connected"`
+	Speaking        bool    `json:"speaking"`
+	Listening       bool    `json:"listening"`
+	HeadYaw         float64 `json:"head_yaw"`
+	FacePosition    float64 `json:"face_position"` // 0-100%
+	ActiveTimer     string  `json:"active_timer"`
+	LastUserMessage string  `json:"last_user_message"`
+	LastEvaMessage  string  `json:"last_eva_message"`
 }
 
 // LogEntry represents a log line for the dashboard

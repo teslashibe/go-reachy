@@ -196,6 +196,3 @@ func TestChainIntegration(t *testing.T) {
 
 	t.Logf("Chain response (via fallback): %s", resp.Message.Content)
 }
-
-
-

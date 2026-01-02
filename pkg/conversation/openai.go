@@ -49,7 +49,7 @@ type OpenAI struct {
 func NewOpenAI(opts ...Option) (*OpenAI, error) {
 	cfg := DefaultConfig()
 	cfg.Model = openAIModel
-	cfg.InputSampleRate = 24000  // OpenAI uses 24kHz
+	cfg.InputSampleRate = 24000 // OpenAI uses 24kHz
 	cfg.OutputSampleRate = 24000
 	cfg.Apply(opts...)
 
@@ -612,6 +612,3 @@ func (o *OpenAI) emitError(err error) {
 
 // Ensure OpenAI implements Provider.
 var _ Provider = (*OpenAI)(nil)
-
-
-

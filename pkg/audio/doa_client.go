@@ -15,11 +15,11 @@ import (
 
 // DOAResult represents a DOA reading from go-eva
 type DOAResult struct {
-	Angle      float64   `json:"angle"`       // Radians in Eva coordinates (0=front, +π/2=left, -π/2=right)
-	Speaking   bool      `json:"speaking"`    // Voice activity detected
-	Confidence float64   `json:"confidence"`  // 0-1 confidence score
-	Timestamp  time.Time `json:"timestamp"`   // When this reading was taken
-	RawAngle   float64   `json:"raw_angle"`   // Original XVF3800 angle
+	Angle      float64   `json:"angle"`      // Radians in Eva coordinates (0=front, +π/2=left, -π/2=right)
+	Speaking   bool      `json:"speaking"`   // Voice activity detected
+	Confidence float64   `json:"confidence"` // 0-1 confidence score
+	Timestamp  time.Time `json:"timestamp"`  // When this reading was taken
+	RawAngle   float64   `json:"raw_angle"`  // Original XVF3800 angle
 }
 
 // wsMessage represents a WebSocket message from go-eva
@@ -246,7 +246,7 @@ func (c *Client) handleDisconnect(ctx context.Context) {
 
 		// Restart read loop
 		go c.readLoop(ctx)
-		
+
 		// Log reconnection if handler exists
 		if handler != nil {
 			// Send a synthetic reading to indicate reconnection

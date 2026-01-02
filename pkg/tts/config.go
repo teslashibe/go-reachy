@@ -145,6 +145,3 @@ func (c *Config) ValidateWithVoice() error {
 	}
 	return nil
 }
-
-
-

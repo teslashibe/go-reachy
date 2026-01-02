@@ -22,18 +22,18 @@ type Mock struct {
 	onInterruption func()
 
 	// Configurable behavior
-	ConnectFunc           func(ctx context.Context) error
-	CloseFunc             func() error
-	SendAudioFunc         func(audio []byte) error
-	ConfigureSessionFunc  func(opts SessionOptions) error
-	CancelResponseFunc    func() error
-	SubmitToolResultFunc  func(callID, result string) error
+	ConnectFunc          func(ctx context.Context) error
+	CloseFunc            func() error
+	SendAudioFunc        func(audio []byte) error
+	ConfigureSessionFunc func(opts SessionOptions) error
+	CancelResponseFunc   func() error
+	SubmitToolResultFunc func(callID, result string) error
 
 	// Captured calls for assertions
-	AudioSent        [][]byte
-	SessionOptions   *SessionOptions
-	ToolResults      map[string]string
-	CancelCalled     bool
+	AudioSent      [][]byte
+	SessionOptions *SessionOptions
+	ToolResults    map[string]string
+	CancelCalled   bool
 }
 
 // NewMock creates a new Mock provider.
@@ -269,6 +269,3 @@ func (m *Mock) GetTools() []Tool {
 
 // Ensure Mock implements Provider.
 var _ Provider = (*Mock)(nil)
-
-
-

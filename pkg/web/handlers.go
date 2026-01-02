@@ -1,3 +1,5 @@
+// Package web provides HTTP and WebSocket handlers for Eva's web dashboard.
+// It includes real-time state updates, conversation display, and camera streaming.
 package web
 
 import (

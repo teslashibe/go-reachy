@@ -1,3 +1,6 @@
+// POC - Proof of concept for Reachy Mini control
+//
+// Deprecated: Use cmd/eva for the main conversational agent.
 package main
 
 import (
@@ -40,7 +43,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("✅ Started!")
-		
+
 		// Wait for it to initialize
 		fmt.Print("   Waiting for initialization... ")
 		time.Sleep(8 * time.Second)
@@ -155,7 +158,7 @@ func playEmotion(baseURL string, emotion string) error {
 func moveHead(baseURL string, x, y, z, yaw float64) error {
 	cmd := map[string]interface{}{
 		"x":   x,
-		"y":   y, 
+		"y":   y,
 		"z":   z,
 		"yaw": yaw,
 	}
@@ -184,4 +187,3 @@ func repeatStr(s string, n int) string {
 	}
 	return result
 }
-

@@ -33,6 +33,3 @@ func DecodeBase64Image(b64 string) (image.Image, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err
 }
-
-
-

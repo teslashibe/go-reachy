@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	elevenLabsBaseURL = "https://api.elevenlabs.io/v1"
+	elevenLabsBaseURL  = "https://api.elevenlabs.io/v1"
 	providerElevenLabs = "elevenlabs"
 )
 
@@ -341,6 +341,3 @@ func (s *httpStream) Format() AudioFormat {
 
 // Verify ElevenLabs implements Provider at compile time.
 var _ Provider = (*ElevenLabs)(nil)
-
-
-

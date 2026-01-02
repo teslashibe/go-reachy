@@ -155,4 +155,3 @@ func TestWorldModel_VelocityPrediction_WithBodyYaw(t *testing.T) {
 		t.Errorf("Expected body-relative angle ~0.4, got %v", angle)
 	}
 }
-

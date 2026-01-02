@@ -1,3 +1,5 @@
+// Package hub provides a message broadcasting hub for real-time communication.
+// It manages WebSocket connections and broadcasts state updates to connected clients.
 package hub
 
 import (
@@ -119,8 +121,3 @@ func (h *Hub) ClientCount() int {
 func (h *Hub) IsRunning() bool {
 	return h.running
 }
-
-
-
-
-

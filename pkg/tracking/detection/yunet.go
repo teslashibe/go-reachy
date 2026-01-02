@@ -27,13 +27,13 @@ func NewYuNet(cfg Config) (*YuNetDetector, error) {
 	// Create FaceDetectorYN with initial size (will be updated per-image)
 	detector := gocv.NewFaceDetectorYNWithParams(
 		cfg.ModelPath,
-		"",                                                      // No config file needed for ONNX
-		image.Pt(cfg.InputWidth, cfg.InputHeight),               // Initial input size
-		float32(cfg.ConfidenceThresh),                           // Score threshold
-		0.3,                                                     // NMS threshold
-		5000,                                                    // Top K
-		int(gocv.NetBackendDefault),                             // Backend
-		int(gocv.NetTargetCPU),                                  // Target
+		"", // No config file needed for ONNX
+		image.Pt(cfg.InputWidth, cfg.InputHeight), // Initial input size
+		float32(cfg.ConfidenceThresh),             // Score threshold
+		0.3,                                       // NMS threshold
+		5000,                                      // Top K
+		int(gocv.NetBackendDefault),               // Backend
+		int(gocv.NetTargetCPU),                    // Target
 	)
 
 	return &YuNetDetector{

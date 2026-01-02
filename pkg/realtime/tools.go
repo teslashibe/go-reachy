@@ -24,7 +24,7 @@ type RobotController interface {
 
 // VisionProvider interface for camera access
 type VisionProvider interface {
-	CaptureFrame() ([]byte, error)  // Returns JPEG image data
+	CaptureFrame() ([]byte, error)      // Returns JPEG image data
 	CaptureImage() (image.Image, error) // Returns image.Image for inference
 }
 
@@ -387,12 +387,14 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 			},
 		},
 		{
-			Name:        "describe_scene",
-			Description: "Look through your camera and describe what you see. Use this when someone asks what you can see, who is in the room, or to look for something.",
+			Name: "describe_scene",
+			Description: "Look through your camera and describe what you see. " +
+				"Use this when someone asks what you can see, who is in the room, or to look for something.",
 			Parameters: map[string]interface{}{
 				"focus": map[string]interface{}{
-					"type":        "string",
-					"description": "What to focus on: 'general' for overall scene, 'people' to look for people, or a specific thing to look for",
+					"type": "string",
+					"description": "What to focus on: 'general' for overall scene, " +
+						"'people' to look for people, or a specific thing to look for",
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -426,11 +428,16 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 				var prompt string
 				switch focus {
 				case "people":
-					prompt = "Describe any people you see in this image. How many people are there? What are they doing? Where are they positioned (left, center, right)? Be concise."
+					prompt = "Describe any people you see in this image. " +
+						"How many people are there? What are they doing? " +
+						"Where are they positioned (left, center, right)? Be concise."
 				case "general":
-					prompt = "Briefly describe what you see in this image. Mention the setting, any people, and notable objects. Keep it to 2-3 sentences."
+					prompt = "Briefly describe what you see in this image. " +
+						"Mention the setting, any people, and notable objects. Keep it to 2-3 sentences."
 				default:
-					prompt = fmt.Sprintf("Look at this image and tell me if you can see: %s. Describe what you find. Be concise.", focus)
+					prompt = fmt.Sprintf(
+						"Look at this image and tell me if you can see: %s. Describe what you find. Be concise.",
+						focus)
 				}
 
 				// Call inference provider vision
@@ -487,8 +494,9 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 			},
 		},
 		{
-			Name:        "search_flights",
-			Description: "Search for real flight prices and availability. Use this when someone asks about flights, travel, or booking.",
+			Name: "search_flights",
+			Description: "Search for real flight prices and availability. " +
+				"Use this when someone asks about flights, travel, or booking.",
 			Parameters: map[string]interface{}{
 				"origin": map[string]interface{}{
 					"type":        "string",

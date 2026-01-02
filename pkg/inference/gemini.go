@@ -435,6 +435,3 @@ func GeminiSearch(ctx context.Context, apiKey, query string) (string, error) {
 
 // Verify Gemini implements Provider at compile time.
 var _ Provider = (*Gemini)(nil)
-
-
-

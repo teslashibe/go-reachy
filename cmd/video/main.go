@@ -1,3 +1,6 @@
+// Video - WebRTC video client for Reachy Mini camera
+//
+// Connects to the robot's WebRTC stream and captures frames.
 package main
 
 import (

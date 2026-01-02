@@ -126,6 +126,3 @@ type streamEvent struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 }
-
-
-
