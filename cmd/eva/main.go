@@ -662,6 +662,13 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 		audioPlayer.SetTTSProvider(ttsProvider)
 	}
 
+	// Configure audio player sample rate based on conversation provider
+	caps := convProvider.Capabilities()
+	if caps.OutputSampleRate > 0 {
+		audioPlayer.SetSampleRate(caps.OutputSampleRate)
+		fmt.Printf("🔊 Audio: %dHz output sample rate\n", caps.OutputSampleRate)
+	}
+
 	// Initialize inference provider for vision tools
 	inferenceProvider, err := initInferenceProvider()
 	if err != nil {

@@ -24,6 +24,9 @@ type AudioPlayer struct {
 	// TTS provider (ElevenLabs, OpenAI, etc.)
 	ttsProvider tts.Provider
 
+	// Audio format settings
+	sampleRate int // Input sample rate (default 24000 for OpenAI, 16000 for ElevenLabs)
+
 	// Streaming state
 	streamCmd   *exec.Cmd
 	streamStdin io.WriteCloser
@@ -42,10 +45,19 @@ type AudioPlayer struct {
 // NewAudioPlayer creates a new audio player for the robot
 func NewAudioPlayer(robotIP, sshUser, sshPass string) *AudioPlayer {
 	return &AudioPlayer{
-		robotIP: robotIP,
-		sshUser: sshUser,
-		sshPass: sshPass,
+		robotIP:    robotIP,
+		sshUser:    sshUser,
+		sshPass:    sshPass,
+		sampleRate: 24000, // Default for OpenAI
 	}
+}
+
+// SetSampleRate sets the input sample rate for audio playback.
+// Common values: 24000 (OpenAI), 16000 (ElevenLabs)
+func (p *AudioPlayer) SetSampleRate(rate int) {
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
+	p.sampleRate = rate
 }
 
 // SetTTSProvider sets the TTS provider for speech synthesis
@@ -92,7 +104,12 @@ func (p *AudioPlayer) startStream() error {
 	// GStreamer pipeline that reads from stdin and plays audio
 	// Using fdsrc to read raw PCM from stdin
 	// Added queue for buffering and sync=true to ensure proper playback timing
-	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=5000000000 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
+	// Sample rate is configurable: 24000 for OpenAI, 16000 for ElevenLabs
+	sampleRate := p.sampleRate
+	if sampleRate == 0 {
+		sampleRate = 24000 // Default fallback
+	}
+	pipeline := fmt.Sprintf(`gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=5000000000 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=%d num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`, sampleRate)
 
 	p.streamCmd = exec.Command("bash", "-c", fmt.Sprintf(
 		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s '%s'`,

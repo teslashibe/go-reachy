@@ -279,6 +279,16 @@ func (e *ElevenLabs) SendAudio(audio []byte) error {
 	}
 
 	e.messagesSent.Add(1)
+	
+	// Log audio send (every 20 chunks to avoid spam)
+	count := e.messagesSent.Load()
+	if count%20 == 1 {
+		e.logger.Debug("sending audio chunk",
+			"chunk_num", count,
+			"audio_bytes", len(audio),
+			"base64_len", len(encoded),
+		)
+	}
 	return nil
 }
 
@@ -490,17 +500,40 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 				e.logger.Warn("failed to decode audio", "error", err)
 				return
 			}
+			e.logger.Info("🔊 received agent audio",
+				"bytes", len(audio),
+				"duration_ms", len(audio)/32, // 16kHz * 2 bytes = 32 bytes/ms
+			)
 			e.emitAudio(audio)
 		}
 
 	case "audio_done", "agent_response_done":
+		e.logger.Info("🔊 agent audio done")
 		e.emitAudioDone()
 
 	case "user_transcript":
-		e.emitTranscript("user", msg.Text, msg.IsFinal)
+		// Extract text from nested event structure
+		text := msg.Text
+		if msg.UserTranscriptionEvent != nil && msg.UserTranscriptionEvent.UserTranscript != "" {
+			text = msg.UserTranscriptionEvent.UserTranscript
+		}
+		e.logger.Info("🎤 user transcript",
+			"text", text,
+			"is_final", msg.IsFinal,
+		)
+		e.emitTranscript("user", text, msg.IsFinal)
 
 	case "agent_response":
-		e.emitTranscript("agent", msg.Text, msg.IsFinal)
+		// Extract text from nested event structure
+		text := msg.Text
+		if msg.AgentResponseEvent != nil && msg.AgentResponseEvent.AgentResponse != "" {
+			text = msg.AgentResponseEvent.AgentResponse
+		}
+		e.logger.Info("🤖 agent response",
+			"text", text,
+			"is_final", msg.IsFinal,
+		)
+		e.emitTranscript("agent", text, msg.IsFinal)
 
 	case "tool_call", "client_tool_call":
 		// Handle both nested and flat tool call formats
@@ -512,12 +545,21 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 			toolCallID = msg.ClientToolCall.ToolCallID
 			params = msg.ClientToolCall.Parameters
 		}
+		e.logger.Info("🔧 tool call",
+			"tool", toolName,
+			"call_id", toolCallID,
+		)
 		e.emitToolCall(toolCallID, toolName, params)
 
 	case "interruption":
+		e.logger.Info("⚡ interruption received")
 		e.emitInterruption()
 
 	case "error":
+		e.logger.Error("❌ API error",
+			"code", msg.Code,
+			"message", msg.Message,
+		)
 		e.emitError(NewAPIError(0, msg.Code, msg.Message))
 
 	case "ping":
@@ -527,6 +569,9 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 			eventID = msg.PingEvent.EventID
 		}
 		e.sendPong(eventID)
+
+	case "conversation_initiation_metadata":
+		e.logger.Info("📞 conversation initiated")
 
 	default:
 		e.logger.Debug("unhandled message type", "type", msg.Type)
@@ -629,9 +674,11 @@ type elevenLabsIncoming struct {
 	Message    string         `json:"message,omitempty"`
 
 	// Nested event structures (ElevenLabs format)
-	AudioEvent     *audioEvent     `json:"audio_event,omitempty"`
-	PingEvent      *pingEvent      `json:"ping_event,omitempty"`
-	ClientToolCall *clientToolCall `json:"client_tool_call,omitempty"`
+	AudioEvent             *audioEvent             `json:"audio_event,omitempty"`
+	PingEvent              *pingEvent              `json:"ping_event,omitempty"`
+	ClientToolCall         *clientToolCall         `json:"client_tool_call,omitempty"`
+	UserTranscriptionEvent *userTranscriptionEvent `json:"user_transcription_event,omitempty"`
+	AgentResponseEvent     *agentResponseEvent     `json:"agent_response_event,omitempty"`
 }
 
 type audioEvent struct {
@@ -648,6 +695,14 @@ type clientToolCall struct {
 	ToolName   string         `json:"tool_name"`
 	ToolCallID string         `json:"tool_call_id"`
 	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+type userTranscriptionEvent struct {
+	UserTranscript string `json:"user_transcript"`
+}
+
+type agentResponseEvent struct {
+	AgentResponse string `json:"agent_response"`
 }
 
 // Ensure ElevenLabs implements Provider.
