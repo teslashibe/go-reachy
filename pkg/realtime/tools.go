@@ -217,13 +217,26 @@ type BodyYawNotifier interface {
 }
 
 // EvaToolsConfig holds dependencies for Eva's tools
+// ObjectDetector interface for YOLO-style object detection
+type ObjectDetector interface {
+	Detect(jpeg []byte) ([]ObjectDetectionResult, error)
+}
+
+// ObjectDetectionResult represents a detected object
+type ObjectDetectionResult struct {
+	ClassName  string
+	Confidence float64
+	X, Y, W, H float64 // Normalized 0-1
+}
+
 type EvaToolsConfig struct {
-	Robot        RobotController
-	Memory       *Memory
-	Vision       VisionProvider
-	GoogleAPIKey string
-	AudioPlayer  *AudioPlayer    // For timer announcements
-	Tracker      BodyYawNotifier // For body rotation sync with tracking
+	Robot          RobotController
+	Memory         *Memory
+	Vision         VisionProvider
+	ObjectDetector ObjectDetector // YOLO object detector
+	GoogleAPIKey   string
+	AudioPlayer    *AudioPlayer    // For timer announcements
+	Tracker        BodyYawNotifier // For body rotation sync with tracking
 }
 
 // EvaTools returns all tools available to Eva
@@ -628,6 +641,111 @@ func EvaTools(cfg EvaToolsConfig) []Tool {
 			},
 		},
 		{
+			Name:        "detect_objects",
+			Description: "Quickly detect objects, animals, or people in your camera view. Use this when you want to know if there's a cat, dog, person, or other object nearby. Faster than describe_scene.",
+			Parameters: map[string]interface{}{
+				"target": map[string]interface{}{
+					"type":        "string",
+					"description": "What to look for: 'all' for everything, 'animals' for cats/dogs/birds, 'people', or a specific object like 'cat' or 'cup'",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				target, _ := args["target"].(string)
+				if target == "" {
+					target = "all"
+				}
+
+				fmt.Printf("🔍 detect_objects called (target: %s)\n", target)
+
+				if cfg.Vision == nil {
+					return "I cannot see right now - camera not connected", nil
+				}
+
+				if cfg.ObjectDetector == nil {
+					return "Object detection not available", nil
+				}
+
+				// Capture frame
+				imageData, err := cfg.Vision.CaptureFrame()
+				if err != nil {
+					return fmt.Sprintf("Could not capture image: %v", err), nil
+				}
+
+				// Run YOLO detection
+				detections, err := cfg.ObjectDetector.Detect(imageData)
+				if err != nil {
+					return fmt.Sprintf("Detection error: %v", err), nil
+				}
+
+				if len(detections) == 0 {
+					return "I don't see any objects in my view right now", nil
+				}
+
+				// Filter by target
+				var filtered []ObjectDetectionResult
+				for _, det := range detections {
+					switch target {
+					case "all":
+						filtered = append(filtered, det)
+					case "animals":
+						if isAnimal(det.ClassName) {
+							filtered = append(filtered, det)
+						}
+					case "people":
+						if det.ClassName == "person" {
+							filtered = append(filtered, det)
+						}
+					default:
+						if det.ClassName == target {
+							filtered = append(filtered, det)
+						}
+					}
+				}
+
+				if len(filtered) == 0 {
+					return fmt.Sprintf("I don't see any %s in my view", target), nil
+				}
+
+				// Build response
+				var result string
+				counts := make(map[string]int)
+				for _, det := range filtered {
+					counts[det.ClassName]++
+				}
+
+				var parts []string
+				for name, count := range counts {
+					if count == 1 {
+						parts = append(parts, fmt.Sprintf("a %s", name))
+					} else {
+						parts = append(parts, fmt.Sprintf("%d %ss", count, name))
+					}
+				}
+
+				if len(parts) == 1 {
+					result = fmt.Sprintf("I can see %s", parts[0])
+				} else {
+					result = fmt.Sprintf("I can see %s", strings.Join(parts, ", "))
+				}
+
+				// Add position info for single detections
+				if len(filtered) == 1 {
+					det := filtered[0]
+					cx := det.X + det.W/2
+					if cx < 0.33 {
+						result += " on my left"
+					} else if cx > 0.66 {
+						result += " on my right"
+					} else {
+						result += " in front of me"
+					}
+				}
+
+				fmt.Printf("🔍 Detected: %s\n", result)
+				return result, nil
+			},
+		},
+		{
 			Name:        "web_search",
 			Description: "Search the internet for general information. Use for news, facts, weather, products, etc.",
 			Parameters: map[string]interface{}{
@@ -1003,4 +1121,13 @@ func (r *SimpleRobotController) SetBodyYaw(yaw float64) error {
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// isAnimal returns true if the class name is an animal
+func isAnimal(className string) bool {
+	animals := map[string]bool{
+		"bird": true, "cat": true, "dog": true, "horse": true, "sheep": true,
+		"cow": true, "elephant": true, "bear": true, "zebra": true, "giraffe": true,
+	}
+	return animals[className]
 }

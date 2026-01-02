@@ -43,14 +43,15 @@ type Client struct {
 	sessionReady bool
 
 	// Callbacks
-	OnTranscript     func(text string, isFinal bool)
-	OnAudioDelta     func(audioBase64 string)
-	OnAudioDone      func()
-	OnFunctionCall   func(name string, args map[string]interface{}) string
-	OnError          func(err error)
-	OnSessionCreated func()
-	OnSpeechStarted  func() // User started speaking
-	OnSpeechStopped  func() // User stopped speaking
+	OnTranscript       func(text string, isFinal bool)
+	OnTranscriptDone   func() // Called when response.audio_transcript.done is received (transcript complete)
+	OnAudioDelta       func(audioBase64 string)
+	OnAudioDone        func()
+	OnFunctionCall     func(name string, args map[string]interface{}) string
+	OnError            func(err error)
+	OnSessionCreated   func()
+	OnSpeechStarted    func() // User started speaking
+	OnSpeechStopped    func() // User stopped speaking
 
 	// Internal state
 	closed bool
@@ -303,6 +304,12 @@ func (c *Client) handleMessages() {
 			// Streaming transcript of assistant's speech
 			if delta, ok := msg["delta"].(string); ok && c.OnTranscript != nil {
 				c.OnTranscript(delta, false)
+			}
+
+		case "response.audio_transcript.done":
+			// Transcript complete - use this for external TTS instead of audio.done
+			if c.OnTranscriptDone != nil {
+				c.OnTranscriptDone()
 			}
 
 		case "response.function_call_arguments.done":

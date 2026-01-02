@@ -16,6 +16,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/realtime"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
+	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/web"
@@ -103,6 +104,7 @@ var (
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
 	ttsProvider    tts.Provider
+	objectDetector *detection.YOLODetector
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -272,8 +274,19 @@ func main() {
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
 		fmt.Println("✅")
+	}
 
-		// Connect audio DOA from go-eva
+	// Initialize YOLO object detection
+	fmt.Print("🔍 Initializing object detection... ")
+	objectDetector, err = detection.NewYOLO(detection.DefaultYOLOConfig())
+	if err != nil {
+		fmt.Printf("⚠️  Disabled: %v\n", err)
+	} else {
+		fmt.Println("✅")
+	}
+
+	// Connect audio DOA from go-eva
+	if headTracker != nil {
 		fmt.Print("🎤 Connecting to go-eva audio DOA... ")
 		audioClient := audio.NewClient(robotIP)
 		if err := audioClient.Health(); err != nil {
@@ -379,12 +392,13 @@ func startWebDashboard(ctx context.Context) {
 
 		// Get tool config
 		cfg := realtime.EvaToolsConfig{
-			Robot:        robot,
-			Memory:       memory,
-			Vision:       &videoVisionAdapter{videoClient},
-			GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
-			AudioPlayer:  audioPlayer,
-			Tracker:      headTracker,
+			Robot:          robot,
+			Memory:         memory,
+			Vision:         &videoVisionAdapter{videoClient},
+			ObjectDetector: &yoloAdapter{objectDetector},
+			GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
+			AudioPlayer:    audioPlayer,
+			Tracker:        headTracker,
 		}
 
 		// Get tools and find the one requested
@@ -514,12 +528,13 @@ func connectRealtime(apiKey string) error {
 
 	// Register Eva's tools with vision and tracking support
 	toolsCfg := realtime.EvaToolsConfig{
-		Robot:        robot,
-		Memory:       memory,
-		Vision:       &videoVisionAdapter{videoClient},
-		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:  audioPlayer,
-		Tracker:      headTracker, // For body rotation sync
+		Robot:          robot,
+		Memory:         memory,
+		Vision:         &videoVisionAdapter{videoClient},
+		ObjectDetector: &yoloAdapter{objectDetector},
+		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:    audioPlayer,
+		Tracker:        headTracker, // For body rotation sync
 	}
 	tools := realtime.EvaTools(toolsCfg)
 	for _, tool := range tools {
@@ -563,6 +578,11 @@ func connectRealtime(apiKey string) error {
 	}
 
 	realtimeClient.OnAudioDone = func() {
+		// Only handle realtime TTS mode here
+		if ttsMode != "realtime" {
+			return // External TTS handled in OnTranscriptDone
+		}
+
 		// End the Eva response line
 		if evaResponseStarted {
 			fmt.Println() // newline after streaming text
@@ -580,31 +600,12 @@ func connectRealtime(apiKey string) error {
 			webServer.AddLog("speech", "Playing audio...")
 		}
 
-		if ttsMode == "realtime" {
-			// Use OpenAI Realtime audio
-			fmt.Println("🗣️  [playing audio...]")
-			if err := audioPlayer.FlushAndPlay(); err != nil {
-				fmt.Printf("⚠️  Audio error: %v\n", err)
-			}
-			fmt.Println("🗣️  [done]")
-		} else if ttsProvider != nil && evaCurrentResponse != "" {
-			// Use external TTS provider (ElevenLabs or OpenAI TTS)
-			fmt.Printf("🗣️  [synthesizing with %s...]\n", ttsMode)
-			go func(text string) {
-				result, err := ttsProvider.Synthesize(context.Background(), text)
-				if err != nil {
-					fmt.Printf("⚠️  TTS error: %v\n", err)
-					return
-				}
-				debug.Log("🗣️  TTS: %d bytes, %v latency\n", len(result.Audio), result.LatencyMs)
-				
-				// Play the PCM audio
-				if err := audioPlayer.PlayPCM(result.Audio); err != nil {
-					fmt.Printf("⚠️  Audio playback error: %v\n", err)
-				}
-				fmt.Println("🗣️  [done]")
-			}(evaCurrentResponse)
+		// Use OpenAI Realtime audio
+		fmt.Println("🗣️  [playing audio...]")
+		if err := audioPlayer.FlushAndPlay(); err != nil {
+			fmt.Printf("⚠️  Audio error: %v\n", err)
 		}
+		fmt.Println("🗣️  [done]")
 
 		// Update web dashboard
 		if webServer != nil {
@@ -614,6 +615,67 @@ func connectRealtime(apiKey string) error {
 			})
 			webServer.AddLog("speech", "Audio done")
 		}
+		evaCurrentResponse = ""
+	}
+
+	// OnTranscriptDone fires when OpenAI's transcript is complete
+	// Use this for external TTS (ElevenLabs/OpenAI TTS) to ensure we have full text
+	realtimeClient.OnTranscriptDone = func() {
+		// Only handle external TTS modes here
+		if ttsMode == "realtime" {
+			return // Realtime audio handled in OnAudioDone
+		}
+
+		// End the Eva response line
+		if evaResponseStarted {
+			fmt.Println() // newline after streaming text
+			evaResponseStarted = false
+		}
+
+		// Skip if no text to synthesize
+		if evaCurrentResponse == "" {
+			return
+		}
+
+		// Update web dashboard with Eva's response
+		if webServer != nil {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = true
+				s.Listening = false
+				s.LastEvaMessage = evaCurrentResponse
+			})
+			webServer.AddConversation("eva", evaCurrentResponse)
+			webServer.AddLog("speech", "Synthesizing with "+ttsMode+"...")
+		}
+
+		// Use external TTS provider (ElevenLabs or OpenAI TTS)
+		if ttsProvider != nil {
+			fmt.Printf("🗣️  [synthesizing with %s...]\n", ttsMode)
+			go func(text string) {
+				result, err := ttsProvider.Synthesize(context.Background(), text)
+				if err != nil {
+					fmt.Printf("⚠️  TTS error: %v\n", err)
+					return
+				}
+				fmt.Printf("🗣️  TTS: %d bytes, %d latency\n", len(result.Audio), result.LatencyMs)
+
+				// Play the PCM audio
+				if err := audioPlayer.PlayPCM(result.Audio); err != nil {
+					fmt.Printf("⚠️  Audio playback error: %v\n", err)
+				}
+				fmt.Println("🗣️  [done]")
+
+				// Update web dashboard
+				if webServer != nil {
+					webServer.UpdateState(func(s *web.EvaState) {
+						s.Speaking = false
+						s.Listening = true
+					})
+					webServer.AddLog("speech", "Audio done")
+				}
+			}(evaCurrentResponse)
+		}
+
 		evaCurrentResponse = ""
 	}
 
@@ -754,4 +816,32 @@ func (v *videoVisionAdapter) CaptureFrame() ([]byte, error) {
 		return nil, fmt.Errorf("video client not connected")
 	}
 	return v.client.CaptureJPEG()
+}
+
+// yoloAdapter wraps YOLO detector to implement ObjectDetector interface
+type yoloAdapter struct {
+	detector *detection.YOLODetector
+}
+
+func (y *yoloAdapter) Detect(jpeg []byte) ([]realtime.ObjectDetectionResult, error) {
+	if y.detector == nil {
+		return nil, fmt.Errorf("object detector not initialized")
+	}
+	detections, err := y.detector.Detect(jpeg)
+	if err != nil {
+		return nil, err
+	}
+	// Convert to realtime package type
+	results := make([]realtime.ObjectDetectionResult, len(detections))
+	for i, det := range detections {
+		results[i] = realtime.ObjectDetectionResult{
+			ClassName:  det.ClassName,
+			Confidence: det.Confidence,
+			X:          det.X,
+			Y:          det.Y,
+			W:          det.W,
+			H:          det.H,
+		}
+	}
+	return results, nil
 }
