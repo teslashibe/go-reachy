@@ -8,10 +8,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teslashibe/go-reachy/internal/config"
 	"github.com/teslashibe/go-reachy/pkg/video"
 )
 
-const robotIP = "192.168.68.80"
+var robotIP = config.RobotIP("192.168.68.80")
 
 func main() {
 	fmt.Println("📹 WebRTC Video FPS Test")

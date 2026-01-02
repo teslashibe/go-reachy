@@ -16,11 +16,15 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/teslashibe/go-reachy/internal/config"
 )
 
-const robotIP = "192.168.68.80"
-const sshPass = "root"
-const sshUser = "pollen"
+var (
+	robotIP = config.RobotIP("192.168.68.80")
+	sshUser = config.SSHUser()
+	sshPass = config.SSHPass()
+)
 
 // Gemini API endpoint
 const geminiAPI = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"

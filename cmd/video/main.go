@@ -14,9 +14,12 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/teslashibe/go-reachy/internal/config"
 )
 
-const robotIP = "192.168.68.80"
+var robotIP = config.RobotIP("192.168.68.80")
+
 const streamPort = "5000"
 
 func main() {

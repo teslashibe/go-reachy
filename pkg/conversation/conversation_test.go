@@ -719,3 +719,138 @@ func TestBuildAgentConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestConfigValidate(t *testing.T) {
+	t.Run("missing API key returns error", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.APIKey = ""
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Error("expected error for missing API key")
+		}
+		if !errors.Is(err, ErrMissingAPIKey) {
+			t.Errorf("expected ErrMissingAPIKey, got %v", err)
+		}
+	})
+
+	t.Run("valid config returns nil", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.APIKey = "test-key"
+
+		err := cfg.Validate()
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+func TestAdditionalOptions(t *testing.T) {
+	t.Run("with base URL", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithBaseURL("https://custom.api.com")(cfg)
+
+		if cfg.BaseURL != "https://custom.api.com" {
+			t.Errorf("expected custom URL, got %s", cfg.BaseURL)
+		}
+	})
+
+	t.Run("with reconnect", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithReconnect(5, 10*time.Second)(cfg)
+
+		if cfg.ReconnectAttempts != 5 {
+			t.Errorf("expected 5 attempts, got %d", cfg.ReconnectAttempts)
+		}
+		if cfg.ReconnectDelay != 10*time.Second {
+			t.Errorf("expected 10s delay, got %v", cfg.ReconnectDelay)
+		}
+	})
+
+	t.Run("with turn detection", func(t *testing.T) {
+		cfg := DefaultConfig()
+		td := &TurnDetection{
+			Type:              "server_vad",
+			SilenceDurationMs: 300,
+		}
+		WithTurnDetection(td)(cfg)
+
+		if cfg.TurnDetection == nil {
+			t.Fatal("turn detection should not be nil")
+		}
+		if cfg.TurnDetection.Type != "server_vad" {
+			t.Errorf("expected server_vad, got %s", cfg.TurnDetection.Type)
+		}
+	})
+
+	t.Run("with metrics", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithMetrics(true)(cfg)
+
+		if !cfg.EnableMetrics {
+			t.Error("expected metrics to be enabled")
+		}
+	})
+}
+
+func TestCapabilitiesStruct(t *testing.T) {
+	caps := Capabilities{
+		SupportsStreaming:   true,
+		SupportsToolCalls:   true,
+		SupportsCustomVoice: false,
+		InputSampleRate:     16000,
+		OutputSampleRate:    24000,
+	}
+
+	if !caps.SupportsStreaming {
+		t.Error("expected streaming to be supported")
+	}
+	if caps.InputSampleRate != 16000 {
+		t.Errorf("expected input rate 16000, got %d", caps.InputSampleRate)
+	}
+}
+
+func TestElevenLabsNewValidation(t *testing.T) {
+	t.Run("missing API key", func(t *testing.T) {
+		_, err := NewElevenLabs()
+		if err == nil {
+			t.Error("expected error for missing API key")
+		}
+	})
+
+	t.Run("missing agent ID without auto-create", func(t *testing.T) {
+		_, err := NewElevenLabs(WithAPIKey("test-key"))
+		if err == nil {
+			t.Error("expected error for missing agent ID")
+		}
+	})
+
+	t.Run("auto-create without voice ID", func(t *testing.T) {
+		_, err := NewElevenLabs(
+			WithAPIKey("test-key"),
+			WithAutoCreateAgent(true),
+		)
+		if err == nil {
+			t.Error("expected error for missing voice ID with auto-create")
+		}
+	})
+}
+
+func TestOpenAINewValidation(t *testing.T) {
+	t.Run("missing API key", func(t *testing.T) {
+		_, err := NewOpenAI()
+		if err == nil {
+			t.Error("expected error for missing API key")
+		}
+	})
+
+	t.Run("valid with API key", func(t *testing.T) {
+		p, err := NewOpenAI(WithAPIKey("test-key"))
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if p == nil {
+			t.Error("expected provider, got nil")
+		}
+	})
+}

@@ -12,11 +12,15 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/teslashibe/go-reachy/internal/config"
 )
 
-const robotIP = "192.168.68.80"
-const sshPass = "root"
-const sshUser = "pollen"
+var (
+	robotIP = config.RobotIP("192.168.68.80")
+	sshUser = config.SSHUser()
+	sshPass = config.SSHPass()
+)
 
 func main() {
 	fmt.Println("📹 Reachy Mini Video MVP")

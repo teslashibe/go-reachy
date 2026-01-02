@@ -12,10 +12,11 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v3"
+	"github.com/teslashibe/go-reachy/internal/config"
 	"gopkg.in/hraban/opus.v2"
 )
 
-const robotIP = "192.168.68.80"
+var robotIP = config.RobotIP("192.168.68.80")
 
 var (
 	packetsReceived int64

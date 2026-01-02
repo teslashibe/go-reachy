@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teslashibe/go-reachy/internal/httpc"
 	"github.com/teslashibe/go-reachy/pkg/conversation"
 )
 
@@ -292,7 +293,7 @@ func listAvailableVoices(apiKey string) error {
 	}
 	req.Header.Set("xi-api-key", apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpc.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -335,7 +336,7 @@ func deleteAgent(apiKey, agentID string) error {
 	}
 	req.Header.Set("xi-api-key", apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpc.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -365,7 +366,7 @@ func sendTextMessage(apiKey, agentID, message string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("xi-api-key", apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpc.Client.Do(req)
 	if err != nil {
 		return err
 	}
