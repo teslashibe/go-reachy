@@ -46,6 +46,16 @@ type ElevenLabs struct {
 	// Atomic counters for metrics
 	messagesSent     atomic.Int64
 	messagesReceived atomic.Int64
+
+	// Latency tracking for debugging
+	latencyMu          sync.Mutex
+	userSpeechEndTime  time.Time // When user stopped speaking (final transcript)
+	firstAudioTime     time.Time // First audio chunk from agent
+	lastAudioTime      time.Time // Last audio chunk received
+	audioChunkCount    int       // Total chunks this turn
+	audioGapThreshold  time.Duration
+	audioGapTicker     *time.Ticker
+	audioGapTickerDone chan struct{}
 }
 
 // NewElevenLabs creates a new ElevenLabs conversation provider.
@@ -100,11 +110,12 @@ func NewElevenLabs(opts ...Option) (*ElevenLabs, error) {
 	}
 
 	return &ElevenLabs{
-		config:    cfg,
-		logger:    cfg.Logger.With("component", "conversation.elevenlabs"),
-		apiClient: newAPIClient(cfg.APIKey),
-		agentID:   cfg.AgentID, // May be empty if auto-create
-		state:     StateDisconnected,
+		config:            cfg,
+		logger:            cfg.Logger.With("component", "conversation.elevenlabs"),
+		apiClient:         newAPIClient(cfg.APIKey),
+		agentID:           cfg.AgentID, // May be empty if auto-create
+		state:             StateDisconnected,
+		audioGapThreshold: 100 * time.Millisecond, // Detect end of audio after 100ms gap
 	}, nil
 }
 
@@ -212,6 +223,9 @@ func (e *ElevenLabs) AgentID() string {
 
 // Close gracefully closes the connection.
 func (e *ElevenLabs) Close() error {
+	// Stop audio gap detection first (outside lock to avoid deadlock)
+	e.stopAudioGapDetection()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -278,15 +292,17 @@ func (e *ElevenLabs) SendAudio(audio []byte) error {
 		return NewConnectionError("send audio failed", err, true)
 	}
 
-	e.messagesSent.Add(1)
-	
-	// Log audio send (every 20 chunks to avoid spam)
-	count := e.messagesSent.Load()
-	if count%20 == 1 {
-		e.logger.Debug("sending audio chunk",
-			"chunk_num", count,
-			"audio_bytes", len(audio),
+	// Track and log audio sends
+	count := e.messagesSent.Add(1)
+	if count == 1 {
+		e.logger.Info("🎙️ started sending audio",
+			"bytes", len(audio),
 			"base64_len", len(encoded),
+		)
+	} else if count <= 5 || count%50 == 0 {
+		e.logger.Info("🎙️ audio sending",
+			"chunks_sent", count,
+			"last_chunk_bytes", len(audio),
 		)
 	}
 	return nil
@@ -473,9 +489,16 @@ func (e *ElevenLabs) handleMessages(ctx context.Context) {
 
 		e.messagesReceived.Add(1)
 
+		// Raw message logging for debugging (truncate long messages)
+		preview := string(data)
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
+		}
+		e.logger.Info("📨 RAW incoming", "len", len(data), "preview", preview)
+
 		var msg elevenLabsIncoming
 		if err := json.Unmarshal(data, &msg); err != nil {
-			e.logger.Warn("failed to parse message", "error", err)
+			e.logger.Warn("failed to parse message", "error", err, "data", preview)
 			continue
 		}
 
@@ -485,22 +508,72 @@ func (e *ElevenLabs) handleMessages(ctx context.Context) {
 
 // handleMessage processes a single message.
 func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
+	// Debug: log what type we're actually receiving
+	e.logger.Info("🔍 handleMessage",
+		"type", msg.Type,
+		"has_audio_event", msg.AudioEvent != nil,
+		"has_user_transcript", msg.UserTranscriptionEvent != nil,
+		"has_agent_response", msg.AgentResponseEvent != nil,
+	)
+
 	switch msg.Type {
 	case "audio":
 		// Handle both nested (audio_event) and flat (audio) formats
 		var audioData string
-		if msg.AudioEvent != nil && msg.AudioEvent.AudioBase64 != "" {
-			audioData = msg.AudioEvent.AudioBase64
-		} else if msg.Audio != "" {
+		if msg.AudioEvent != nil {
+			e.logger.Info("🔍 audio_event details",
+				"event_id", msg.AudioEvent.EventID,
+				"base64_len", len(msg.AudioEvent.AudioBase64),
+			)
+			if msg.AudioEvent.AudioBase64 != "" {
+				audioData = msg.AudioEvent.AudioBase64
+			}
+		}
+		if audioData == "" && msg.Audio != "" {
+			e.logger.Info("🔍 using flat audio format", "len", len(msg.Audio))
 			audioData = msg.Audio
 		}
-		if audioData != "" {
-			audio, err := base64.StdEncoding.DecodeString(audioData)
-			if err != nil {
-				e.logger.Warn("failed to decode audio", "error", err)
-				return
+		if audioData == "" {
+			e.logger.Warn("⚠️ audio message received but no audio data found")
+			return
+		}
+
+		e.logger.Info("🔍 decoding audio", "base64_len", len(audioData))
+		audio, err := base64.StdEncoding.DecodeString(audioData)
+		if err != nil {
+			e.logger.Warn("failed to decode audio", "error", err)
+			return
+		}
+		e.logger.Info("🔍 decoded audio", "bytes", len(audio))
+
+			if len(audio) > 0 {
+			// Track latency metrics
+			e.latencyMu.Lock()
+			now := time.Now()
+			e.audioChunkCount++
+			chunkNum := e.audioChunkCount
+			isFirstChunk := e.firstAudioTime.IsZero()
+
+			if isFirstChunk {
+				e.firstAudioTime = now
+				if !e.userSpeechEndTime.IsZero() {
+					latency := now.Sub(e.userSpeechEndTime)
+					e.logger.Info("⚡ LATENCY: first audio",
+						"latency_ms", latency.Milliseconds(),
+						"user_speech_end", e.userSpeechEndTime.Format("15:04:05.000"),
+					)
+				}
 			}
+			e.lastAudioTime = now
+			e.latencyMu.Unlock()
+
+			// Start gap detection AFTER releasing the lock (it acquires the lock internally)
+			if isFirstChunk {
+				e.startAudioGapDetection()
+			}
+
 			e.logger.Info("🔊 received agent audio",
+				"chunk", chunkNum,
 				"bytes", len(audio),
 				"duration_ms", len(audio)/32, // 16kHz * 2 bytes = 32 bytes/ms
 			)
@@ -517,10 +590,25 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 		if msg.UserTranscriptionEvent != nil && msg.UserTranscriptionEvent.UserTranscript != "" {
 			text = msg.UserTranscriptionEvent.UserTranscript
 		}
-		e.logger.Info("🎤 user transcript",
-			"text", text,
-			"is_final", msg.IsFinal,
-		)
+
+		// Track when user finishes speaking for latency measurement
+		if msg.IsFinal {
+			e.latencyMu.Lock()
+			e.userSpeechEndTime = time.Now()
+			// Reset audio tracking for new turn
+			e.firstAudioTime = time.Time{}
+			e.lastAudioTime = time.Time{}
+			e.audioChunkCount = 0
+			e.latencyMu.Unlock()
+			e.logger.Info("🎤 user transcript (FINAL) - starting latency timer",
+				"text", text,
+			)
+		} else {
+			e.logger.Info("🎤 user transcript",
+				"text", text,
+				"is_final", msg.IsFinal,
+			)
+		}
 		e.emitTranscript("user", text, msg.IsFinal)
 
 	case "agent_response":
@@ -574,7 +662,8 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 		e.logger.Info("📞 conversation initiated")
 
 	default:
-		e.logger.Debug("unhandled message type", "type", msg.Type)
+		// Log ALL unhandled message types at INFO level for debugging
+		e.logger.Info("📨 unhandled message type", "type", msg.Type)
 	}
 }
 
@@ -596,6 +685,102 @@ func (e *ElevenLabs) sendPong(eventID int) {
 	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// startAudioGapDetection starts a ticker that monitors for gaps in audio.
+// When no audio arrives for audioGapThreshold (100ms), we consider the turn complete.
+func (e *ElevenLabs) startAudioGapDetection() {
+	e.latencyMu.Lock()
+	// Stop any existing ticker
+	if e.audioGapTicker != nil {
+		e.audioGapTicker.Stop()
+	}
+	if e.audioGapTickerDone != nil {
+		select {
+		case <-e.audioGapTickerDone:
+		default:
+			close(e.audioGapTickerDone)
+		}
+	}
+
+	e.audioGapTicker = time.NewTicker(25 * time.Millisecond) // Check every 25ms
+	e.audioGapTickerDone = make(chan struct{})
+	ticker := e.audioGapTicker
+	done := e.audioGapTickerDone
+	e.latencyMu.Unlock()
+
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				e.latencyMu.Lock()
+				lastAudio := e.lastAudioTime
+				chunkCount := e.audioChunkCount
+				firstAudio := e.firstAudioTime
+				userEnd := e.userSpeechEndTime
+				e.latencyMu.Unlock()
+
+				// Only check if we've received audio
+				if lastAudio.IsZero() || chunkCount == 0 {
+					continue
+				}
+
+				gap := time.Since(lastAudio)
+				if gap >= e.audioGapThreshold {
+					// Audio gap detected - turn is complete
+					totalDuration := time.Duration(0)
+					if !firstAudio.IsZero() {
+						totalDuration = lastAudio.Sub(firstAudio)
+					}
+					totalLatency := time.Duration(0)
+					if !userEnd.IsZero() {
+						totalLatency = lastAudio.Sub(userEnd)
+					}
+
+					e.logger.Info("🔇 AUDIO GAP DETECTED - turn complete",
+						"gap_ms", gap.Milliseconds(),
+						"chunks", chunkCount,
+						"audio_duration_ms", totalDuration.Milliseconds(),
+						"total_latency_ms", totalLatency.Milliseconds(),
+					)
+
+					// Reset for next turn
+					e.latencyMu.Lock()
+					e.firstAudioTime = time.Time{}
+					e.lastAudioTime = time.Time{}
+					e.audioChunkCount = 0
+					e.latencyMu.Unlock()
+
+					// Emit audio done callback
+					e.emitAudioDone()
+
+					return // Goroutine exits, ticker stopped by defer
+				}
+			}
+		}
+	}()
+}
+
+// stopAudioGapDetection stops the audio gap detection ticker.
+func (e *ElevenLabs) stopAudioGapDetection() {
+	e.latencyMu.Lock()
+	defer e.latencyMu.Unlock()
+
+	// Signal goroutine to stop
+	if e.audioGapTickerDone != nil {
+		select {
+		case <-e.audioGapTickerDone:
+			// Already closed
+		default:
+			close(e.audioGapTickerDone)
+		}
+		e.audioGapTickerDone = nil
+	}
+	e.audioGapTicker = nil
+}
+
 // Emit helpers
 
 func (e *ElevenLabs) emitAudio(audio []byte) {
@@ -603,7 +788,10 @@ func (e *ElevenLabs) emitAudio(audio []byte) {
 	fn := e.onAudio
 	e.mu.RUnlock()
 	if fn != nil {
+		e.logger.Info("🔊 emitAudio: sending to callback", "bytes", len(audio))
 		fn(audio)
+	} else {
+		e.logger.Warn("⚠️ emitAudio: no callback registered!")
 	}
 }
 
@@ -612,7 +800,10 @@ func (e *ElevenLabs) emitAudioDone() {
 	fn := e.onAudioDone
 	e.mu.RUnlock()
 	if fn != nil {
+		e.logger.Info("🔊 emitAudioDone: calling callback")
 		fn()
+	} else {
+		e.logger.Warn("⚠️ emitAudioDone: no callback registered!")
 	}
 }
 

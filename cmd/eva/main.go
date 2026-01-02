@@ -603,6 +603,7 @@ func initConversationProvider() (conversation.Provider, error) {
 				conversation.WithLLM(llm),
 				conversation.WithSystemPrompt(evaInstructions),
 				conversation.WithAgentName("eva-agent"),
+				conversation.WithFirstMessage("Hello! I'm Eva, your friendly robot companion. How can I help you today?"),
 				conversation.WithAutoCreateAgent(true),
 			)
 			if err != nil {
@@ -735,7 +736,10 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 	})
 
 	convProvider.OnAudioDone(func() {
-		// Log latency summary
+		// Gap detection triggered this callback - audio turn is complete
+		fmt.Println("\n🔇 Audio gap detected - flushing audio")
+
+		// Log latency summary (now tracked internally by provider too)
 		if !userSpeechEndTime.IsZero() {
 			totalTime := time.Since(userSpeechEndTime)
 			debug.Log("📊 Response complete: %d audio chunks, total time: %v\n", audioChunkCount, totalTime)
@@ -761,14 +765,14 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 				s.LastEvaMessage = evaCurrentResponse
 			})
 			webServer.AddConversation("eva", evaCurrentResponse)
-			webServer.AddLog("speech", "Playing audio...")
+			webServer.AddLog("speech", "Audio gap detected, flushing...")
 		}
 
-		fmt.Println("🗣️  [playing audio...]")
+		fmt.Println("🗣️  [flushing audio pipeline...]")
 		if err := audioPlayer.FlushAndPlay(); err != nil {
-			fmt.Printf("⚠️  Audio error: %v\n", err)
+			fmt.Printf("⚠️  Audio flush error: %v\n", err)
 		}
-		fmt.Println("🗣️  [done]")
+		fmt.Println("🗣️  [done - resuming listening]")
 
 		// Update web dashboard
 		if webServer != nil {
@@ -776,7 +780,7 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 				s.Speaking = false
 				s.Listening = true
 			})
-			webServer.AddLog("speech", "Audio done")
+			webServer.AddLog("speech", "Audio done, listening resumed")
 		}
 		evaCurrentResponse = ""
 
