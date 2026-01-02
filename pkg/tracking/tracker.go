@@ -71,6 +71,9 @@ type Tracker struct {
 	// Interpolation for smooth return to neutral
 	interpStartedAt time.Time
 	isInterpolating bool
+
+	// Speaker state - suppress DOA when Eva is speaking (picks up her own voice)
+	isSpeaking bool
 }
 
 // New creates a new head tracker with local face detection
@@ -141,8 +144,24 @@ func (t *Tracker) SetAudioClient(client *audio.Client) {
 	t.audioClient = client
 }
 
+// SetSpeaking tells the tracker when Eva is speaking (to suppress DOA noise from her own voice)
+func (t *Tracker) SetSpeaking(speaking bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.isSpeaking = speaking
+}
+
 // handleAudioDOA is called when a DOA reading is received via WebSocket
 func (t *Tracker) handleAudioDOA(doa *audio.DOAResult) {
+	// Suppress DOA when Eva is speaking (microphones pick up her own voice)
+	t.mu.RLock()
+	isSpeaking := t.isSpeaking
+	t.mu.RUnlock()
+
+	if isSpeaking {
+		return // Ignore DOA readings while Eva speaks
+	}
+
 	// Update world model with audio source
 	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
 

@@ -223,7 +223,8 @@ func main() {
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
+	// Use SlowConfig for smoother, less jittery tracking
+	headTracker, err = tracking.New(tracking.SlowConfig(), robot, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
@@ -726,6 +727,11 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 			latency := firstAudioTime.Sub(userSpeechEndTime)
 			debug.Log("⚡ First audio response latency: %v\n", latency)
 			responseStarted = true
+
+			// Tell head tracker Eva is speaking (suppress DOA noise from her own voice)
+			if headTracker != nil {
+				headTracker.SetSpeaking(true)
+			}
 		}
 		audioChunkCount++
 
@@ -773,6 +779,11 @@ func connectConversation(ctx context.Context, openaiKey string) error {
 			fmt.Printf("⚠️  Audio flush error: %v\n", err)
 		}
 		fmt.Println("🗣️  [done - resuming listening]")
+
+		// Tell head tracker Eva is done speaking (resume DOA tracking)
+		if headTracker != nil {
+			headTracker.SetSpeaking(false)
+		}
 
 		// Update web dashboard
 		if webServer != nil {

@@ -92,6 +92,20 @@ func SlowConfig() Config {
 	return cfg
 }
 
+// StableConfig returns a very stable configuration to prevent jitter/shaking
+func StableConfig() Config {
+	cfg := DefaultConfig()
+	cfg.DetectionInterval = 500 * time.Millisecond  // Slower detection (2 per second)
+	cfg.MovementInterval = 100 * time.Millisecond   // Slower updates (10 per second)
+	cfg.MaxSpeed = 0.05                              // Very slow max speed
+	cfg.Kp = 0.08                                    // Lower proportional gain
+	cfg.Kd = 0.12                                    // Higher dampening
+	cfg.ControlDeadZone = 0.10                       // Larger dead zone (~6°)
+	cfg.PositionSmoothing = 0.3                      // Trust old readings more
+	cfg.JitterThreshold = 10.0                       // Ignore <10% position changes
+	return cfg
+}
+
 // AggressiveConfig returns a configuration for very fast tracking
 func AggressiveConfig() Config {
 	cfg := DefaultConfig()
