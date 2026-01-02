@@ -156,8 +156,28 @@ func main() {
 	}
 
 	openaiKey := os.Getenv("OPENAI_API_KEY")
-	if openaiKey == "" {
-		fmt.Println("❌ Set OPENAI_API_KEY!")
+	elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+	elevenLabsVoice := os.Getenv("ELEVENLABS_VOICE_ID")
+	provider := getEnv("CONVERSATION_PROVIDER", "elevenlabs")
+
+	// Validate we have at least one provider configured
+	if openaiKey == "" && elevenLabsKey == "" {
+		fmt.Println("❌ Set OPENAI_API_KEY or ELEVENLABS_API_KEY!")
+		os.Exit(1)
+	}
+
+	// For ElevenLabs, use default voice if not specified
+	if provider == "elevenlabs" || provider == "11labs" {
+		if elevenLabsKey == "" {
+			fmt.Println("❌ ELEVENLABS_API_KEY required for ElevenLabs provider!")
+			os.Exit(1)
+		}
+		if elevenLabsVoice == "" {
+			os.Setenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL") // Sarah - default
+			fmt.Println("🎤 Using default voice: Sarah")
+		}
+	} else if openaiKey == "" {
+		fmt.Println("❌ OPENAI_API_KEY required for OpenAI provider!")
 		os.Exit(1)
 	}
 

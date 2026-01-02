@@ -261,12 +261,12 @@ func (e *ElevenLabs) SendAudio(audio []byte) error {
 		return ErrNotConnected
 	}
 
-	// Encode audio as base64
+	// Encode audio as base64 - ElevenLabs expects "user_audio_chunk" format
 	encoded := base64.StdEncoding.EncodeToString(audio)
 
-	msg := elevenLabsMessage{
-		Type:  "audio",
-		Audio: encoded,
+	// ElevenLabs uses a flat format, not type-based
+	msg := map[string]string{
+		"user_audio_chunk": encoded,
 	}
 
 	data, err := json.Marshal(msg)
@@ -383,10 +383,12 @@ func (e *ElevenLabs) SubmitToolResult(callID, result string) error {
 		return ErrNotConnected
 	}
 
-	msg := elevenLabsMessage{
-		Type:       "tool_result",
-		ToolCallID: callID,
-		Result:     result,
+	// ElevenLabs uses "client_tool_result" format
+	msg := map[string]interface{}{
+		"type":         "client_tool_result",
+		"tool_call_id": callID,
+		"result":       result,
+		"is_error":     false,
 	}
 
 	data, err := json.Marshal(msg)
@@ -475,8 +477,15 @@ func (e *ElevenLabs) handleMessages(ctx context.Context) {
 func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 	switch msg.Type {
 	case "audio":
-		if msg.Audio != "" {
-			audio, err := base64.StdEncoding.DecodeString(msg.Audio)
+		// Handle both nested (audio_event) and flat (audio) formats
+		var audioData string
+		if msg.AudioEvent != nil && msg.AudioEvent.AudioBase64 != "" {
+			audioData = msg.AudioEvent.AudioBase64
+		} else if msg.Audio != "" {
+			audioData = msg.Audio
+		}
+		if audioData != "" {
+			audio, err := base64.StdEncoding.DecodeString(audioData)
 			if err != nil {
 				e.logger.Warn("failed to decode audio", "error", err)
 				return
@@ -493,8 +502,17 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 	case "agent_response":
 		e.emitTranscript("agent", msg.Text, msg.IsFinal)
 
-	case "tool_call":
-		e.emitToolCall(msg.ToolCallID, msg.ToolName, msg.Parameters)
+	case "tool_call", "client_tool_call":
+		// Handle both nested and flat tool call formats
+		toolName := msg.ToolName
+		toolCallID := msg.ToolCallID
+		params := msg.Parameters
+		if msg.ClientToolCall != nil {
+			toolName = msg.ClientToolCall.ToolName
+			toolCallID = msg.ClientToolCall.ToolCallID
+			params = msg.ClientToolCall.Parameters
+		}
+		e.emitToolCall(toolCallID, toolName, params)
 
 	case "interruption":
 		e.emitInterruption()
@@ -503,16 +521,20 @@ func (e *ElevenLabs) handleMessage(msg elevenLabsIncoming) {
 		e.emitError(NewAPIError(0, msg.Code, msg.Message))
 
 	case "ping":
-		// Respond to ping with pong
-		e.sendPong()
+		// Respond to ping with pong including event_id
+		eventID := 0
+		if msg.PingEvent != nil {
+			eventID = msg.PingEvent.EventID
+		}
+		e.sendPong(eventID)
 
 	default:
 		e.logger.Debug("unhandled message type", "type", msg.Type)
 	}
 }
 
-// sendPong responds to a ping message.
-func (e *ElevenLabs) sendPong() {
+// sendPong responds to a ping message with the event_id.
+func (e *ElevenLabs) sendPong(eventID int) {
 	e.mu.RLock()
 	conn := e.conn
 	e.mu.RUnlock()
@@ -521,7 +543,10 @@ func (e *ElevenLabs) sendPong() {
 		return
 	}
 
-	msg := elevenLabsMessage{Type: "pong"}
+	msg := map[string]interface{}{
+		"type":     "pong",
+		"event_id": eventID,
+	}
 	data, _ := json.Marshal(msg)
 	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
@@ -602,6 +627,27 @@ type elevenLabsIncoming struct {
 	Parameters map[string]any `json:"parameters,omitempty"`
 	Code       string         `json:"code,omitempty"`
 	Message    string         `json:"message,omitempty"`
+
+	// Nested event structures (ElevenLabs format)
+	AudioEvent     *audioEvent     `json:"audio_event,omitempty"`
+	PingEvent      *pingEvent      `json:"ping_event,omitempty"`
+	ClientToolCall *clientToolCall `json:"client_tool_call,omitempty"`
+}
+
+type audioEvent struct {
+	EventID     string `json:"event_id"`
+	AudioBase64 string `json:"audio_base_64"`
+}
+
+type pingEvent struct {
+	EventID int `json:"event_id"`
+	PingMs  int `json:"ping_ms,omitempty"`
+}
+
+type clientToolCall struct {
+	ToolName   string         `json:"tool_name"`
+	ToolCallID string         `json:"tool_call_id"`
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 // Ensure ElevenLabs implements Provider.
