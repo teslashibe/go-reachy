@@ -635,7 +635,7 @@ type elevenLabsIncoming struct {
 }
 
 type audioEvent struct {
-	EventID     string `json:"event_id"`
+	EventID     int    `json:"event_id"`
 	AudioBase64 string `json:"audio_base_64"`
 }
 
