@@ -15,7 +15,7 @@ import (
 
 const (
 	elevenLabsWSBaseURL = "wss://api.elevenlabs.io/v1/text-to-speech"
-	keepaliveInterval   = 30 * time.Second
+	keepaliveInterval   = 15 * time.Second // ElevenLabs times out after 20s without text input
 	reconnectBaseDelay  = 1 * time.Second
 	reconnectMaxDelay   = 30 * time.Second
 )
@@ -25,21 +25,22 @@ type ElevenLabsWS struct {
 	config *Config
 	logger *slog.Logger
 
-	conn     *websocket.Conn
-	connMu   sync.Mutex
+	conn      *websocket.Conn
+	connMu    sync.Mutex
 	connected bool
 
 	// Callbacks
-	OnAudio      func(pcmData []byte) // Called for each audio chunk
-	OnError      func(err error)      // Called on errors
-	OnConnected  func()               // Called when connected
-	OnDisconnect func()               // Called when disconnected
+	OnAudio          func(pcmData []byte) // Called for each audio chunk
+	OnStreamComplete func()               // Called when audio stream is complete (isFinal=true)
+	OnError          func(err error)      // Called on errors
+	OnConnected      func()               // Called when connected
+	OnDisconnect     func()               // Called when disconnected
 
 	// Internal state
-	ctx        context.Context
-	cancel     context.CancelFunc
-	sendCh     chan string
-	closeCh    chan struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
+	sendCh       chan string
+	closeCh      chan struct{}
 	reconnecting bool
 }
 
@@ -107,8 +108,10 @@ func (e *ElevenLabsWS) dial() error {
 	e.connected = true
 
 	// Send Begin of Stream (BOS) message
+	// Note: xi_api_key is required in the first message for WebSocket input streaming
 	bos := map[string]interface{}{
-		"text": " ", // Space to initialize
+		"text":       " ", // Space to initialize
+		"xi_api_key": e.config.APIKey,
 		"voice_settings": map[string]interface{}{
 			"stability":        e.config.VoiceSettings.Stability,
 			"similarity_boost": e.config.VoiceSettings.SimilarityBoost,
@@ -200,8 +203,8 @@ func (e *ElevenLabsWS) readLoop() {
 
 		// Parse response
 		var resp struct {
-			Audio              string `json:"audio"`
-			IsFinal            bool   `json:"isFinal"`
+			Audio               string      `json:"audio"`
+			IsFinal             bool        `json:"isFinal"`
 			NormalizedAlignment interface{} `json:"normalizedAlignment"`
 		}
 		if err := json.Unmarshal(message, &resp); err != nil {
@@ -216,7 +219,16 @@ func (e *ElevenLabsWS) readLoop() {
 				e.logger.Warn("failed to decode audio", "error", err)
 				continue
 			}
+			e.logger.Info("received audio chunk", "bytes", len(audioData), "isFinal", resp.IsFinal)
 			e.OnAudio(audioData)
+		}
+
+		// When isFinal=true, the audio stream is complete
+		if resp.IsFinal {
+			e.logger.Info("audio stream complete")
+			if e.OnStreamComplete != nil {
+				e.OnStreamComplete()
+			}
 		}
 	}
 }
@@ -250,7 +262,8 @@ func (e *ElevenLabsWS) writeLoop() {
 	}
 }
 
-// keepaliveLoop sends periodic pings to maintain connection.
+// keepaliveLoop sends periodic text keepalives to maintain connection.
+// ElevenLabs requires text input every 20s, so we send a space every 15s.
 func (e *ElevenLabsWS) keepaliveLoop() {
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
@@ -271,8 +284,10 @@ func (e *ElevenLabsWS) keepaliveLoop() {
 				continue
 			}
 
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				e.logger.Warn("keepalive ping failed", "error", err)
+			// Send space as text keepalive (ElevenLabs ignores whitespace, won't generate audio)
+			msg := map[string]interface{}{"text": " "}
+			if err := conn.WriteJSON(msg); err != nil {
+				e.logger.Warn("keepalive failed", "error", err)
 				e.handleDisconnect()
 			}
 		}
@@ -392,4 +407,3 @@ func (e *ElevenLabsWS) VoiceID() string {
 func (e *ElevenLabsWS) ModelID() string {
 	return e.config.ModelID
 }
-

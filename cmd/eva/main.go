@@ -103,8 +103,8 @@ var (
 	memory         *realtime.Memory
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
-	ttsProvider    tts.Provider           // HTTP TTS provider
-	ttsStreaming   *tts.ElevenLabsWS      // WebSocket streaming TTS
+	ttsProvider    tts.Provider      // HTTP TTS provider
+	ttsStreaming   *tts.ElevenLabsWS // WebSocket streaming TTS
 	objectDetector *detection.YOLODetector
 
 	speaking   bool
@@ -446,6 +446,23 @@ func initialize() error {
 		}
 		ttsStreaming.OnError = func(err error) {
 			fmt.Printf("⚠️  Streaming TTS error: %v\n", err)
+		}
+		ttsStreaming.OnStreamComplete = func() {
+			// Audio stream complete, flush the player to finish playback
+			fmt.Println("🗣️  [streaming audio complete, flushing...]")
+			if err := audioPlayer.FlushAndPlay(); err != nil {
+				fmt.Printf("⚠️  Audio flush error: %v\n", err)
+			}
+			fmt.Println("🗣️  [done]")
+
+			// Update web dashboard
+			if webServer != nil {
+				webServer.UpdateState(func(s *web.EvaState) {
+					s.Speaking = false
+					s.Listening = true
+				})
+				webServer.AddLog("speech", "Streaming audio done")
+			}
 		}
 	}
 
