@@ -1,6 +1,6 @@
-// Package realtime provides a client for OpenAI's Realtime API
-// for low-latency speech-to-speech conversations with tool use
-package realtime
+// Package openai provides a client for OpenAI's Realtime API
+// for low-latency speech-to-speech conversations with tool use.
+package openai
 
 import (
 	"encoding/base64"
@@ -19,7 +19,7 @@ const (
 	Model       = "gpt-4o-realtime-preview-2024-12-17"
 )
 
-// Tool represents a function that Eva can use
+// Tool represents a function that Eva can use.
 type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
@@ -27,7 +27,7 @@ type Tool struct {
 	Handler     func(args map[string]interface{}) (string, error)
 }
 
-// Client manages the WebSocket connection to OpenAI Realtime API
+// Client manages the WebSocket connection to OpenAI Realtime API.
 type Client struct {
 	apiKey string
 	ws     *websocket.Conn
@@ -44,7 +44,7 @@ type Client struct {
 
 	// Callbacks
 	OnTranscript       func(text string, isFinal bool)
-	OnTranscriptDone   func() // Called when response.audio_transcript.done is received (transcript complete)
+	OnTranscriptDone   func() // Called when response.audio_transcript.done is received
 	OnAudioDelta       func(audioBase64 string)
 	OnAudioDone        func()
 	OnFunctionCall     func(name string, args map[string]interface{}) string
@@ -57,7 +57,7 @@ type Client struct {
 	closed bool
 }
 
-// NewClient creates a new Realtime API client
+// NewClient creates a new Realtime API client.
 func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey:   apiKey,
@@ -66,13 +66,13 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
-// RegisterTool adds a tool that Eva can use during conversation
+// RegisterTool adds a tool that Eva can use during conversation.
 func (c *Client) RegisterTool(tool Tool) {
 	c.tools = append(c.tools, tool)
 	c.toolsMap[tool.Name] = tool
 }
 
-// Connect establishes WebSocket connection to OpenAI Realtime API
+// Connect establishes WebSocket connection to OpenAI Realtime API.
 func (c *Client) Connect() error {
 	url := fmt.Sprintf("%s?model=%s", RealtimeURL, Model)
 
@@ -91,7 +91,6 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect to Realtime API: %w", err)
 	}
 
-	// Log headers from WebSocket handshake in debug mode
 	if resp != nil {
 		debug.Logln("🎤 OpenAI Response Headers:")
 		for key, values := range resp.Header {
@@ -101,19 +100,17 @@ func (c *Client) Connect() error {
 
 	c.connected = true
 
-	// Start message handler
 	go c.handleMessages()
 
 	return nil
 }
 
-// ConfigureSession sets up the session with voice, instructions, and tools
+// ConfigureSession sets up the session with voice, instructions, and tools.
 func (c *Client) ConfigureSession(instructions string, voice string) error {
 	if voice == "" {
 		voice = "alloy"
 	}
 
-	// Build tools array for API
 	apiTools := make([]map[string]interface{}, len(c.tools))
 	for i, tool := range c.tools {
 		apiTools[i] = map[string]interface{}{
@@ -123,7 +120,7 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 			"parameters": map[string]interface{}{
 				"type":       "object",
 				"properties": tool.Parameters,
-				"required":   []string{}, // Make all optional for flexibility
+				"required":   []string{},
 			},
 		}
 	}
@@ -153,7 +150,7 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 	return c.sendJSON(msg)
 }
 
-// SendAudio sends PCM16 audio data to the API
+// SendAudio sends PCM16 audio data to the API.
 func (c *Client) SendAudio(pcm16Data []byte) error {
 	if !c.connected {
 		return fmt.Errorf("not connected")
@@ -169,21 +166,21 @@ func (c *Client) SendAudio(pcm16Data []byte) error {
 	return c.sendJSON(msg)
 }
 
-// CommitAudio commits the audio buffer (triggers processing)
+// CommitAudio commits the audio buffer (triggers processing).
 func (c *Client) CommitAudio() error {
 	return c.sendJSON(map[string]string{
 		"type": "input_audio_buffer.commit",
 	})
 }
 
-// ClearAudio clears the audio input buffer
+// ClearAudio clears the audio input buffer.
 func (c *Client) ClearAudio() error {
 	return c.sendJSON(map[string]string{
 		"type": "input_audio_buffer.clear",
 	})
 }
 
-// SendText sends a text message (for testing or hybrid input)
+// SendText sends a text message (for testing or hybrid input).
 func (c *Client) SendText(text string) error {
 	msg := map[string]interface{}{
 		"type": "conversation.item.create",
@@ -203,20 +200,19 @@ func (c *Client) SendText(text string) error {
 		return err
 	}
 
-	// Request a response
 	return c.sendJSON(map[string]string{
 		"type": "response.create",
 	})
 }
 
-// CancelResponse interrupts the current response
+// CancelResponse interrupts the current response.
 func (c *Client) CancelResponse() error {
 	return c.sendJSON(map[string]string{
 		"type": "response.cancel",
 	})
 }
 
-// Close closes the WebSocket connection
+// Close closes the WebSocket connection.
 func (c *Client) Close() {
 	c.closed = true
 	if c.ws != nil {
@@ -224,7 +220,7 @@ func (c *Client) Close() {
 	}
 }
 
-// handleMessages processes incoming WebSocket messages
+// handleMessages processes incoming WebSocket messages.
 func (c *Client) handleMessages() {
 	for !c.closed {
 		_, message, err := c.ws.ReadMessage()
@@ -250,35 +246,29 @@ func (c *Client) handleMessages() {
 			}
 
 		case "session.updated":
-			// Session configuration confirmed
 			debug.Logln("🎤 Session updated/configured")
 
 		case "input_audio_buffer.speech_started":
-			// User started speaking - trigger callback for interruption
 			debug.Logln("🎤 VAD: Speech started!")
 			if c.OnSpeechStarted != nil {
 				c.OnSpeechStarted()
 			}
 
 		case "input_audio_buffer.speech_stopped":
-			// User stopped speaking
 			debug.Logln("🎤 VAD: Speech stopped")
 			if c.OnSpeechStopped != nil {
 				c.OnSpeechStopped()
 			}
 
 		case "input_audio_buffer.committed":
-			// Audio buffer was committed
 			debug.Logln("🎤 Audio buffer committed")
 
 		case "conversation.item.input_audio_transcription.completed":
-			// Got transcription of user's speech
 			if transcript, ok := msg["transcript"].(string); ok && c.OnTranscript != nil {
 				c.OnTranscript(transcript, true)
 			}
 
 		case "conversation.item.input_audio_transcription.failed":
-			// Transcription failed - always log this as it's an error condition
 			if errData, ok := msg["error"].(map[string]interface{}); ok {
 				errMsg, _ := errData["message"].(string)
 				errCode, _ := errData["code"].(string)
@@ -289,38 +279,32 @@ func (c *Client) handleMessages() {
 			}
 
 		case "response.audio.delta":
-			// Streaming audio chunk from assistant
 			if delta, ok := msg["delta"].(string); ok && c.OnAudioDelta != nil {
 				c.OnAudioDelta(delta)
 			}
 
 		case "response.audio.done":
-			// Audio response complete
 			if c.OnAudioDone != nil {
 				c.OnAudioDone()
 			}
 
 		case "response.audio_transcript.delta":
-			// Streaming transcript of assistant's speech
 			if delta, ok := msg["delta"].(string); ok && c.OnTranscript != nil {
 				c.OnTranscript(delta, false)
 			}
 
 		case "response.audio_transcript.done":
-			// Transcript complete - use this for external TTS instead of audio.done
 			if c.OnTranscriptDone != nil {
 				c.OnTranscriptDone()
 			}
 
 		case "response.function_call_arguments.done":
-			// Function call completed - execute the tool
 			c.handleFunctionCall(msg)
 
 		case "response.done":
 			// Full response complete
 
 		case "error":
-			// Always log errors
 			if errData, ok := msg["error"].(map[string]interface{}); ok {
 				if errMsg, ok := errData["message"].(string); ok {
 					fmt.Printf("⚠️  OpenAI error: %s\n", errMsg)
@@ -333,16 +317,14 @@ func (c *Client) handleMessages() {
 			}
 
 		default:
-			// Log unknown message types in debug mode
 			if msgType != "" && msgType != "response.audio.delta" && msgType != "response.audio_transcript.delta" {
-				// Don't spam with frequent audio deltas
 				debug.Log("🎤 Message: %s\n", msgType)
 			}
 		}
 	}
 }
 
-// handleFunctionCall executes a tool and sends the result back
+// handleFunctionCall executes a tool and sends the result back.
 func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 	name, _ := msg["name"].(string)
 	callID, _ := msg["call_id"].(string)
@@ -353,7 +335,6 @@ func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 	var args map[string]interface{}
 	json.Unmarshal([]byte(argsStr), &args)
 
-	// Find and execute the tool
 	var result string
 	if tool, ok := c.toolsMap[name]; ok && tool.Handler != nil {
 		var err error
@@ -369,7 +350,6 @@ func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 		fmt.Printf("⚠️  Tool not found: %s\n", name)
 	}
 
-	// Send result back to continue conversation
 	responseMsg := map[string]interface{}{
 		"type": "conversation.item.create",
 		"item": map[string]interface{}{
@@ -381,13 +361,12 @@ func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 
 	c.sendJSON(responseMsg)
 
-	// Request continuation of response
 	c.sendJSON(map[string]string{
 		"type": "response.create",
 	})
 }
 
-// sendJSON sends a JSON message over WebSocket
+// sendJSON sends a JSON message over WebSocket.
 func (c *Client) sendJSON(v interface{}) error {
 	c.wsMu.Lock()
 	defer c.wsMu.Unlock()
@@ -399,12 +378,14 @@ func (c *Client) sendJSON(v interface{}) error {
 	return c.ws.WriteJSON(v)
 }
 
-// IsConnected returns whether the client is connected
+// IsConnected returns whether the client is connected.
 func (c *Client) IsConnected() bool {
 	return c.connected && !c.closed
 }
 
-// IsReady returns whether the session is ready for conversation
+// IsReady returns whether the session is ready for conversation.
 func (c *Client) IsReady() bool {
 	return c.sessionReady
 }
+
+

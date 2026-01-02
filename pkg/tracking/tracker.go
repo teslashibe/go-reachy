@@ -9,14 +9,10 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
-
-// RobotController interface for head movement
-type RobotController interface {
-	SetHeadPose(roll, pitch, yaw float64) error
-}
 
 // VideoSource interface for capturing frames
 type VideoSource interface {
@@ -29,20 +25,16 @@ type StateUpdater interface {
 	AddLog(logType, message string)
 }
 
-// Offset represents head position adjustments (matches robot.Offset)
-type Offset struct {
-	Roll, Pitch, Yaw float64
-}
-
 // OffsetHandler is called when tracker computes a new head offset.
 // If set, the tracker operates in "offset mode" and outputs offsets
 // instead of directly controlling the robot.
-type OffsetHandler func(offset Offset)
+// Uses robot.Offset for consistency with the robot package.
+type OffsetHandler func(offset robot.Offset)
 
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
 	config Config
-	robot  RobotController
+	robot  robot.HeadController
 	video  VideoSource
 	state  StateUpdater
 
@@ -65,17 +57,21 @@ type Tracker struct {
 
 	// Scanning state
 	isScanning     bool
-	scanDirection  float64   // 1 = right, -1 = left
+	scanDirection  float64 // 1 = right, -1 = left
 	scanStartTime  time.Time
 	lastFaceSeenAt time.Time
 
 	// Interpolation for smooth return to neutral
 	interpStartedAt time.Time
 	isInterpolating bool
+
+	// Error tracking (avoid log spam)
+	lastRobotError time.Time
 }
 
-// New creates a new head tracker with local face detection
-func New(config Config, robot RobotController, video VideoSource, modelPath string) (*Tracker, error) {
+// New creates a new head tracker with local face detection.
+// The robot parameter only needs to implement HeadController (not the full Controller).
+func New(config Config, robotCtrl robot.HeadController, video VideoSource, modelPath string) (*Tracker, error) {
 	// Initialize detector
 	detConfig := detection.Config{
 		ModelPath:        modelPath,
@@ -91,7 +87,7 @@ func New(config Config, robot RobotController, video VideoSource, modelPath stri
 
 	return &Tracker{
 		config:        config,
-		robot:         robot,
+		robot:         robotCtrl,
 		video:         video,
 		detector:      detector,
 		world:         worldmodel.New(),
@@ -280,11 +276,18 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 
 	if handler != nil {
 		// Offset mode: output for fusion with unified controller
-		handler(Offset{Roll: 0, Pitch: 0, Yaw: yaw})
+		handler(robot.Offset{Roll: 0, Pitch: 0, Yaw: yaw})
 	} else if t.robot != nil {
 		// Direct mode: control robot directly
 		err := t.robot.SetHeadPose(0, 0, yaw)
-		if err == nil {
+		if err != nil {
+			// Log errors but don't spam - only log every 5 seconds
+			if t.lastRobotError.IsZero() || time.Since(t.lastRobotError) > 5*time.Second {
+				fmt.Printf("⚠️  SetHeadPose error: %v\n", err)
+				t.lastRobotError = time.Now()
+			}
+		} else {
+			t.lastRobotError = time.Time{} // Clear error state on success
 			// Log significant movements
 			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
 				debug.Log("🔄 Head: yaw=%.2f (target=%.2f, error=%.2f)\n",

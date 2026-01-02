@@ -270,3 +270,4 @@ func (w *WorldModel) GetTarget() (angle float64, source string, ok bool) {
 	return 0, "", false
 }
 
+

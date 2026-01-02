@@ -1,4 +1,4 @@
-package realtime
+package audio
 
 import (
 	"bytes"
@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// AudioPlayer handles streaming audio playback to the robot
-type AudioPlayer struct {
+// Player handles streaming audio playback to the robot.
+type Player struct {
 	robotIP   string
 	sshUser   string
 	sshPass   string
@@ -35,22 +35,22 @@ type AudioPlayer struct {
 	speakingMu sync.Mutex
 }
 
-// NewAudioPlayer creates a new audio player for the robot
-func NewAudioPlayer(robotIP, sshUser, sshPass string) *AudioPlayer {
-	return &AudioPlayer{
+// NewPlayer creates a new audio player for the robot.
+func NewPlayer(robotIP, sshUser, sshPass string) *Player {
+	return &Player{
 		robotIP: robotIP,
 		sshUser: sshUser,
 		sshPass: sshPass,
 	}
 }
 
-// SetOpenAIKey sets the OpenAI API key for TTS
-func (p *AudioPlayer) SetOpenAIKey(key string) {
+// SetOpenAIKey sets the OpenAI API key for TTS.
+func (p *Player) SetOpenAIKey(key string) {
 	p.openaiKey = key
 }
 
-// AppendAudio streams audio data directly to the robot (base64 encoded PCM16 at 24kHz)
-func (p *AudioPlayer) AppendAudio(base64Audio string) error {
+// AppendAudio streams audio data directly to the robot (base64 encoded PCM16 at 24kHz).
+func (p *Player) AppendAudio(base64Audio string) error {
 	decoded, err := base64.StdEncoding.DecodeString(base64Audio)
 	if err != nil {
 		return err
@@ -79,11 +79,9 @@ func (p *AudioPlayer) AppendAudio(base64Audio string) error {
 	return nil
 }
 
-// startStream starts the GStreamer pipeline for streaming audio
-func (p *AudioPlayer) startStream() error {
+// startStream starts the GStreamer pipeline for streaming audio.
+func (p *Player) startStream() error {
 	// GStreamer pipeline that reads from stdin and plays audio
-	// Using fdsrc to read raw PCM from stdin
-	// Added queue for buffering and sync=true to ensure proper playback timing
 	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=5000000000 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
 
 	p.streamCmd = exec.Command("bash", "-c", fmt.Sprintf(
@@ -113,8 +111,8 @@ func (p *AudioPlayer) startStream() error {
 	return nil
 }
 
-// FlushAndPlay signals end of audio stream and waits for playback to complete
-func (p *AudioPlayer) FlushAndPlay() error {
+// FlushAndPlay signals end of audio stream and waits for playback to complete.
+func (p *Player) FlushAndPlay() error {
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
 
@@ -165,8 +163,8 @@ func (p *AudioPlayer) FlushAndPlay() error {
 	return nil
 }
 
-// stopStreamLocked stops the streaming pipeline (must hold streamMu)
-func (p *AudioPlayer) stopStreamLocked() {
+// stopStreamLocked stops the streaming pipeline (must hold streamMu).
+func (p *Player) stopStreamLocked() {
 	if p.streamStdin != nil {
 		p.streamStdin.Close()
 		p.streamStdin = nil
@@ -183,8 +181,8 @@ func (p *AudioPlayer) stopStreamLocked() {
 	p.speakingMu.Unlock()
 }
 
-// Cancel stops any current playback immediately
-func (p *AudioPlayer) Cancel() {
+// Cancel stops any current playback immediately.
+func (p *Player) Cancel() {
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
 	p.stopStreamLocked()
@@ -194,20 +192,20 @@ func (p *AudioPlayer) Cancel() {
 	}
 }
 
-// Clear is deprecated - use Cancel instead
-func (p *AudioPlayer) Clear() {
+// Clear is deprecated - use Cancel instead.
+func (p *Player) Clear() {
 	p.Cancel()
 }
 
-// IsPlaying returns whether audio is currently playing
-func (p *AudioPlayer) IsPlaying() bool {
+// IsPlaying returns whether audio is currently playing.
+func (p *Player) IsPlaying() bool {
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
 	return p.streaming
 }
 
-// IsSpeaking returns whether Eva is currently speaking
-func (p *AudioPlayer) IsSpeaking() bool {
+// IsSpeaking returns whether Eva is currently speaking.
+func (p *Player) IsSpeaking() bool {
 	p.speakingMu.Lock()
 	defer p.speakingMu.Unlock()
 	return p.speaking
@@ -215,7 +213,7 @@ func (p *AudioPlayer) IsSpeaking() bool {
 
 // AppendPCMChunk appends a raw PCM audio chunk for streaming playback.
 // Used by WebSocket TTS for low-latency streaming.
-func (p *AudioPlayer) AppendPCMChunk(pcmData []byte) error {
+func (p *Player) AppendPCMChunk(pcmData []byte) error {
 	if len(pcmData) == 0 {
 		return nil
 	}
@@ -243,8 +241,8 @@ func (p *AudioPlayer) AppendPCMChunk(pcmData []byte) error {
 	return nil
 }
 
-// PlayPCM plays raw PCM16 audio data at 24kHz via UDP to the robot's audio system
-func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
+// PlayPCM plays raw PCM16 audio data at 24kHz via UDP to the robot's audio system.
+func (p *Player) PlayPCM(pcmData []byte) error {
 	if len(pcmData) == 0 {
 		return nil
 	}
@@ -260,7 +258,7 @@ func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
 		p.OnPlaybackStart()
 	}
 
-	// GStreamer pipeline - same format as streaming audio (via UDP to port 5000)
+	// GStreamer pipeline - same format as streaming audio
 	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
 
 	cmd := exec.Command("sshpass", "-p", p.sshPass,
@@ -282,9 +280,7 @@ func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
 	stdin.Close()
 
 	// Wait for playback to complete
-	if err := cmd.Wait(); err != nil {
-		// Ignore exit errors from gstreamer
-	}
+	cmd.Wait()
 
 	if p.OnPlaybackEnd != nil {
 		p.speakingMu.Lock()
@@ -296,8 +292,8 @@ func (p *AudioPlayer) PlayPCM(pcmData []byte) error {
 	return nil
 }
 
-// SpeakText uses OpenAI TTS to speak text directly (for timer announcements, etc.)
-func (p *AudioPlayer) SpeakText(text string) error {
+// SpeakText uses OpenAI TTS to speak text directly (for timer announcements, etc.).
+func (p *Player) SpeakText(text string) error {
 	if p.openaiKey == "" {
 		fmt.Println("🔔 Error: OpenAI API key not set for TTS")
 		return fmt.Errorf("OpenAI API key not set")
@@ -338,7 +334,7 @@ func (p *AudioPlayer) SpeakText(text string) error {
 	}
 	fmt.Printf("🔔 Got %d bytes of audio from TTS\n", len(audioData))
 
-	// Play via SSH and GStreamer (convert MP3 to playable format)
+	// Play via SSH and GStreamer
 	cmd := exec.Command("sshpass", "-p", p.sshPass,
 		"ssh", "-o", "StrictHostKeyChecking=no",
 		fmt.Sprintf("%s@%s", p.sshUser, p.robotIP),
@@ -378,7 +374,7 @@ func (p *AudioPlayer) SpeakText(text string) error {
 	return nil
 }
 
-// ConvertPCM16ToInt16 converts byte slice to int16 samples
+// ConvertPCM16ToInt16 converts byte slice to int16 samples.
 func ConvertPCM16ToInt16(data []byte) []int16 {
 	samples := make([]int16, len(data)/2)
 	for i := 0; i < len(samples); i++ {
@@ -387,7 +383,7 @@ func ConvertPCM16ToInt16(data []byte) []int16 {
 	return samples
 }
 
-// ConvertInt16ToPCM16 converts int16 samples to byte slice
+// ConvertInt16ToPCM16 converts int16 samples to byte slice.
 func ConvertInt16ToPCM16(samples []int16) []byte {
 	data := make([]byte, len(samples)*2)
 	for i, s := range samples {
@@ -396,7 +392,7 @@ func ConvertInt16ToPCM16(samples []int16) []byte {
 	return data
 }
 
-// Resample resamples audio from srcRate to dstRate
+// Resample resamples audio from srcRate to dstRate.
 func Resample(samples []int16, srcRate, dstRate int) []int16 {
 	if srcRate == dstRate {
 		return samples
@@ -419,3 +415,5 @@ func Resample(samples []int16, srcRate, dstRate int) []int16 {
 
 	return result
 }
+
+

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
 
@@ -39,10 +40,10 @@ func (m *mockRobotController) callCount() int {
 
 func TestTracker_OffsetMode(t *testing.T) {
 	// Create a mock offset handler
-	var receivedOffsets []Offset
+	var receivedOffsets []robot.Offset
 	var mu sync.Mutex
 
-	handler := func(offset Offset) {
+	handler := func(offset robot.Offset) {
 		mu.Lock()
 		receivedOffsets = append(receivedOffsets, offset)
 		mu.Unlock()
@@ -154,7 +155,7 @@ func TestTracker_SmoothInterpolation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ScanStartDelay = 50 * time.Millisecond // Short delay for testing
 
-	var receivedOffsets []Offset
+	var receivedOffsets []robot.Offset
 	var mu sync.Mutex
 
 	tracker := &Tracker{
@@ -164,7 +165,7 @@ func TestTracker_SmoothInterpolation(t *testing.T) {
 		lastLoggedYaw: 999.0,
 	}
 
-	tracker.SetOffsetHandler(func(offset Offset) {
+	tracker.SetOffsetHandler(func(offset robot.Offset) {
 		mu.Lock()
 		receivedOffsets = append(receivedOffsets, offset)
 		mu.Unlock()

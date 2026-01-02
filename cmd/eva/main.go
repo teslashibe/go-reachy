@@ -14,7 +14,10 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
-	"github.com/teslashibe/go-reachy/pkg/realtime"
+	"github.com/teslashibe/go-reachy/pkg/eva"
+	"github.com/teslashibe/go-reachy/pkg/memory"
+	"github.com/teslashibe/go-reachy/pkg/openai"
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 	"github.com/teslashibe/go-reachy/pkg/tts"
@@ -96,11 +99,11 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
-	realtimeClient *realtime.Client
+	realtimeClient *openai.Client
 	videoClient    *video.Client
-	audioPlayer    *realtime.AudioPlayer
-	robot          *realtime.SimpleRobotController
-	memory         *realtime.Memory
+	audioPlayer    *audio.Player
+	robotCtrl      *robot.HTTPController
+	memoryStore    *memory.Memory
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
 	ttsProvider    tts.Provider      // HTTP TTS provider
@@ -319,7 +322,7 @@ func main() {
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
+	headTracker, err = tracking.New(tracking.DefaultConfig(), robotCtrl, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
@@ -409,16 +412,16 @@ func main() {
 
 func initialize() error {
 	// Create robot controller
-	robot = realtime.NewSimpleRobotController(robotIP)
+	robotCtrl = robot.NewHTTPController(robotIP)
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
 	homeDir, _ := os.UserHomeDir()
 	memoryPath := homeDir + "/.eva/memory.json"
-	memory = realtime.NewMemoryWithFile(memoryPath)
+	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
 
 	// Create audio player
-	audioPlayer = realtime.NewAudioPlayer(robotIP, sshUser, sshPass)
+	audioPlayer = audio.NewPlayer(robotIP, sshUser, sshPass)
 	audioPlayer.OnPlaybackStart = func() {
 		speakingMu.Lock()
 		speaking = true
@@ -478,9 +481,9 @@ func startWebDashboard(ctx context.Context) {
 		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
 
 		// Get tool config
-		cfg := realtime.EvaToolsConfig{
-			Robot:          robot,
-			Memory:         memory,
+		cfg := eva.ToolsConfig{
+			Robot:          robotCtrl,
+			Memory:         memoryStore,
 			Vision:         &videoVisionAdapter{videoClient},
 			ObjectDetector: &yoloAdapter{objectDetector},
 			GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
@@ -489,7 +492,7 @@ func startWebDashboard(ctx context.Context) {
 		}
 
 		// Get tools and find the one requested
-		tools := realtime.EvaTools(cfg)
+		tools := eva.Tools(cfg)
 		for _, tool := range tools {
 			if tool.Name == name {
 				result, err := tool.Handler(args)
@@ -590,7 +593,7 @@ func streamCameraToWeb(ctx context.Context) {
 }
 
 func wakeUpRobot() error {
-	status, err := robot.GetDaemonStatus()
+	status, err := robotCtrl.GetDaemonStatus()
 	if err != nil {
 		return err
 	}
@@ -598,7 +601,7 @@ func wakeUpRobot() error {
 		return fmt.Errorf("daemon not running: %s", status)
 	}
 	// Set volume to max
-	robot.SetVolume(100)
+	robotCtrl.SetVolume(100)
 	return nil
 }
 
@@ -608,24 +611,29 @@ func connectWebRTC() error {
 }
 
 func connectRealtime(apiKey string) error {
-	realtimeClient = realtime.NewClient(apiKey)
+	realtimeClient = openai.NewClient(apiKey)
 
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
-	toolsCfg := realtime.EvaToolsConfig{
-		Robot:          robot,
-		Memory:         memory,
+	toolsCfg := eva.ToolsConfig{
+		Robot:          robotCtrl,
+		Memory:         memoryStore,
 		Vision:         &videoVisionAdapter{videoClient},
 		ObjectDetector: &yoloAdapter{objectDetector},
 		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
 		AudioPlayer:    audioPlayer,
 		Tracker:        headTracker, // For body rotation sync
 	}
-	tools := realtime.EvaTools(toolsCfg)
+	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {
-		realtimeClient.RegisterTool(tool)
+		realtimeClient.RegisterTool(openai.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			Handler:     tool.Handler,
+		})
 	}
 
 	// Set up callbacks
@@ -868,13 +876,13 @@ func streamAudioToRealtime(ctx context.Context) {
 		}
 
 		// Resample from 48kHz to 24kHz (OpenAI Realtime uses 24kHz)
-		resampled := realtime.Resample(pcmData, 48000, 24000)
+		resampled := audio.Resample(pcmData, 48000, 24000)
 		audioBuffer = append(audioBuffer, resampled...)
 
 		// Send when we have enough
 		if len(audioBuffer) >= chunkSize {
 			// Convert to bytes
-			pcm16Bytes := realtime.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
+			pcm16Bytes := audio.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
 			audioBuffer = audioBuffer[chunkSize:]
 
 			// Send to Realtime API
@@ -931,7 +939,7 @@ type yoloAdapter struct {
 	detector *detection.YOLODetector
 }
 
-func (y *yoloAdapter) Detect(jpeg []byte) ([]realtime.ObjectDetectionResult, error) {
+func (y *yoloAdapter) Detect(jpeg []byte) ([]eva.ObjectDetectionResult, error) {
 	if y.detector == nil {
 		return nil, fmt.Errorf("object detector not initialized")
 	}
@@ -939,10 +947,10 @@ func (y *yoloAdapter) Detect(jpeg []byte) ([]realtime.ObjectDetectionResult, err
 	if err != nil {
 		return nil, err
 	}
-	// Convert to realtime package type
-	results := make([]realtime.ObjectDetectionResult, len(detections))
+	// Convert to eva package type
+	results := make([]eva.ObjectDetectionResult, len(detections))
 	for i, det := range detections {
-		results[i] = realtime.ObjectDetectionResult{
+		results[i] = eva.ObjectDetectionResult{
 			ClassName:  det.ClassName,
 			Confidence: det.Confidence,
 			X:          det.X,

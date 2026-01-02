@@ -19,18 +19,19 @@ func (o Offset) Add(other Offset) Offset {
 	}
 }
 
-// RobotAPI defines the interface for robot hardware control
-type RobotAPI interface {
-	SetHeadPose(roll, pitch, yaw float64) error
-	SetAntennas(left, right float64) error
-	SetBodyYaw(yaw float64) error
+// MotionController is the interface needed by the rate-limited Controller.
+// It combines head, antenna, and body control for the control loop.
+type MotionController interface {
+	HeadController
+	AntennaController
+	BodyController
 }
 
-// Controller provides unified robot control at a fixed rate.
+// RateController provides unified robot control at a fixed rate.
 // All movement requests flow through here to prevent conflicts.
 // It fuses base poses (from tools/moves) with tracking offsets (from face tracker).
-type Controller struct {
-	robot RobotAPI
+type RateController struct {
+	robot MotionController
 
 	mu           sync.RWMutex
 	baseHead     Offset     // Primary pose from tools/moves
@@ -42,10 +43,10 @@ type Controller struct {
 	stop chan struct{}
 }
 
-// NewController creates a controller running at the given rate.
+// NewRateController creates a rate-limited controller running at the given rate.
 // Typical rate is 10ms (100Hz) for smooth motion.
-func NewController(robot RobotAPI, rate time.Duration) *Controller {
-	return &Controller{
+func NewRateController(robot MotionController, rate time.Duration) *RateController {
+	return &RateController{
 		robot: robot,
 		rate:  rate,
 		stop:  make(chan struct{}),
@@ -54,7 +55,7 @@ func NewController(robot RobotAPI, rate time.Duration) *Controller {
 
 // SetBaseHead sets the primary head pose (from tools/moves).
 // This is the "base" position before tracking offsets are applied.
-func (c *Controller) SetBaseHead(offset Offset) {
+func (c *RateController) SetBaseHead(offset Offset) {
 	c.mu.Lock()
 	c.baseHead = offset
 	c.mu.Unlock()
@@ -62,56 +63,56 @@ func (c *Controller) SetBaseHead(offset Offset) {
 
 // SetTrackingOffset sets the face tracking offset (additive).
 // This is combined with the base head pose each tick.
-func (c *Controller) SetTrackingOffset(offset Offset) {
+func (c *RateController) SetTrackingOffset(offset Offset) {
 	c.mu.Lock()
 	c.trackingHead = offset
 	c.mu.Unlock()
 }
 
 // SetAntennas sets the antenna positions.
-func (c *Controller) SetAntennas(left, right float64) {
+func (c *RateController) SetAntennas(left, right float64) {
 	c.mu.Lock()
 	c.antennas = [2]float64{left, right}
 	c.mu.Unlock()
 }
 
 // SetBodyYaw sets the body rotation.
-func (c *Controller) SetBodyYaw(yaw float64) {
+func (c *RateController) SetBodyYaw(yaw float64) {
 	c.mu.Lock()
 	c.bodyYaw = yaw
 	c.mu.Unlock()
 }
 
 // BodyYaw returns the current body orientation.
-func (c *Controller) BodyYaw() float64 {
+func (c *RateController) BodyYaw() float64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.bodyYaw
 }
 
 // BaseHead returns the current base head pose.
-func (c *Controller) BaseHead() Offset {
+func (c *RateController) BaseHead() Offset {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.baseHead
 }
 
 // TrackingOffset returns the current tracking offset.
-func (c *Controller) TrackingOffset() Offset {
+func (c *RateController) TrackingOffset() Offset {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.trackingHead
 }
 
 // CombinedHead returns the fused head pose (base + tracking).
-func (c *Controller) CombinedHead() Offset {
+func (c *RateController) CombinedHead() Offset {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.baseHead.Add(c.trackingHead)
 }
 
 // Run starts the control loop. Blocks until Stop is called.
-func (c *Controller) Run() {
+func (c *RateController) Run() {
 	ticker := time.NewTicker(c.rate)
 	defer ticker.Stop()
 
@@ -126,7 +127,7 @@ func (c *Controller) Run() {
 }
 
 // tick executes one control cycle: fuse poses and send to robot.
-func (c *Controller) tick() {
+func (c *RateController) tick() {
 	c.mu.RLock()
 	combined := c.baseHead.Add(c.trackingHead)
 	antennas := c.antennas
@@ -144,7 +145,7 @@ func (c *Controller) tick() {
 }
 
 // Stop halts the control loop gracefully.
-func (c *Controller) Stop() {
+func (c *RateController) Stop() {
 	close(c.stop)
 }
 
