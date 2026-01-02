@@ -1,4 +1,4 @@
-package tracking
+package worldmodel
 
 import (
 	"math"
@@ -13,7 +13,7 @@ func floatEquals(a, b float64) bool {
 }
 
 func TestWorldModel_BodyYaw(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// Initial value should be 0
 	if w.GetBodyYaw() != 0 {
@@ -34,7 +34,7 @@ func TestWorldModel_BodyYaw(t *testing.T) {
 }
 
 func TestWorldModel_GetTargetWorldAngle_WithBodyYaw(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// Add an entity at room angle 0.5 rad
 	w.UpdateEntity("person", 0.5, 50.0)
@@ -72,7 +72,7 @@ func TestWorldModel_GetTargetWorldAngle_WithBodyYaw(t *testing.T) {
 }
 
 func TestWorldModel_GetTargetRoomAngle(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// Add an entity at room angle 0.5 rad
 	w.UpdateEntity("person", 0.5, 50.0)
@@ -98,7 +98,7 @@ func TestWorldModel_GetTargetRoomAngle(t *testing.T) {
 }
 
 func TestWorldModel_RoomCoordinates(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// Simulate: face detected at center of frame while head at yaw 0.3, body at 0.2
 	// The world angle passed to UpdateEntity should be in room coords
@@ -118,7 +118,7 @@ func TestWorldModel_RoomCoordinates(t *testing.T) {
 }
 
 func TestWorldModel_NoTarget(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// No entities
 	_, ok := w.GetTargetWorldAngle()
@@ -133,7 +133,7 @@ func TestWorldModel_NoTarget(t *testing.T) {
 }
 
 func TestWorldModel_VelocityPrediction_WithBodyYaw(t *testing.T) {
-	w := NewWorldModel()
+	w := New()
 
 	// Add entity and wait a bit
 	w.UpdateEntity("person", 0.5, 50.0)

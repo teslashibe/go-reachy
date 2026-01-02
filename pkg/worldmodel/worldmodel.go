@@ -1,28 +1,9 @@
-package tracking
+package worldmodel
 
 import (
 	"sync"
 	"time"
 )
-
-// TrackedEntity represents a person or object being tracked in world coordinates
-type TrackedEntity struct {
-	ID            string    // Unique identifier
-	WorldAngle    float64   // Position in world coords (radians from Eva's forward)
-	Confidence    float64   // 0-1, decays over time when not seen
-	LastSeen      time.Time // When last detected
-	LastPosition  float64   // Previous frame position (for velocity)
-	Velocity      float64   // Estimated angular velocity (rad/sec)
-	FramePosition float64   // Last known position in frame (0-100)
-}
-
-// AudioSource represents a detected sound direction
-type AudioSource struct {
-	Angle      float64   // Direction in Eva coordinates (0=front, +left, -right)
-	Confidence float64   // 0-1 confidence
-	Speaking   bool      // Voice activity detected
-	LastSeen   time.Time // When last updated
-}
 
 // WorldModel maintains a spatial map of tracked entities
 type WorldModel struct {
@@ -42,12 +23,12 @@ type WorldModel struct {
 	forgetTimeout   time.Duration // Remove entities not seen for this long
 }
 
-// NewWorldModel creates a new world model
-func NewWorldModel() *WorldModel {
+// New creates a new world model
+func New() *WorldModel {
 	return &WorldModel{
 		entities:        make(map[string]*TrackedEntity),
-		confidenceDecay: 0.3,            // Lose 30% confidence per second
-		forgetThreshold: 0.1,            // Forget below 10% confidence
+		confidenceDecay: 0.3,              // Lose 30% confidence per second
+		forgetThreshold: 0.1,              // Forget below 10% confidence
 		forgetTimeout:   10 * time.Second, // Forget after 10 seconds
 	}
 }

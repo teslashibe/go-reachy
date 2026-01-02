@@ -10,6 +10,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
+	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
 
 // RobotController interface for head movement
@@ -47,7 +48,7 @@ type Tracker struct {
 
 	// Core components
 	detector   detection.Detector
-	world      *WorldModel
+	world      *worldmodel.WorldModel
 	controller *PDController
 	perception *Perception
 
@@ -93,7 +94,7 @@ func New(config Config, robot RobotController, video VideoSource, modelPath stri
 		robot:         robot,
 		video:         video,
 		detector:      detector,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(config),
 		perception:    NewPerception(config, detector),
 		lastLoggedYaw: 999.0,
@@ -147,7 +148,7 @@ func (t *Tracker) GetCurrentYaw() float64 {
 }
 
 // GetWorld returns the world model for inspection
-func (t *Tracker) GetWorld() *WorldModel {
+func (t *Tracker) GetWorld() *worldmodel.WorldModel {
 	return t.world
 }
 

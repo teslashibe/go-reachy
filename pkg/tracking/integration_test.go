@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
 
 // mockRobotController records head poses for testing
@@ -55,7 +57,7 @@ func TestTracker_OffsetMode(t *testing.T) {
 	tracker := &Tracker{
 		config:        cfg,
 		robot:         robot,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -95,7 +97,7 @@ func TestTracker_DirectMode(t *testing.T) {
 	tracker := &Tracker{
 		config:        cfg,
 		robot:         robot,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -118,7 +120,7 @@ func TestTracker_BodyRotation(t *testing.T) {
 	cfg := DefaultConfig()
 	tracker := &Tracker{
 		config:        cfg,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -157,7 +159,7 @@ func TestTracker_SmoothInterpolation(t *testing.T) {
 
 	tracker := &Tracker{
 		config:        cfg,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
