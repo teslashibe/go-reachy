@@ -92,21 +92,23 @@ func (p *Perception) IsInFrame(worldAngle float64, currentYaw float64) bool {
 	return cameraAngle < p.CameraFOV/2
 }
 
-// FrameToPitch converts vertical frame position to pitch angle.
+// FrameToPitch converts vertical frame position to room-relative pitch angle.
 // framePositionY: 0 = top of frame, 100 = bottom of frame
-// currentPitch: current head pitch in radians
-// Returns: target pitch in radians (positive = looking up, negative = looking down)
+// currentPitch: current head pitch in radians (used to compute room-relative target)
+// Returns: target pitch in radians (negative = looking up, positive = looking down)
+// Note: Reachy Mini uses negative pitch for looking UP
 func (p *Perception) FrameToPitch(framePositionY float64, currentPitch float64) float64 {
 	// Frame offset from center: -0.5 (top) to +0.5 (bottom)
 	frameOffset := (framePositionY - 50) / 100.0
 
-	// Convert to camera-relative pitch angle
-	// Face above center (negative offset) = need to pitch up (positive pitch)
-	// Face below center (positive offset) = need to pitch down (negative pitch)
-	cameraPitch := -frameOffset * p.VerticalFOV
+	// Convert to camera-relative pitch offset
+	// Face above center (negative offset) = need to pitch up more (add negative)
+	// Face below center (positive offset) = need to pitch down more (add positive)
+	cameraPitchOffset := frameOffset * p.VerticalFOV
 
-	// Add current pitch to get world-relative angle
-	return currentPitch + cameraPitch
+	// Room-relative target = current pitch + offset to center the face
+	// This computes where the face IS in room coordinates, not where to move
+	return currentPitch + cameraPitchOffset
 }
 
 // DetectFace captures a frame and detects face position using local vision.
