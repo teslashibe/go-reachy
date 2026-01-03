@@ -108,7 +108,14 @@ eva_cloud_frames_received %d
 	// Set up DOA callback
 	hub.OnDOA(func(robotID string, doa *protocol.DOAData) {
 		if *debug {
-			log.Printf("🎤 DOA from %s: angle=%.2f speaking=%v", robotID, doa.Angle, doa.Speaking)
+			// Log enhanced 3D positioning data if available
+			if doa.TotalEnergy > 0 {
+				log.Printf("🎤 DOA from %s: angle=%.2f speaking=%v energy=%.4f estX=%.2fm estY=%.2fm mic=[%.3f,%.3f,%.3f,%.3f]",
+					robotID, doa.Angle, doa.Speaking, doa.TotalEnergy, doa.EstX, doa.EstY,
+					doa.MicEnergy[0], doa.MicEnergy[1], doa.MicEnergy[2], doa.MicEnergy[3])
+			} else {
+				log.Printf("🎤 DOA from %s: angle=%.2f speaking=%v", robotID, doa.Angle, doa.Speaking)
+			}
 		}
 		// TODO: Use for audio-based tracking
 	})
