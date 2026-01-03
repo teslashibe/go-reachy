@@ -68,15 +68,18 @@ type Tracker struct {
 	disabledAt time.Time // When tracking was disabled (for delayed return to neutral)
 
 	// Scanning state
-	isScanning      bool
-	scanDirection   float64 // 1 = right, -1 = left
-	scanStartTime   time.Time
-	lastFaceSeenAt  time.Time
-	scanCyclesDone  int // Number of complete scan cycles
+	isScanning     bool
+	scanDirection  float64 // 1 = right, -1 = left
+	scanStartTime  time.Time
+	lastFaceSeenAt time.Time
+	scanCyclesDone int // Number of complete scan cycles
 
 	// Breathing state (idle animation)
 	isBreathing    bool
 	breathingPhase float64 // Current phase in radians (0 to 2π)
+
+	// Speech wobble offsets (additive to tracking output)
+	speechOffsets robot.Offset
 
 	// Interpolation for smooth return to neutral
 	interpStartedAt time.Time
@@ -216,6 +219,30 @@ func (t *Tracker) GetCurrentYaw() float64 {
 // GetCurrentPitch returns the current head pitch
 func (t *Tracker) GetCurrentPitch() float64 {
 	return t.controller.GetCurrentPitch()
+}
+
+// SetSpeechOffsets sets additive offsets from speech animation.
+// These are added to the tracking output for natural speaking gestures.
+// Thread-safe: can be called from TTS audio processing goroutines.
+func (t *Tracker) SetSpeechOffsets(roll, pitch, yaw float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.speechOffsets = robot.Offset{Roll: roll, Pitch: pitch, Yaw: yaw}
+}
+
+// ClearSpeechOffsets resets speech offsets to zero.
+// Call this when speech ends.
+func (t *Tracker) ClearSpeechOffsets() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.speechOffsets = robot.Offset{}
+}
+
+// GetSpeechOffsets returns the current speech offsets.
+func (t *Tracker) GetSpeechOffsets() robot.Offset {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.speechOffsets
 }
 
 // GetWorld returns the world model for inspection
@@ -396,14 +423,20 @@ func (t *Tracker) updateMovement() {
 func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 	t.mu.RLock()
 	handler := t.onOffset
+	speech := t.speechOffsets
 	t.mu.RUnlock()
+
+	// Add speech wobble offsets for natural speaking gestures
+	finalYaw := yaw + speech.Yaw
+	finalPitch := pitch + speech.Pitch
+	finalRoll := speech.Roll // Roll only from speech (tracking doesn't use roll)
 
 	if handler != nil {
 		// Offset mode: output for fusion with unified controller
-		handler(robot.Offset{Roll: 0, Pitch: pitch, Yaw: yaw})
+		handler(robot.Offset{Roll: finalRoll, Pitch: finalPitch, Yaw: finalYaw})
 	} else if t.robot != nil {
-		// Direct mode: control robot directly (roll=0, pitch, yaw)
-		err := t.robot.SetHeadPose(0, pitch, yaw)
+		// Direct mode: control robot directly
+		err := t.robot.SetHeadPose(finalRoll, finalPitch, finalYaw)
 		if err != nil {
 			// Log errors but don't spam - only log every 5 seconds
 			if t.lastRobotError.IsZero() || time.Since(t.lastRobotError) > 5*time.Second {
@@ -415,7 +448,7 @@ func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 			// Log significant movements
 			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
 				debug.Log("🔄 Head: yaw=%.2f pitch=%.2f (target=%.2f, error=%.2f)\n",
-					yaw, pitch, targetAngle, t.controller.GetError())
+					finalYaw, finalPitch, targetAngle, t.controller.GetError())
 				t.lastLoggedYaw = yaw
 			}
 		}

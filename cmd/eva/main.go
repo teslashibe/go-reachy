@@ -18,6 +18,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/openai"
 	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/speech"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 	"github.com/teslashibe/go-reachy/pkg/tts"
@@ -109,6 +110,7 @@ var (
 	ttsProvider    tts.Provider      // HTTP TTS provider
 	ttsStreaming   *tts.ElevenLabsWS // WebSocket streaming TTS
 	objectDetector *detection.YOLODetector
+	speechWobbler  *speech.Wobbler // Speech-synced head movement
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -365,6 +367,12 @@ func main() {
 			headTracker.SetBodyYaw(newBody) // Sync world model
 		})
 		fmt.Println("🔄 Auto body rotation enabled")
+
+		// Initialize speech wobbler for natural speaking gestures
+		speechWobbler = speech.NewWobbler(func(roll, pitch, yaw float64) {
+			headTracker.SetSpeechOffsets(roll, pitch, yaw)
+		})
+		fmt.Println("😮‍💨 Speech wobble enabled")
 	}
 
 	// Connect to OpenAI Realtime API
@@ -456,6 +464,16 @@ func initialize() error {
 			if err := audioPlayer.AppendPCMChunk(pcmData); err != nil {
 				debug.Log("⚠️  Streaming audio chunk error: %v\n", err)
 			}
+
+			// Feed audio to speech wobbler for head movement
+			if speechWobbler != nil && len(pcmData) > 0 {
+				// Convert bytes to int16 samples (little-endian PCM)
+				samples := make([]int16, len(pcmData)/2)
+				for i := 0; i < len(samples); i++ {
+					samples[i] = int16(pcmData[i*2]) | int16(pcmData[i*2+1])<<8
+				}
+				speechWobbler.Feed(samples, 24000) // ElevenLabs outputs 24kHz
+			}
 		}
 		ttsStreaming.OnConnected = func() {
 			debug.Log("🔌 ElevenLabs WebSocket connected\n")
@@ -473,6 +491,14 @@ func initialize() error {
 				fmt.Printf("⚠️  Audio flush error: %v\n", err)
 			}
 			fmt.Println("🗣️  [done]")
+
+			// Reset speech wobbler and clear offsets
+			if speechWobbler != nil {
+				speechWobbler.Reset()
+			}
+			if headTracker != nil {
+				headTracker.ClearSpeechOffsets()
+			}
 
 			// Update web dashboard
 			if webServer != nil {
