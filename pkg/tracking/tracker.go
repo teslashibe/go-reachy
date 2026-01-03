@@ -63,9 +63,13 @@ type Tracker struct {
 	lastLoggedYaw float64
 	isRunning     bool
 
-	// Enable/disable state
+	// Enable/disable state (master toggle)
 	isEnabled  bool      // Whether tracking is active (default: true)
 	disabledAt time.Time // When tracking was disabled (for delayed return to neutral)
+
+	// Granular enable/disable (independent of master toggle)
+	isFaceEnabled  bool // Whether face tracking is active (default: true)
+	isAudioEnabled bool // Whether audio DOA tracking is active (default: true)
 
 	// Scanning state
 	isScanning     bool
@@ -106,15 +110,17 @@ func New(config Config, robotCtrl robot.HeadController, video VideoSource, model
 	}
 
 	return &Tracker{
-		config:        config,
-		robot:         robotCtrl,
-		video:         video,
-		detector:      detector,
-		world:         worldmodel.New(),
-		controller:    NewPDController(config),
-		perception:    NewPerception(config, detector),
-		lastLoggedYaw: 999.0,
-		isEnabled:     true, // Tracking enabled by default
+		config:         config,
+		robot:          robotCtrl,
+		video:          video,
+		detector:       detector,
+		world:          worldmodel.New(),
+		controller:     NewPDController(config),
+		perception:     NewPerception(config, detector),
+		lastLoggedYaw:  999.0,
+		isEnabled:      true, // Tracking enabled by default
+		isFaceEnabled:  true, // Face tracking enabled by default
+		isAudioEnabled: true, // Audio tracking enabled by default
 	}, nil
 }
 
@@ -176,13 +182,15 @@ func (t *Tracker) SetEnabled(enabled bool) {
 	t.isEnabled = enabled
 
 	if enabled {
-		// Re-enabling: clear disabled state, stop any return-to-neutral
+		// Re-enabling: clear disabled state, restore granular toggles
 		t.disabledAt = time.Time{}
-		debug.Logln("👁️  Head tracking enabled")
+		t.isFaceEnabled = true
+		t.isAudioEnabled = true
+		debug.Logln("👁️  Head tracking enabled (face + audio)")
 	} else {
 		// Disabling: record time for delayed return to neutral
 		t.disabledAt = time.Now()
-		debug.Logln("👁️  Head tracking disabled")
+		debug.Logln("👁️  Head tracking disabled (all)")
 	}
 }
 
@@ -191,6 +199,58 @@ func (t *Tracker) IsEnabled() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.isEnabled
+}
+
+// SetFaceTrackingEnabled enables or disables face tracking independently.
+// When disabled, face detection is skipped but audio tracking continues.
+// This is independent of the master SetEnabled toggle.
+func (t *Tracker) SetFaceTrackingEnabled(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isFaceEnabled == enabled {
+		return
+	}
+
+	t.isFaceEnabled = enabled
+	if enabled {
+		debug.Logln("👁️  Face tracking enabled")
+	} else {
+		debug.Logln("👁️  Face tracking disabled")
+	}
+}
+
+// IsFaceTrackingEnabled returns whether face tracking is enabled.
+func (t *Tracker) IsFaceTrackingEnabled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.isFaceEnabled
+}
+
+// SetAudioTrackingEnabled enables or disables audio DOA tracking independently.
+// When disabled, audio direction is ignored but face tracking continues.
+// This is independent of the master SetEnabled toggle.
+func (t *Tracker) SetAudioTrackingEnabled(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isAudioEnabled == enabled {
+		return
+	}
+
+	t.isAudioEnabled = enabled
+	if enabled {
+		debug.Logln("🎤 Audio tracking enabled")
+	} else {
+		debug.Logln("🎤 Audio tracking disabled")
+	}
+}
+
+// IsAudioTrackingEnabled returns whether audio DOA tracking is enabled.
+func (t *Tracker) IsAudioTrackingEnabled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.isAudioEnabled
 }
 
 // SetAudioClient enables audio DOA integration with go-eva
@@ -202,6 +262,14 @@ func (t *Tracker) SetAudioClient(client *audio.Client) {
 
 // handleAudioDOA is called when a DOA reading is received via WebSocket
 func (t *Tracker) handleAudioDOA(doa *audio.DOAResult) {
+	// Skip if audio tracking is disabled
+	t.mu.RLock()
+	audioEnabled := t.isAudioEnabled
+	t.mu.RUnlock()
+	if !audioEnabled {
+		return
+	}
+
 	// Update world model with audio source
 	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
 
@@ -333,9 +401,11 @@ func (t *Tracker) Run(ctx context.Context) {
 func (t *Tracker) pollAudioDOA() {
 	t.mu.RLock()
 	client := t.audioClient
+	audioEnabled := t.isAudioEnabled
 	t.mu.RUnlock()
 
-	if client == nil {
+	// Skip if audio tracking is disabled
+	if !audioEnabled || client == nil {
 		return
 	}
 
@@ -563,11 +633,12 @@ func (t *Tracker) updateDisabled(disabledAt time.Time) {
 
 // detectAndUpdate detects faces and updates the world model
 func (t *Tracker) detectAndUpdate() {
-	// Skip detection if tracking is disabled
+	// Skip detection if tracking or face tracking is disabled
 	t.mu.RLock()
 	enabled := t.isEnabled
+	faceEnabled := t.isFaceEnabled
 	t.mu.RUnlock()
-	if !enabled {
+	if !enabled || !faceEnabled {
 		return
 	}
 
