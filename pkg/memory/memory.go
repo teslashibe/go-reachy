@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Memory stores information about people and conversations.
@@ -80,14 +79,10 @@ func (m *Memory) RememberPerson(name, fact string) {
 	}
 
 	if _, ok := m.People[name]; !ok {
-		m.People[name] = &PersonMemory{
-			Name:  name,
-			Facts: []string{},
-		}
+		m.People[name] = NewPerson(name)
 	}
 
-	m.People[name].Facts = append(m.People[name].Facts, fact)
-	m.People[name].LastSeen = time.Now()
+	m.People[name].AddFact(fact)
 
 	// Auto-save to file
 	m.Save()
@@ -97,7 +92,7 @@ func (m *Memory) RememberPerson(name, fact string) {
 func (m *Memory) RecallPerson(name string) []string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if person, ok := m.People[name]; ok {
-		person.LastSeen = time.Now()
+		person.Touch() // Update last seen
 		return person.Facts
 	}
 	return nil
@@ -143,5 +138,3 @@ func (m *Memory) ToJSON() ([]byte, error) {
 func (m *Memory) FromJSON(data []byte) error {
 	return json.Unmarshal(data, m)
 }
-
-
