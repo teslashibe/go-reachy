@@ -96,6 +96,12 @@ type Tracker struct {
 	lastYawOffset   float64 // How much to turn horizontally
 	lastPitchOffset float64 // How much to tilt vertically
 	hasFaceTarget   bool    // Whether we have a recent face detection
+
+	// Audio-triggered speaker switching state
+	audioSwitchActive    bool      // Currently turning toward audio source
+	audioSwitchStartedAt time.Time // When we started the audio switch
+	audioSwitchTarget    float64   // Target yaw for audio switch
+	preSwitchFaceTarget  string    // Focus target before switching (to return to)
 }
 
 // New creates a new head tracker with local face detection.
@@ -457,7 +463,17 @@ func (t *Tracker) updateMovement() {
 	// Check for audio-only target (when no face but audio DOA active)
 	audioAngle, hasAudio := t.getAudioTarget()
 
-	if !hasFace && !hasAudio {
+	// Check for audio-triggered speaker switching
+	// This allows Eva to turn toward a new speaker even when tracking a face
+	t.checkAudioSwitch(hasFace, audioAngle, hasAudio)
+
+	// Read audio switch state
+	t.mu.RLock()
+	audioSwitchActive := t.audioSwitchActive
+	audioSwitchTarget := t.audioSwitchTarget
+	t.mu.RUnlock()
+
+	if !hasFace && !hasAudio && !audioSwitchActive {
 		// No target - check if we should scan or interpolate to neutral
 		t.updateNoTarget()
 		return
@@ -465,7 +481,9 @@ func (t *Tracker) updateMovement() {
 
 	// Determine source and target
 	var source string
-	if hasFace {
+	if audioSwitchActive {
+		source = "audio-switch"
+	} else if hasFace {
 		source = "face"
 	} else {
 		source = "audio"
@@ -482,13 +500,13 @@ func (t *Tracker) updateMovement() {
 		}
 		if source == "face" {
 			debug.Logln("👁️  Found face, stopping idle behavior")
-		} else if source == "audio" {
+		} else if source == "audio" || source == "audio-switch" {
 			debug.Logln("🎤 Heard voice, turning toward sound")
 		}
 	}
 	t.isInterpolating = false
 
-	// Only update lastFaceSeenAt for visual targets
+	// Only update lastFaceSeenAt for visual targets (not during audio switch)
 	if source == "face" {
 		t.lastFaceSeenAt = time.Now()
 	}
@@ -500,7 +518,12 @@ func (t *Tracker) updateMovement() {
 	}
 
 	// Set controller targets using offset-based approach
-	if hasFace {
+	if audioSwitchActive {
+		// Audio switch mode: turn toward the audio source to find new speaker
+		t.controller.SetTarget(audioSwitchTarget)
+		// Keep pitch stable during audio switch
+		t.controller.SetTargetPitch(t.controller.GetCurrentPitch())
+	} else if hasFace {
 		// Face tracking: use camera-relative offsets (self-correcting)
 		t.controller.SetTargetFromOffset(yawOffset * scale)
 		t.controller.SetTargetPitchFromOffset(pitchOffset * scale)
@@ -618,6 +641,104 @@ func (t *Tracker) checkBodyRotationOffset(yawOffset float64) {
 	} else if currentYaw < -limit*0.9 && yawOffset < -0.05 {
 		debug.Log("🔄 Body rotation triggered (offset): head at %.2f, offset %.2f → rotate right\n", currentYaw, yawOffset)
 		handler(-step)
+	}
+}
+
+// checkAudioSwitch determines if we should turn toward a new audio source.
+// This is called during updateMovement() to check if someone is speaking
+// from a significantly different direction than where Eva is currently looking.
+func (t *Tracker) checkAudioSwitch(hasFace bool, audioAngle float64, hasAudio bool) {
+	// Skip if audio switch is disabled
+	if !t.config.AudioSwitchEnabled {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// If audio switch is already active, check if we should end it
+	if t.audioSwitchActive {
+		// End conditions:
+		// 1. Found a face at the new position (success!)
+		// 2. Timeout expired (no face found, return to original)
+		// 3. Audio stopped (speaker stopped talking)
+
+		elapsed := time.Since(t.audioSwitchStartedAt)
+
+		// Check if we found a face during the switch
+		if t.hasFaceTarget {
+			debug.Log("🎤→👁️  Audio switch SUCCESS: found face after %.1fs, switching focus\n", elapsed.Seconds())
+			t.audioSwitchActive = false
+			t.preSwitchFaceTarget = "" // Clear, we're committed to new face
+			return
+		}
+
+		// Check timeout
+		if elapsed > t.config.AudioSwitchLookDuration {
+			debug.Log("🎤→❌ Audio switch TIMEOUT: no face found after %.1fs, returning to previous target\n", elapsed.Seconds())
+			t.audioSwitchActive = false
+			// Restore previous focus target if we had one
+			if t.preSwitchFaceTarget != "" {
+				t.world.SetFocusTarget(t.preSwitchFaceTarget)
+			}
+			t.preSwitchFaceTarget = ""
+			return
+		}
+
+		// Check if audio stopped
+		if !hasAudio {
+			debug.Log("🎤→🔇 Audio switch CANCELLED: speaker stopped after %.1fs\n", elapsed.Seconds())
+			t.audioSwitchActive = false
+			if t.preSwitchFaceTarget != "" {
+				t.world.SetFocusTarget(t.preSwitchFaceTarget)
+			}
+			t.preSwitchFaceTarget = ""
+			return
+		}
+
+		// Still in audio switch mode, update target if audio moved
+		t.audioSwitchTarget = t.controller.GetCurrentYaw() + audioAngle
+		return
+	}
+
+	// Not in audio switch mode - check if we should start one
+	// Only trigger if we're currently tracking a face AND audio is from a different direction
+	if !hasFace || !hasAudio {
+		return
+	}
+
+	// Get audio source info
+	audio := t.world.GetAudioSource()
+	if audio == nil || !audio.Speaking || audio.Confidence < t.config.AudioSwitchMinConfidence {
+		return
+	}
+
+	// Calculate angle difference between current gaze and audio source
+	currentYaw := t.controller.GetCurrentYaw()
+
+	// Audio angle is relative to Eva, so we compare directly to head yaw
+	angleDiff := math.Abs(audioAngle)
+
+	// Check if audio is coming from a significantly different direction
+	if angleDiff < t.config.AudioSwitchThreshold {
+		// Audio is roughly where we're looking - same speaker, no switch needed
+		return
+	}
+
+	// Audio is from a different direction! Start audio switch
+	debug.Log("🎤🔀 Audio switch TRIGGERED: voice at %.2f rad from gaze (threshold=%.2f, confidence=%.2f)\n",
+		angleDiff, t.config.AudioSwitchThreshold, audio.Confidence)
+
+	t.audioSwitchActive = true
+	t.audioSwitchStartedAt = time.Now()
+	t.audioSwitchTarget = currentYaw + audioAngle
+	// Store previous focus target to return to if audio switch fails
+	if focus := t.world.GetFocusTarget(); focus != nil {
+		t.preSwitchFaceTarget = focus.ID
+	}
+
+	if t.state != nil {
+		t.state.AddLog("audio-switch", fmt.Sprintf("Turning toward voice (%.0f° away)", angleDiff*180/math.Pi))
 	}
 }
 
