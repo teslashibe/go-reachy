@@ -920,5 +920,3 @@ func Tools(cfg ToolsConfig) []Tool {
 		},
 	}
 }
-
-
