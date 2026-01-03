@@ -654,12 +654,9 @@ func (t *Tracker) detectAndUpdate() {
 	currentPitch := t.controller.GetCurrentPitch()
 	bodyYaw := t.world.GetBodyYaw()
 
-	// Detect face in current frame using local detector (room coordinates + pitch + depth)
-	frameX, frameY, roomYaw, targetPitch, faceWidth, found := t.perception.DetectFaceRoomFull(
-		t.video, currentYaw, currentPitch, bodyYaw,
-	)
-
-	if !found {
+	// Detect all faces in current frame (multi-face awareness)
+	faces, err := t.perception.DetectAllFaces(t.video, currentYaw, currentPitch, bodyYaw)
+	if err != nil || len(faces) == 0 {
 		// Log occasional misses
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
@@ -668,27 +665,56 @@ func (t *Tracker) detectAndUpdate() {
 		return
 	}
 
-	// Update world model with detection (room coordinates + depth estimation)
-	// Using "primary" as the entity ID for single-person tracking
-	t.world.UpdateEntityWithDepth("primary", roomYaw, frameX, faceWidth)
+	// Update world model with all detected faces (with depth estimation)
+	for _, face := range faces {
+		t.world.UpdateEntityWithDepth(face.ID, face.RoomYaw, face.PositionX, face.FaceWidth)
+	}
+
+	// Select priority target (speaking > centered > recent)
+	target := t.world.SelectPriorityTarget()
+	if target == nil {
+		return
+	}
+
+	// Find the matching face detection for pitch
+	var targetPitch float64
+	for _, face := range faces {
+		if face.ID == target.ID {
+			targetPitch = face.Pitch
+			break
+		}
+	}
 
 	// Update pitch target
 	t.controller.SetTargetPitch(targetPitch)
 
-	// Log detection with distance
-	entity := t.world.GetFocusTarget()
-	if entity != nil && entity.Distance > 0 {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad, dist %.1fm\n",
-			frameX, frameY, roomYaw, targetPitch, entity.Distance)
+	// Log detection with face count and distance
+	if len(faces) > 1 {
+		if target.Distance > 0 {
+			debug.Log("👁️  %d faces, tracking %s at (%.0f%%) → room %.2f rad, dist %.1fm\n",
+				len(faces), target.ID, target.FramePosition, target.WorldAngle, target.Distance)
+		} else {
+			debug.Log("👁️  %d faces, tracking %s at (%.0f%%) → room %.2f rad\n",
+				len(faces), target.ID, target.FramePosition, target.WorldAngle)
+		}
 	} else {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad\n",
-			frameX, frameY, roomYaw, targetPitch)
+		if target.Distance > 0 {
+			debug.Log("👁️  Face at (%.0f%%) → room %.2f rad, pitch %.2f rad, dist %.1fm\n",
+				target.FramePosition, target.WorldAngle, targetPitch, target.Distance)
+		} else {
+			debug.Log("👁️  Face at (%.0f%%) → room %.2f rad, pitch %.2f rad\n",
+				target.FramePosition, target.WorldAngle, targetPitch)
+		}
 	}
 
 	// Update dashboard
 	if t.state != nil {
-		t.state.UpdateFacePosition(frameX, roomYaw)
-		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → room %.2f", frameX, roomYaw))
+		t.state.UpdateFacePosition(target.FramePosition, target.WorldAngle)
+		if len(faces) > 1 {
+			t.state.AddLog("face", fmt.Sprintf("%d faces, tracking %s", len(faces), target.ID))
+		} else {
+			t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → room %.2f", target.FramePosition, target.WorldAngle))
+		}
 	}
 }
 
