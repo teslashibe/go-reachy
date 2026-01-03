@@ -109,6 +109,11 @@ type Tracker struct {
 	audioSwitchStartedAt time.Time // When we started the audio switch
 	audioSwitchTarget    float64   // Target yaw for audio switch
 	preSwitchFaceTarget  string    // Focus target before switching (to return to)
+
+	// Body alignment state (gradual centering when locked on target)
+	lockedOnFaceAt      time.Time // When stable tracking started (for lock detection)
+	lastBodyAlignmentAt time.Time // Last alignment action (for cooldown)
+	isBodyAligning      bool      // Currently performing body alignment
 }
 
 // New creates a new head tracker with local face detection.
@@ -497,6 +502,9 @@ func (t *Tracker) updateMovement() {
 	audioSwitchTarget := t.audioSwitchTarget
 	t.mu.RUnlock()
 
+	// Update lock state for body alignment
+	t.updateLockState(hasFace)
+
 	if !hasFace && !hasAudio && !audioSwitchActive {
 		// No target - check if we should scan or interpolate to neutral
 		t.updateNoTarget()
@@ -568,18 +576,22 @@ func (t *Tracker) updateMovement() {
 	if !yawShouldMove && !pitchShouldMove {
 		// Only log occasionally to avoid spam
 		if hasFace {
-			debug.Log("⏸️  Not moving: yaw error=%.3f (deadzone=%.3f), at limit=%v\n",
-				t.controller.GetError(), t.config.ControlDeadZone,
-				math.Abs(t.controller.GetCurrentYaw()) > t.config.YawRange*0.95)
+			headYaw := t.controller.GetCurrentYaw()
+			debug.Log("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
+				headYaw, t.controller.GetError(), t.config.ControlDeadZone,
+				math.Abs(headYaw) > t.config.YawRange*0.95)
 		}
+		// STILL check body alignment even when head not moving!
+		t.checkBodyAlignment()
 		return
 	}
 
 	// Output the result (combined yaw and pitch)
 	t.outputPose(newYaw, newPitch, t.controller.GetTargetYaw())
 
-	// Check if body rotation is needed using offset-based trigger
-	t.checkBodyRotationOffset(yawOffset)
+	// Check if gradual body alignment should occur
+	// (Removed checkBodyRotationOffset - checkBodyAlignment handles all body movement now)
+	t.checkBodyAlignment()
 }
 
 // outputPose sends yaw and pitch to either offset handler or direct robot control
@@ -665,6 +677,137 @@ func (t *Tracker) checkBodyRotationOffset(yawOffset float64) {
 	} else if currentYaw < -limit*0.9 && yawOffset < -0.05 {
 		debug.Log("🔄 Body rotation triggered (offset): head at %.2f, offset %.2f → rotate right\n", currentYaw, yawOffset)
 		handler(-step)
+	}
+}
+
+// isLockedOnTarget returns true if Eva has been stably tracking a face for
+// the configured delay period (body alignment delay).
+func (t *Tracker) isLockedOnTarget() bool {
+	t.mu.RLock()
+	hasFace := t.hasFaceTarget
+	lockedAt := t.lockedOnFaceAt
+	t.mu.RUnlock()
+
+	if !hasFace {
+		return false
+	}
+
+	// Check if we've been tracking long enough
+	if lockedAt.IsZero() {
+		return false
+	}
+
+	return time.Since(lockedAt) >= t.config.BodyAlignmentDelay
+}
+
+// updateLockState tracks when stable face tracking started.
+// Called from updateMovement when we have a face target.
+func (t *Tracker) updateLockState(hasFace bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if hasFace {
+		// If we just acquired a face, record the time
+		if t.lockedOnFaceAt.IsZero() {
+			t.lockedOnFaceAt = time.Now()
+		}
+	} else {
+		// Lost face - reset lock state
+		t.lockedOnFaceAt = time.Time{}
+		t.isBodyAligning = false
+	}
+}
+
+// checkBodyAlignment rotates body to stay under the head.
+// Simple rule: If head is turned, body slowly rotates to center it.
+func (t *Tracker) checkBodyAlignment() {
+	if !t.config.BodyAlignmentEnabled {
+		return
+	}
+
+	t.mu.RLock()
+	handler := t.onBodyRotation
+	lastAlignment := t.lastBodyAlignmentAt
+	hasFace := t.hasFaceTarget
+	t.mu.RUnlock()
+
+	if handler == nil || !hasFace {
+		return
+	}
+
+	// Cooldown to prevent jitter
+	if !lastAlignment.IsZero() && time.Since(lastAlignment) < t.config.BodyAlignmentCooldown {
+		return
+	}
+
+	currentHeadYaw := t.controller.GetCurrentYaw()
+	absHeadYaw := math.Abs(currentHeadYaw)
+	currentBodyYaw := t.world.GetBodyYaw()
+	absBodyYaw := math.Abs(currentBodyYaw)
+
+	// Compute body error: how much does body need to move?
+	// When head is turned, body moves to center the head (make headYaw → 0)
+	// When head is centered, body moves toward room center (0)
+	var bodyError float64
+	var reason string
+	
+	if absHeadYaw > 0.05 {
+		// Head is turned - move body in direction head is looking
+		bodyError = currentHeadYaw
+		reason = "centering head"
+	} else if absBodyYaw > 0.02 {
+		// Head is centered but body is not at room center - return body to 0
+		bodyError = -currentBodyYaw // Move body toward 0
+		reason = "returning to neutral"
+	} else {
+		// Both head and body are centered - nothing to do
+		return
+	}
+	
+	debug.Log("🌍 Body: body=%.2f, head=%.2f, error=%.2f (%s)\n", 
+		currentBodyYaw, currentHeadYaw, bodyError, reason)
+	
+	// Calculate rotation step - PROPORTIONAL to error
+	dt := t.config.MovementInterval.Seconds()
+	maxStep := t.config.BodyAlignmentSpeed * dt
+	
+	// Proportional: move faster when error is larger
+	absError := math.Abs(bodyError)
+	proportion := math.Min(absError/0.5, 1.0)
+	rotationStep := maxStep * proportion
+	
+	// Minimum step to ensure movement when there's error
+	if absError > 0.01 {
+		minStep := maxStep * 0.2
+		if rotationStep < minStep {
+			rotationStep = minStep
+		}
+	}
+
+	// Move body toward target (in direction of error)
+	var bodyDelta float64
+	if bodyError > 0 {
+		bodyDelta = rotationStep // Need to rotate left
+	} else {
+		bodyDelta = -rotationStep // Need to rotate right
+	}
+
+	// Log movement
+	debug.Log("🎯 Body alignment: head=%.2f, body=%.2f, delta=%.3f → newBody=%.2f\n",
+		currentHeadYaw, currentBodyYaw, bodyDelta, currentBodyYaw+bodyDelta)
+
+	// Update state
+	t.mu.Lock()
+	t.lastBodyAlignmentAt = time.Now()
+	t.isBodyAligning = true
+	t.mu.Unlock()
+
+	// Trigger body rotation
+	handler(bodyDelta)
+
+	// Counter-rotate head to maintain gaze (only when centering head, not when returning body)
+	if reason == "centering head" {
+		t.controller.AdjustForBodyRotation(bodyDelta)
 	}
 }
 

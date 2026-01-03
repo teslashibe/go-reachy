@@ -341,6 +341,23 @@ func (c *PDController) NeedsBodyRotation(threshold, step float64) (bool, float64
 	return false, 0
 }
 
+// AdjustForBodyRotation compensates head position when body rotates.
+// Called after body rotation to maintain gaze on target.
+// bodyDelta: how much body rotated (radians, positive = left)
+func (c *PDController) AdjustForBodyRotation(bodyDelta float64) {
+	// Counter-rotate head to maintain gaze
+	// If body rotates left (positive), head needs to rotate right (negative) to keep looking at same spot
+	c.currentYaw -= bodyDelta
+	c.targetYaw -= bodyDelta
+
+	// Clamp to limits
+	c.currentYaw = clamp(c.currentYaw, -c.MaxYaw, c.MaxYaw)
+	c.targetYaw = clamp(c.targetYaw, -c.MaxYaw, c.MaxYaw)
+
+	// Reset error tracking to avoid derivative spike
+	c.lastError = c.targetYaw - c.currentYaw
+}
+
 // SetMaxTargetVelocity updates the velocity limit for runtime tuning.
 // velocity: max radians per tick (0 = no limit)
 func (c *PDController) SetMaxTargetVelocity(velocity float64) {
