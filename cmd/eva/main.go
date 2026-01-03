@@ -349,6 +349,22 @@ func main() {
 			headTracker.SetAudioClient(audioClient)
 			fmt.Println("✅")
 		}
+
+		// Set up automatic body rotation when head reaches limits
+		headTracker.SetBodyRotationHandler(func(direction float64) {
+			currentBody := headTracker.GetBodyYaw()
+			newBody := currentBody + direction
+			// Clamp to reasonable body rotation range (±1.0 rad ≈ ±57°)
+			if newBody > 1.0 {
+				newBody = 1.0
+			} else if newBody < -1.0 {
+				newBody = -1.0
+			}
+			debug.Log("🔄 Body rotation: %.2f → %.2f rad\n", currentBody, newBody)
+			robotCtrl.SetBodyYaw(newBody)
+			headTracker.SetBodyYaw(newBody) // Sync world model
+		})
+		fmt.Println("🔄 Auto body rotation enabled")
 	}
 
 	// Connect to OpenAI Realtime API

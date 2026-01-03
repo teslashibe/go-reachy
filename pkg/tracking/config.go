@@ -40,6 +40,10 @@ type Config struct {
 
 	// Logging
 	LogThreshold float64 // Only log movements larger than this (radians)
+
+	// Body rotation (when head reaches mechanical limits)
+	BodyRotationThreshold float64 // Trigger rotation when head yaw exceeds this fraction of YawRange (0-1)
+	BodyRotationStep      float64 // How much to rotate body per trigger (radians)
 }
 
 // DefaultConfig returns the recommended configuration for responsive tracking
@@ -57,27 +61,31 @@ func DefaultConfig() Config {
 		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
 
 		// PD Controller - tuned for smooth tracking
-		Kp:              0.15,              // Proportional: respond to error
-		Kd:              0.05,              // Derivative: dampen oscillations
-		ControlDeadZone: 0.03,              // ~2° dead zone
+		Kp:              0.15, // Proportional: respond to error
+		Kd:              0.05, // Derivative: dampen oscillations
+		ControlDeadZone: 0.03, // ~2° dead zone
 
 		// Perception
-		CameraFOV:         math.Pi / 2,     // 90° horizontal FOV
-		PositionSmoothing: 0.6,             // 60% new, 40% old
-		JitterThreshold:   5.0,             // Ignore <5% position changes
+		CameraFOV:         math.Pi / 2, // 90° horizontal FOV
+		PositionSmoothing: 0.6,         // 60% new, 40% old
+		JitterThreshold:   5.0,         // Ignore <5% position changes
 
 		// World Model
-		ConfidenceDecay: 0.3,               // Lose 30% confidence per second
-		ForgetThreshold: 0.1,               // Forget below 10% confidence
-		ForgetTimeout:   10 * time.Second,  // Forget after 10 seconds
+		ConfidenceDecay: 0.3,              // Lose 30% confidence per second
+		ForgetThreshold: 0.1,              // Forget below 10% confidence
+		ForgetTimeout:   10 * time.Second, // Forget after 10 seconds
 
 		// Scan behavior
-		ScanStartDelay: 2 * time.Second,    // Start scanning after 2s with no face
-		ScanSpeed:      0.3,                // 0.3 rad/sec when scanning
-		ScanRange:      1.0,                // Scan ±1.0 rad (±57°)
+		ScanStartDelay: 2 * time.Second, // Start scanning after 2s with no face
+		ScanSpeed:      0.3,             // 0.3 rad/sec when scanning
+		ScanRange:      1.0,             // Scan ±1.0 rad (±57°)
 
 		// Logging
 		LogThreshold: 0.05, // Log movements >0.05 rad (~3°)
+
+		// Body rotation
+		BodyRotationThreshold: 0.8, // Trigger when head yaw > 80% of max range
+		BodyRotationStep:      0.5, // Rotate body by 0.5 rad (~29°) per trigger
 	}
 }
 

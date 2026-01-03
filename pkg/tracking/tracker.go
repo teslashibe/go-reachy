@@ -31,6 +31,11 @@ type StateUpdater interface {
 // Uses robot.Offset for consistency with the robot package.
 type OffsetHandler func(offset robot.Offset)
 
+// BodyRotationHandler is called when the head reaches its mechanical limits
+// and the body should rotate to bring the target back into range.
+// direction: positive = rotate body left, negative = rotate body right (radians)
+type BodyRotationHandler func(direction float64)
+
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
 	config Config
@@ -49,6 +54,9 @@ type Tracker struct {
 
 	// Offset mode: if set, output offsets instead of direct control
 	onOffset OffsetHandler
+
+	// Body rotation callback: if set, called when head reaches limits
+	onBodyRotation BodyRotationHandler
 
 	// State
 	mu            sync.RWMutex
@@ -118,6 +126,16 @@ func (t *Tracker) SetOffsetHandler(handler OffsetHandler) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onOffset = handler
+}
+
+// SetBodyRotationHandler sets the callback for automatic body rotation.
+// When the head reaches its mechanical limits while tracking a target,
+// this callback is invoked with the rotation direction (radians).
+// The caller should rotate the body and call SetBodyYaw to update the world model.
+func (t *Tracker) SetBodyRotationHandler(handler BodyRotationHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onBodyRotation = handler
 }
 
 // SetBodyYaw updates the world model with current body orientation.
@@ -266,6 +284,9 @@ func (t *Tracker) updateMovement() {
 
 	// Output the result
 	t.outputYaw(newYaw, targetAngle)
+
+	// Check if body rotation is needed (head at mechanical limits)
+	t.checkBodyRotation()
 }
 
 // outputYaw sends the yaw to either offset handler or direct robot control
@@ -295,6 +316,27 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 				t.lastLoggedYaw = yaw
 			}
 		}
+	}
+}
+
+// checkBodyRotation checks if head is at limits and triggers body rotation
+func (t *Tracker) checkBodyRotation() {
+	t.mu.RLock()
+	handler := t.onBodyRotation
+	t.mu.RUnlock()
+
+	if handler == nil {
+		return
+	}
+
+	needsRotation, direction := t.controller.NeedsBodyRotation(
+		t.config.BodyRotationThreshold,
+		t.config.BodyRotationStep,
+	)
+
+	if needsRotation {
+		debug.Log("🔄 Body rotation triggered: direction=%.2f rad\n", direction)
+		handler(direction)
 	}
 }
 
