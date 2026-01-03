@@ -504,9 +504,17 @@ func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 	speech := t.speechOffsets
 	t.mu.RUnlock()
 
+	// Apply response scaling to reduce overshoot (matches Python reachy behavior)
+	scale := t.config.ResponseScale
+	if scale <= 0 {
+		scale = 1.0 // Fallback to full response if not configured
+	}
+	scaledYaw := yaw * scale
+	scaledPitch := pitch * scale
+
 	// Add speech wobble offsets for natural speaking gestures
-	finalYaw := yaw + speech.Yaw
-	finalPitch := pitch + speech.Pitch
+	finalYaw := scaledYaw + speech.Yaw
+	finalPitch := scaledPitch + speech.Pitch
 	finalRoll := speech.Roll // Roll only from speech (tracking doesn't use roll)
 
 	if handler != nil {

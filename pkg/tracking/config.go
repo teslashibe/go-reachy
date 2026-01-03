@@ -60,6 +60,10 @@ type Config struct {
 	BreathingAmplitude float64 // Pitch amplitude in radians
 	BreathingFrequency float64 // Cycles per second (Hz)
 	BreathingRollAmp   float64 // Roll amplitude in radians (subtle side-to-side)
+
+	// Response scaling (0-1) reduces overshoot for smoother tracking
+	// Python reachy uses 0.6; set to 1.0 for full response
+	ResponseScale float64
 }
 
 // DefaultConfig returns the recommended configuration for responsive tracking
@@ -76,10 +80,10 @@ func DefaultConfig() Config {
 		// Range - almost full 180° rotation
 		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
 
-		// PD Controller - tuned for smooth tracking
-		Kp:              0.15, // Proportional: respond to error
-		Kd:              0.05, // Derivative: dampen oscillations
-		ControlDeadZone: 0.03, // ~2° dead zone
+		// PD Controller - tuned for smooth tracking (matches Python reachy)
+		Kp:              0.10, // Proportional: respond to error
+		Kd:              0.08, // Derivative: dampen oscillations
+		ControlDeadZone: 0.05, // ~3° dead zone
 
 		// Perception
 		CameraFOV:         math.Pi / 2, // 90° horizontal FOV
@@ -118,6 +122,9 @@ func DefaultConfig() Config {
 		BreathingAmplitude: 0.05,  // ~3° pitch oscillation
 		BreathingFrequency: 0.15,  // One breath every ~6.7 seconds
 		BreathingRollAmp:   0.02,  // ~1° roll (subtle)
+
+		// Response scaling (matches Python reachy behavior)
+		ResponseScale: 0.6, // Scale down response to prevent overshoot
 	}
 }
 
@@ -150,9 +157,10 @@ func SlowConfig() Config {
 	cfg := DefaultConfig()
 	cfg.DetectionInterval = 400 * time.Millisecond
 	cfg.MaxSpeed = 0.10
-	cfg.Kp = 0.10
-	cfg.Kd = 0.08 // More dampening
-	cfg.ControlDeadZone = 0.05
+	cfg.Kp = 0.08
+	cfg.Kd = 0.10 // More dampening
+	cfg.ControlDeadZone = 0.06
+	cfg.ResponseScale = 0.5 // Even more scaling
 	return cfg
 }
 
@@ -161,9 +169,10 @@ func AggressiveConfig() Config {
 	cfg := DefaultConfig()
 	cfg.DetectionInterval = 150 * time.Millisecond
 	cfg.MaxSpeed = 0.25
-	cfg.Kp = 0.20
-	cfg.Kd = 0.03 // Less dampening
-	cfg.ControlDeadZone = 0.02
+	cfg.Kp = 0.15
+	cfg.Kd = 0.05 // Less dampening
+	cfg.ControlDeadZone = 0.03
 	cfg.PositionSmoothing = 0.8 // Trust new readings more
+	cfg.ResponseScale = 0.8     // Less scaling for faster response
 	return cfg
 }

@@ -257,12 +257,13 @@ func (c *PDController) UpdatePitch() (float64, bool) {
 }
 
 // clampPitch limits pitch to mechanical limits (asymmetric)
+// Note: Reachy Mini uses negative pitch for looking UP, positive for DOWN
 func (c *PDController) clampPitch(pitch float64) float64 {
-	if pitch > c.MaxPitchUp {
-		return c.MaxPitchUp
+	if pitch < -c.MaxPitchUp {
+		return -c.MaxPitchUp // Looking up limit (negative)
 	}
-	if pitch < -c.MaxPitchDown {
-		return -c.MaxPitchDown
+	if pitch > c.MaxPitchDown {
+		return c.MaxPitchDown // Looking down limit (positive)
 	}
 	return pitch
 }
