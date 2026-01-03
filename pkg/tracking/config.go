@@ -54,6 +54,12 @@ type Config struct {
 	KpPitch       float64 // Proportional gain for pitch (0 = use Kp)
 	KdPitch       float64 // Derivative gain for pitch (0 = use Kd)
 	PitchDeadZone float64 // Dead zone for pitch (0 = use ControlDeadZone)
+
+	// Breathing animation (idle behavior when not tracking)
+	BreathingEnabled   bool    // Enable breathing animation (default: true)
+	BreathingAmplitude float64 // Pitch amplitude in radians
+	BreathingFrequency float64 // Cycles per second (Hz)
+	BreathingRollAmp   float64 // Roll amplitude in radians (subtle side-to-side)
 }
 
 // DefaultConfig returns the recommended configuration for responsive tracking
@@ -106,6 +112,12 @@ func DefaultConfig() Config {
 		KpPitch:       0, // Use Kp
 		KdPitch:       0, // Use Kd
 		PitchDeadZone: 0, // Use ControlDeadZone
+
+		// Breathing animation
+		BreathingEnabled:   true,  // Enable by default
+		BreathingAmplitude: 0.05,  // ~3° pitch oscillation
+		BreathingFrequency: 0.15,  // One breath every ~6.7 seconds
+		BreathingRollAmp:   0.02,  // ~1° roll (subtle)
 	}
 }
 
