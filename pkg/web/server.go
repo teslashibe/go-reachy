@@ -72,6 +72,10 @@ type Server struct {
 	OnGetTuningParams func() interface{}
 	OnSetTuningParams func(params map[string]interface{})
 	OnSetTuningMode   func(enabled bool)
+
+	// Camera callbacks (for camera configuration)
+	OnGetCameraConfig func() interface{}
+	OnSetCameraConfig func(params map[string]interface{}) error
 }
 
 // NewServer creates a new web dashboard server
@@ -108,6 +112,12 @@ func NewServer(port string) *Server {
 	api.Get("/tracking/params", s.handleGetTuningParams)
 	api.Post("/tracking/params", s.handleSetTuningParams)
 	api.Post("/tracking/tuning-mode", s.handleSetTuningMode)
+
+	// Camera API routes
+	api.Get("/camera/config", s.handleGetCameraConfig)
+	api.Post("/camera/config", s.handleSetCameraConfig)
+	api.Get("/camera/presets", s.handleGetCameraPresets)
+	api.Get("/camera/capabilities", s.handleGetCameraCapabilities)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
@@ -277,5 +287,69 @@ func (s *Server) handleSetTuningMode(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"status": "ok",
 		"mode":   mode,
+	})
+}
+
+// handleGetCameraConfig returns current camera configuration
+func (s *Server) handleGetCameraConfig(c *fiber.Ctx) error {
+	if s.OnGetCameraConfig == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Camera config not available",
+		})
+	}
+	return c.JSON(s.OnGetCameraConfig())
+}
+
+// handleSetCameraConfig updates camera configuration
+func (s *Server) handleSetCameraConfig(c *fiber.Ctx) error {
+	if s.OnSetCameraConfig == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Camera config not available",
+		})
+	}
+
+	var params map[string]interface{}
+	if err := c.BodyParser(&params); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid JSON: " + err.Error(),
+		})
+	}
+
+	if err := s.OnSetCameraConfig(params); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"status":  "ok",
+		"updated": params,
+	})
+}
+
+// handleGetCameraPresets returns available camera presets
+func (s *Server) handleGetCameraPresets(c *fiber.Ctx) error {
+	// Import camera package presets
+	presets := []string{
+		"default", "legacy", "720p", "1080p", "4k",
+		"night", "bright", "zoom2x", "zoom4x",
+	}
+	return c.JSON(fiber.Map{
+		"presets": presets,
+	})
+}
+
+// handleGetCameraCapabilities returns camera sensor capabilities
+func (s *Server) handleGetCameraCapabilities(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"sensor":           "imx708_wide",
+		"max_width":        4608,
+		"max_height":       2592,
+		"max_gain":         16.0,
+		"max_exposure_us":  120000,
+		"max_zoom":         4.0,
+		"exposure_modes":   []string{"normal", "short", "long"},
+		"constraint_modes": []string{"normal", "highlight", "shadows"},
+		"af_modes":         []string{"manual", "auto", "continuous"},
 	})
 }

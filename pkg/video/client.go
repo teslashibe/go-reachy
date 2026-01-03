@@ -37,6 +37,7 @@ type Client struct {
 	h264Mutex    sync.Mutex
 	lastKeyframe []byte
 	decodeMutex  sync.Mutex // Prevents concurrent ffmpeg calls
+	fastDecoder  *FastDecoder // Fast pipe-based decoder
 
 	// Latest decoded frame
 	latestFrame []byte
@@ -62,12 +63,19 @@ func NewClient(robotIP string) *Client {
 		fmt.Printf("Warning: failed to create opus decoder: %v\n", err)
 	}
 
+	// Create fast H264 decoder (decode at 10 FPS max - matches dashboard rate)
+	fastDec, err := NewFastDecoder(100 * time.Millisecond) // 10 FPS
+	if err != nil {
+		fmt.Printf("Warning: failed to create fast decoder: %v\n", err)
+	}
+
 	return &Client{
 		robotIP:       robotIP,
 		signallingURL: fmt.Sprintf("ws://%s:8443", robotIP),
 		frameReady:    make(chan struct{}, 1),
 		audioReady:    make(chan struct{}, 1),
 		opusDecoder:   decoder,
+		fastDecoder:   fastDec,
 	}
 }
 
@@ -486,11 +494,28 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 		return
 	}
 
-	// Lock to prevent concurrent ffmpeg calls on same temp files
+	// Try fast decoder first (pipe-based, no file I/O)
+	if c.fastDecoder != nil {
+		jpegData, err := c.fastDecoder.DecodeNAL(h264Data)
+		if err == nil && len(jpegData) > 1000 {
+			c.frameMutex.Lock()
+			c.latestFrame = jpegData
+			c.frameMutex.Unlock()
+			return
+		}
+		// If fast decoder returned cached frame, use it
+		if jpegData != nil && len(jpegData) > 1000 {
+			c.frameMutex.Lock()
+			c.latestFrame = jpegData
+			c.frameMutex.Unlock()
+			return
+		}
+	}
+
+	// Fallback to file-based ffmpeg (slower but more reliable for startup)
 	c.decodeMutex.Lock()
 	defer c.decodeMutex.Unlock()
 
-	// Write H264 to temp file for debugging
 	tmpH264 := "/tmp/reachy_video.h264"
 	tmpJPEG := "/tmp/reachy_frame.jpg"
 
@@ -505,7 +530,6 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 	// Get file size - require more data for stable frames
 	info, _ := os.Stat(tmpH264)
 	if info == nil || info.Size() < 100000 {
-		// Wait until we have enough data (100KB minimum)
 		return
 	}
 
@@ -519,22 +543,17 @@ func (c *Client) decodeH264ToJPEG(h264Data []byte) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Keep accumulating if decode fails
 		return
 	}
 
 	// Read the JPEG
 	jpegData, err := os.ReadFile(tmpJPEG)
 	if err == nil && len(jpegData) > 1000 {
-		// Validate frame isn't gray by checking for color variance in the file
-		// Gray frames have very repetitive byte patterns
 		if len(jpegData) > 5000 && !isGrayFrame(jpegData) {
 			c.frameMutex.Lock()
 			c.latestFrame = jpegData
 			c.frameMutex.Unlock()
 		}
-
-		// Clear the H264 buffer after successful decode
 		os.Remove(tmpH264)
 	}
 
@@ -621,6 +640,9 @@ func (c *Client) CaptureJPEG() ([]byte, error) {
 // Close closes the WebRTC connection
 func (c *Client) Close() {
 	c.closed = true
+	if c.fastDecoder != nil {
+		c.fastDecoder.Close()
+	}
 	if c.pc != nil {
 		c.pc.Close()
 	}
