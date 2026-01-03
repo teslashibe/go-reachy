@@ -56,10 +56,12 @@ type Config struct {
 	PitchDeadZone float64 // Dead zone for pitch (0 = use ControlDeadZone)
 
 	// Breathing animation (idle behavior when not tracking)
-	BreathingEnabled   bool    // Enable breathing animation (default: true)
-	BreathingAmplitude float64 // Pitch amplitude in radians
-	BreathingFrequency float64 // Cycles per second (Hz)
-	BreathingRollAmp   float64 // Roll amplitude in radians (subtle side-to-side)
+	// Matches Python reachy behavior for visibility
+	BreathingEnabled    bool    // Enable breathing animation (default: true)
+	BreathingAmplitude  float64 // Pitch amplitude in radians
+	BreathingFrequency  float64 // Cycles per second (Hz) - Python uses 0.08
+	BreathingRollAmp    float64 // Roll amplitude in radians (subtle side-to-side)
+	BreathingAntennaAmp float64 // Antenna sway amplitude in radians (Python: ~5°)
 
 	// Response scaling (0-1) reduces overshoot for smoother tracking
 	// Python reachy uses 0.6; set to 1.0 for full response
@@ -124,11 +126,12 @@ func DefaultConfig() Config {
 		KdPitch:       0, // Use Kd
 		PitchDeadZone: 0, // Use ControlDeadZone
 
-		// Breathing animation
-		BreathingEnabled:   true,  // Enable by default
-		BreathingAmplitude: 0.05,  // ~3° pitch oscillation
-		BreathingFrequency: 0.15,  // One breath every ~6.7 seconds
-		BreathingRollAmp:   0.02,  // ~1° roll (subtle)
+		// Breathing animation (matches Python reachy for visibility)
+		BreathingEnabled:    true,               // Enable by default
+		BreathingAmplitude:  0.05,               // ~3° pitch oscillation
+		BreathingFrequency:  0.08,               // Match Python: one breath every ~12.5 seconds
+		BreathingRollAmp:    0.02,               // ~1° roll (subtle)
+		BreathingAntennaAmp: 5.0 * math.Pi / 180, // 5° antenna sway (like Python)
 
 		// Response scaling (matches Python reachy behavior)
 		ResponseScale: 0.6, // Scale down response to prevent overshoot

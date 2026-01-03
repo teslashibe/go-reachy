@@ -43,6 +43,9 @@ type Tracker struct {
 	video  VideoSource
 	state  StateUpdater
 
+	// Optional antenna controller for breathing animation
+	antennaController robot.AntennaController
+
 	// Core components
 	detector   detection.Detector
 	world      *worldmodel.WorldModel
@@ -146,6 +149,14 @@ func (t *Tracker) Close() error {
 // SetStateUpdater sets the dashboard state updater
 func (t *Tracker) SetStateUpdater(state StateUpdater) {
 	t.state = state
+}
+
+// SetAntennaController sets the optional antenna controller for breathing animation.
+// If set, antennas will sway during breathing like the Python implementation.
+func (t *Tracker) SetAntennaController(ctrl robot.AntennaController) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.antennaController = ctrl
 }
 
 // SetOffsetHandler enables offset mode.
@@ -961,10 +972,18 @@ func (t *Tracker) updateScanning() {
 }
 
 // updateBreathing implements gentle breathing animation when idle
+// Matches Python reachy behavior with antenna sway for visibility
 func (t *Tracker) updateBreathing() {
 	// Advance phase based on frequency
 	dt := t.config.MovementInterval.Seconds()
 	t.breathingPhase += dt * t.config.BreathingFrequency * 2 * math.Pi
+
+	// Log at peak of each breath cycle (when phase crosses π)
+	wasBeforePeak := t.breathingPhase-dt*t.config.BreathingFrequency*2*math.Pi < math.Pi
+	isAfterPeak := t.breathingPhase >= math.Pi && t.breathingPhase < math.Pi+0.1
+	if wasBeforePeak && isAfterPeak {
+		debug.Logln("😮‍💨 Breathing...")
+	}
 
 	// Keep phase in 0 to 2π range
 	if t.breathingPhase > 2*math.Pi {
@@ -978,8 +997,26 @@ func (t *Tracker) updateBreathing() {
 	// Roll: subtle side-to-side at slightly different frequency for natural feel
 	roll := t.config.BreathingRollAmp * math.Sin(t.breathingPhase*0.7)
 
-	// Yaw stays at 0 (centered) during breathing
+	// Antenna sway: opposite directions for visual effect (like Python)
+	// Use a slightly different frequency for more organic feel
+	antennaPhase := t.breathingPhase * 1.2 // Slightly faster than head
+	antennaSway := t.config.BreathingAntennaAmp * math.Sin(antennaPhase)
+
+	// Output head pose (yaw stays at 0 during breathing)
 	t.outputPose(0, pitch, 0)
+
+	// Output antenna sway if controller available
+	t.mu.RLock()
+	antennaCtrl := t.antennaController
+	t.mu.RUnlock()
+
+	if antennaCtrl != nil {
+		// Antennas sway in opposite directions (left = +sway, right = -sway)
+		if err := antennaCtrl.SetAntennas(antennaSway, -antennaSway); err != nil {
+			// Don't spam logs for antenna errors
+			debug.Log("⚠️  Antenna sway error: %v\n", err)
+		}
+	}
 
 	// Note: roll is computed but not used yet since outputPose only takes yaw/pitch
 	// TODO: Add roll support to outputPose when robot supports it

@@ -368,6 +368,10 @@ func main() {
 		})
 		fmt.Println("🔄 Auto body rotation enabled")
 
+		// Enable antenna breathing animation (matches Python reachy)
+		headTracker.SetAntennaController(robotCtrl)
+		fmt.Println("😮‍💨 Breathing antenna sway enabled")
+
 		// Initialize speech wobbler for natural speaking gestures
 		speechWobbler = speech.NewWobbler(func(roll, pitch, yaw float64) {
 			headTracker.SetSpeechOffsets(roll, pitch, yaw)
