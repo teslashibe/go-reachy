@@ -68,10 +68,15 @@ type Tracker struct {
 	disabledAt time.Time // When tracking was disabled (for delayed return to neutral)
 
 	// Scanning state
-	isScanning     bool
-	scanDirection  float64 // 1 = right, -1 = left
-	scanStartTime  time.Time
-	lastFaceSeenAt time.Time
+	isScanning      bool
+	scanDirection   float64 // 1 = right, -1 = left
+	scanStartTime   time.Time
+	lastFaceSeenAt  time.Time
+	scanCyclesDone  int // Number of complete scan cycles
+
+	// Breathing state (idle animation)
+	isBreathing    bool
+	breathingPhase float64 // Current phase in radians (0 to 2π)
 
 	// Interpolation for smooth return to neutral
 	interpStartedAt time.Time
@@ -345,11 +350,17 @@ func (t *Tracker) updateMovement() {
 		return
 	}
 
-	// We have a target - stop scanning and interpolation
-	if t.isScanning {
-		t.isScanning = false
+	// We have a target - stop scanning, breathing, and interpolation
+	if t.isScanning || t.isBreathing {
+		if t.isScanning {
+			t.isScanning = false
+		}
+		if t.isBreathing {
+			t.isBreathing = false
+			t.breathingPhase = 0
+		}
 		if source == "face" {
-			debug.Logln("👁️  Found face, stopping scan")
+			debug.Logln("👁️  Found face, stopping idle behavior")
 		} else if source == "audio" {
 			debug.Logln("🎤 Heard voice, turning toward sound")
 		}
@@ -434,6 +445,12 @@ func (t *Tracker) checkBodyRotation() {
 
 // updateNoTarget handles the case when no face is detected
 func (t *Tracker) updateNoTarget() {
+	// If breathing, continue breathing animation
+	if t.isBreathing {
+		t.updateBreathing()
+		return
+	}
+
 	// Check if we should start interpolating to neutral
 	if !t.isInterpolating && !t.isScanning {
 		if t.lastFaceSeenAt.IsZero() {
@@ -465,6 +482,7 @@ func (t *Tracker) updateNoTarget() {
 			t.isScanning = true
 			t.scanStartTime = time.Now()
 			t.scanDirection = 1.0
+			t.scanCyclesDone = 0 // Reset cycle counter
 			debug.Logln("👀 Starting scan for faces...")
 			if t.state != nil {
 				t.state.AddLog("scan", "Scanning for faces")
@@ -480,9 +498,13 @@ func (t *Tracker) updateNoTarget() {
 // updateDisabled handles movement when tracking is disabled.
 // Smoothly returns to neutral position.
 func (t *Tracker) updateDisabled(disabledAt time.Time) {
-	// Stop scanning when disabled
+	// Stop scanning and breathing when disabled
 	if t.isScanning {
 		t.isScanning = false
+	}
+	if t.isBreathing {
+		t.isBreathing = false
+		t.breathingPhase = 0
 	}
 
 	// Start interpolation to neutral if not already interpolating
@@ -562,7 +584,7 @@ func (t *Tracker) updateScanning() {
 	scanStep := t.config.ScanSpeed * dt * t.scanDirection
 	newYaw := currentYaw + scanStep
 
-	// Reverse direction at scan limits
+	// Reverse direction at scan limits and count cycles
 	if newYaw > t.config.ScanRange {
 		newYaw = t.config.ScanRange
 		t.scanDirection = -1.0
@@ -570,7 +592,20 @@ func (t *Tracker) updateScanning() {
 	} else if newYaw < -t.config.ScanRange {
 		newYaw = -t.config.ScanRange
 		t.scanDirection = 1.0
+		t.scanCyclesDone++ // Complete cycle when returning to right
 		debug.Logln("👀 Scan: reversing to right")
+
+		// After one full scan cycle, switch to breathing if enabled
+		if t.scanCyclesDone >= 1 && t.config.BreathingEnabled {
+			t.isScanning = false
+			t.isBreathing = true
+			t.breathingPhase = 0
+			debug.Logln("😮‍💨 Scan complete, starting breathing animation")
+			if t.state != nil {
+				t.state.AddLog("breathing", "Breathing animation started")
+			}
+			return
+		}
 	}
 
 	// Update controller state
@@ -584,6 +619,32 @@ func (t *Tracker) updateScanning() {
 		debug.Log("👀 Scanning: yaw=%.2f\n", newYaw)
 		t.lastLoggedYaw = newYaw
 	}
+}
+
+// updateBreathing implements gentle breathing animation when idle
+func (t *Tracker) updateBreathing() {
+	// Advance phase based on frequency
+	dt := t.config.MovementInterval.Seconds()
+	t.breathingPhase += dt * t.config.BreathingFrequency * 2 * math.Pi
+
+	// Keep phase in 0 to 2π range
+	if t.breathingPhase > 2*math.Pi {
+		t.breathingPhase -= 2 * math.Pi
+	}
+
+	// Calculate breathing offsets using sinusoidal motion
+	// Pitch: gentle up/down nodding
+	pitch := t.config.BreathingAmplitude * math.Sin(t.breathingPhase)
+
+	// Roll: subtle side-to-side at slightly different frequency for natural feel
+	roll := t.config.BreathingRollAmp * math.Sin(t.breathingPhase*0.7)
+
+	// Yaw stays at 0 (centered) during breathing
+	t.outputPose(0, pitch, 0)
+
+	// Note: roll is computed but not used yet since outputPose only takes yaw/pitch
+	// TODO: Add roll support to outputPose when robot supports it
+	_ = roll
 }
 
 // --- Legacy compatibility ---
