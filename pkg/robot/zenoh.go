@@ -11,16 +11,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/teslashibe/go-reachy/pkg/debug"
 )
 
 // ZenohClient wraps the connection to the robot
 // Note: Uses HTTP/WebSocket since zenoh-go doesn't exist yet
 // TODO: Switch to native Zenoh when zenoh-go is available
 type ZenohClient struct {
-	httpBase  string
-	wsBase    string
-	prefix    string
-	debug     bool
+	httpBase string
+	wsBase   string
+	prefix   string
+	debug    bool
 
 	wsConn        *websocket.Conn
 	connected     chan struct{}
@@ -94,8 +95,9 @@ func NewZenohClient(ctx context.Context, endpoint string, prefix string, debug b
 
 // GetDaemonStatus gets the current daemon status via HTTP
 func (zc *ZenohClient) GetDaemonStatus() (map[string]interface{}, error) {
-	resp, err := http.Get(zc.httpBase + "/api/daemon/status")
+	resp, err := httpClient.Get(zc.httpBase + "/api/daemon/status")
 	if err != nil {
+		debug.Log("⚠️  GetDaemonStatus error: %v\n", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -116,8 +118,9 @@ func (zc *ZenohClient) GetDaemonStatus() (map[string]interface{}, error) {
 // StartDaemon starts the robot daemon
 func (zc *ZenohClient) StartDaemon(wakeUp bool) error {
 	url := fmt.Sprintf("%s/api/daemon/start?wake_up=%v", zc.httpBase, wakeUp)
-	resp, err := http.Post(url, "application/json", nil)
+	resp, err := httpClient.Post(url, "application/json", nil)
 	if err != nil {
+		debug.Log("⚠️  StartDaemon error: %v\n", err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -201,9 +204,9 @@ func (zc *ZenohClient) Publish(topic string, data []byte) error {
 // SendMoveCommand sends a movement command via HTTP
 func (zc *ZenohClient) SendMoveCommand(head [4]float64, antennas [2]float64, bodyYaw float64) error {
 	cmd := map[string]interface{}{
-		"head":      head,
-		"antennas":  antennas,
-		"body_yaw":  bodyYaw,
+		"head":     head,
+		"antennas": antennas,
+		"body_yaw": bodyYaw,
 	}
 
 	data, err := json.Marshal(cmd)
@@ -211,10 +214,11 @@ func (zc *ZenohClient) SendMoveCommand(head [4]float64, antennas [2]float64, bod
 		return err
 	}
 
-	// POST to move endpoint
-	resp, err := http.Post(zc.httpBase+"/api/move/target", "application/json", 
+	// POST to move endpoint (uses shared httpClient with 2s timeout)
+	resp, err := httpClient.Post(zc.httpBase+"/api/move/target", "application/json",
 		io.NopCloser(jsonReader(data)))
 	if err != nil {
+		debug.Log("⚠️  SendMoveCommand error: %v\n", err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -268,4 +272,3 @@ func (zc *ZenohClient) WaitForConnection(timeout time.Duration) error {
 		return fmt.Errorf("connection timeout after %v", timeout)
 	}
 }
-
