@@ -654,8 +654,8 @@ func (t *Tracker) detectAndUpdate() {
 	currentPitch := t.controller.GetCurrentPitch()
 	bodyYaw := t.world.GetBodyYaw()
 
-	// Detect face in current frame using local detector (room coordinates + pitch)
-	frameX, frameY, roomYaw, targetPitch, found := t.perception.DetectFaceRoomWithPitch(
+	// Detect face in current frame using local detector (room coordinates + pitch + depth)
+	frameX, frameY, roomYaw, targetPitch, faceWidth, found := t.perception.DetectFaceRoomFull(
 		t.video, currentYaw, currentPitch, bodyYaw,
 	)
 
@@ -668,16 +668,22 @@ func (t *Tracker) detectAndUpdate() {
 		return
 	}
 
-	// Update world model with detection (room coordinates)
+	// Update world model with detection (room coordinates + depth estimation)
 	// Using "primary" as the entity ID for single-person tracking
-	t.world.UpdateEntity("primary", roomYaw, frameX)
+	t.world.UpdateEntityWithDepth("primary", roomYaw, frameX, faceWidth)
 
 	// Update pitch target
 	t.controller.SetTargetPitch(targetPitch)
 
-	// Log detection
-	debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad\n",
-		frameX, frameY, roomYaw, targetPitch)
+	// Log detection with distance
+	entity := t.world.GetFocusTarget()
+	if entity != nil && entity.Distance > 0 {
+		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad, dist %.1fm\n",
+			frameX, frameY, roomYaw, targetPitch, entity.Distance)
+	} else {
+		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad\n",
+			frameX, frameY, roomYaw, targetPitch)
+	}
 
 	// Update dashboard
 	if t.state != nil {

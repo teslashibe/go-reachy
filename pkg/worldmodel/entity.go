@@ -17,6 +17,10 @@ type TrackedEntity struct {
 	// Audio-visual association
 	AudioConfidence float64   // How confident we are this entity is speaking (0-1)
 	LastAudioMatch  time.Time // When audio was last associated with this entity
+
+	// Depth estimation
+	Distance  float64 // Estimated distance in meters (0 = unknown)
+	FaceWidth float64 // Normalized face width (0-1) used for depth estimation
 }
 
 // AudioSource represents a detected sound direction

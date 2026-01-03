@@ -131,13 +131,23 @@ func (p *Perception) DetectFaceRoom(video VideoSource, headYaw float64, bodyYaw 
 // positionX/Y are frame positions (0-100%), roomYaw is in room coordinates,
 // targetPitch is the pitch angle needed to center the face vertically.
 func (p *Perception) DetectFaceRoomWithPitch(video VideoSource, headYaw, headPitch, bodyYaw float64) (float64, float64, float64, float64, bool) {
+	posX, posY, roomYaw, targetPitch, _, found := p.DetectFaceRoomFull(video, headYaw, headPitch, bodyYaw)
+	return posX, posY, roomYaw, targetPitch, found
+}
+
+// DetectFaceRoomFull captures a frame and detects face position with full 2D tracking and face width.
+// Returns (positionX, positionY, roomYaw, targetPitch, faceWidth, found).
+// positionX/Y are frame positions (0-100%), roomYaw is in room coordinates,
+// targetPitch is the pitch angle needed to center the face vertically,
+// faceWidth is the normalized face width (0-1) for depth estimation.
+func (p *Perception) DetectFaceRoomFull(video VideoSource, headYaw, headPitch, bodyYaw float64) (float64, float64, float64, float64, float64, bool) {
 	if video == nil || p.detector == nil {
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, 0, false
 	}
 
 	frame, err := video.CaptureJPEG()
 	if err != nil {
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, 0, false
 	}
 
 	// Run local face detection
@@ -145,20 +155,23 @@ func (p *Perception) DetectFaceRoomWithPitch(video VideoSource, headYaw, headPit
 	if err != nil {
 		debug.Log("👁️  Detection error: %v\n", err)
 		p.consecutiveMisses++
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, 0, false
 	}
 
 	// Select best face if multiple found
 	best := detection.SelectBest(detections)
 	if best == nil {
 		p.consecutiveMisses++
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, 0, false
 	}
 
 	// Convert detection center to frame position (0-100%)
 	cx, cy := best.Center()
 	positionX := clamp(cx*100.0, 0, 100)
 	positionY := clamp(cy*100.0, 0, 100)
+
+	// Get face width for depth estimation (already normalized 0-1)
+	faceWidth := best.W
 
 	// Apply smoothing to X (horizontal)
 	if p.hasLastPosition {
@@ -184,7 +197,7 @@ func (p *Perception) DetectFaceRoomWithPitch(video VideoSource, headYaw, headPit
 	// Calculate target pitch
 	targetPitch := p.FrameToPitch(positionY, headPitch)
 
-	return positionX, positionY, roomYaw, targetPitch, true
+	return positionX, positionY, roomYaw, targetPitch, faceWidth, true
 }
 
 // GetConsecutiveMisses returns how many consecutive detections have failed
