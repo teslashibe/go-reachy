@@ -16,14 +16,20 @@ type Perception struct {
 	CameraFOV   float64 // Horizontal field of view in radians
 	VerticalFOV float64 // Vertical field of view in radians
 
-	// Smoothing (horizontal)
+	// Smoothing (horizontal position)
 	smoothedPosition float64
 	hasLastPosition  bool
 	smoothingFactor  float64 // 0-1, higher = more weight on new reading
 
-	// Smoothing (vertical)
+	// Smoothing (vertical position)
 	smoothedPositionY float64
 	hasLastPositionY  bool
+
+	// EMA smoothing for output offsets (reduces jitter in controller input)
+	smoothedYawOffset   float64
+	smoothedPitchOffset float64
+	hasSmoothedOffsets  bool
+	offsetSmoothingAlpha float64 // 0-1, higher = more responsive, lower = smoother
 
 	// Detection state
 	lastValidPosition  float64
@@ -34,10 +40,11 @@ type Perception struct {
 // NewPerception creates a new perception system
 func NewPerception(config Config, detector detection.Detector) *Perception {
 	return &Perception{
-		detector:        detector,
-		CameraFOV:       config.CameraFOV,
-		VerticalFOV:     config.VerticalFOV,
-		smoothingFactor: config.PositionSmoothing,
+		detector:             detector,
+		CameraFOV:            config.CameraFOV,
+		VerticalFOV:          config.VerticalFOV,
+		smoothingFactor:      config.PositionSmoothing,
+		offsetSmoothingAlpha: config.OffsetSmoothingAlpha,
 	}
 }
 
@@ -273,12 +280,26 @@ func (p *Perception) DetectFaceOffset(video VideoSource) (yawOffset, pitchOffset
 	// Face at 50% = centered, offset = 0
 	// Face at 75% = 25% right of center, need to turn right (negative yaw)
 	// Face at 25% = 25% left of center, need to turn left (positive yaw)
-	frameOffsetX := (50 - positionX) / 100.0 // -0.5 to +0.5
-	yawOffset = frameOffsetX * p.CameraFOV   // Scale by FOV
+	frameOffsetX := (50 - positionX) / 100.0   // -0.5 to +0.5
+	rawYawOffset := frameOffsetX * p.CameraFOV // Scale by FOV
 
 	// Pitch: face above center = need to look up (negative pitch for Reachy)
-	frameOffsetY := (50 - positionY) / 100.0    // -0.5 to +0.5
-	pitchOffset = -frameOffsetY * p.VerticalFOV // Negative because up is negative pitch
+	frameOffsetY := (50 - positionY) / 100.0        // -0.5 to +0.5
+	rawPitchOffset := -frameOffsetY * p.VerticalFOV // Negative because up is negative pitch
+
+	// Apply EMA smoothing to offsets (reduces jitter in controller input)
+	if p.hasSmoothedOffsets && p.offsetSmoothingAlpha < 1.0 {
+		alpha := p.offsetSmoothingAlpha
+		yawOffset = alpha*rawYawOffset + (1-alpha)*p.smoothedYawOffset
+		pitchOffset = alpha*rawPitchOffset + (1-alpha)*p.smoothedPitchOffset
+	} else {
+		// First detection or no smoothing - use raw values
+		yawOffset = rawYawOffset
+		pitchOffset = rawPitchOffset
+	}
+	p.smoothedYawOffset = yawOffset
+	p.smoothedPitchOffset = pitchOffset
+	p.hasSmoothedOffsets = true
 
 	return yawOffset, pitchOffset, faceWidth, true
 }
@@ -286,4 +307,20 @@ func (p *Perception) DetectFaceOffset(video VideoSource) (yawOffset, pitchOffset
 // GetFramePosition returns the last detected frame position (0-100%)
 func (p *Perception) GetFramePosition() (x, y float64) {
 	return p.lastValidPosition, p.lastValidPositionY
+}
+
+// ResetOffsetSmoothing clears the EMA state for offset smoothing.
+// Call this when face is lost to avoid stale smoothed values affecting
+// the next detection.
+func (p *Perception) ResetOffsetSmoothing() {
+	p.hasSmoothedOffsets = false
+	p.smoothedYawOffset = 0
+	p.smoothedPitchOffset = 0
+}
+
+// SetOffsetSmoothingAlpha updates the EMA alpha for offset smoothing.
+// alpha: 0.0 = maximum smoothing (ignore new data), 1.0 = no smoothing
+// Typical values: 0.3 (smooth) to 0.6 (responsive)
+func (p *Perception) SetOffsetSmoothingAlpha(alpha float64) {
+	p.offsetSmoothingAlpha = clamp(alpha, 0.0, 1.0)
 }

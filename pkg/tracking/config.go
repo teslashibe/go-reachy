@@ -24,9 +24,10 @@ type Config struct {
 	ControlDeadZone float64 // Don't move if error < this (radians)
 
 	// Perception
-	CameraFOV         float64 // Horizontal field of view in radians
-	PositionSmoothing float64 // Exponential smoothing factor (0-1, higher = more new data)
-	JitterThreshold   float64 // Ignore frame position changes < this %
+	CameraFOV            float64 // Horizontal field of view in radians
+	PositionSmoothing    float64 // Exponential smoothing factor (0-1, higher = more new data)
+	JitterThreshold      float64 // Ignore frame position changes < this %
+	OffsetSmoothingAlpha float64 // EMA alpha for offset smoothing (0.3=smooth, 0.6=responsive, 1.0=off)
 
 	// World Model
 	ConfidenceDecay float64       // How fast confidence decays (per second)
@@ -95,9 +96,10 @@ func DefaultConfig() Config {
 		ControlDeadZone: 0.05, // ~3° dead zone
 
 		// Perception
-		CameraFOV:         math.Pi / 2, // 90° horizontal FOV
-		PositionSmoothing: 0.6,         // 60% new, 40% old
-		JitterThreshold:   5.0,         // Ignore <5% position changes
+		CameraFOV:            math.Pi / 2, // 90° horizontal FOV
+		PositionSmoothing:    0.6,         // 60% new, 40% old
+		JitterThreshold:      5.0,         // Ignore <5% position changes
+		OffsetSmoothingAlpha: 0.4,         // EMA alpha for offsets (0.4 = smooth but responsive)
 
 		// World Model
 		ConfidenceDecay: 0.3,              // Lose 30% confidence per second
