@@ -6,6 +6,63 @@ Speech-synchronized head movement animations for natural speaking gestures.
 
 The `Wobbler` analyzes audio amplitude and generates head movement offsets (roll, pitch, yaw) that sync with speech. This makes the robot appear more alive and engaged while talking.
 
+## Integration Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SPEECH WOBBLE FLOW                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐    PCM Audio     ┌──────────────┐    Offsets     ┌──────────────┐
+│   ElevenLabs │   (24kHz int16)  │   Speech     │  (roll,pitch,  │   Head       │
+│   TTS Stream │ ────────────────▶│   Wobbler    │───yaw degrees)▶│   Tracker    │
+└──────────────┘                  └──────────────┘                └──────────────┘
+       │                                 │                               │
+       │                                 │                               │
+       ▼                                 ▼                               ▼
+┌──────────────┐                  ┌──────────────┐                ┌──────────────┐
+│ OnAudio      │                  │ Audio DSP    │                │ outputPose() │
+│ Callback     │                  │ Pipeline     │                │              │
+└──────────────┘                  └──────────────┘                └──────────────┘
+       │                                 │                               │
+       │ bytes→int16                     │                               │
+       ▼                                 ▼                               ▼
+┌──────────────┐                  ┌──────────────┐                ┌──────────────┐
+│ Feed()       │                  │ 1. RMS dB    │                │ finalPitch = │
+│ samples,     │                  │ 2. VAD       │                │   tracking   │
+│ sampleRate   │                  │ 3. Envelope  │                │ + speech.Pitch│
+└──────────────┘                  │ 4. Oscillate │                │              │
+                                  └──────────────┘                │ finalYaw =   │
+                                         │                        │   tracking   │
+                                         │                        │ + speech.Yaw │
+                                         ▼                        └──────────────┘
+                                  ┌──────────────┐                       │
+                                  │ onOffset()   │                       │
+                                  │ callback     │                       ▼
+                                  └──────────────┘                ┌──────────────┐
+                                         │                        │ SetHeadPose  │
+                                         │                        │ (roll,pitch, │
+                                         ▼                        │  yaw)        │
+                                  ┌──────────────┐                └──────────────┘
+                                  │ SetSpeech-   │                       │
+                                  │ Offsets()    │                       │
+                                  └──────────────┘                       ▼
+                                                                  ┌──────────────┐
+                                                                  │  🤖 Robot    │
+                                                                  │  Head Moves  │
+                                                                  └──────────────┘
+```
+
+## Data Flow Summary
+
+```
+TTS Audio → Feed() → RMS/VAD → Envelope → Oscillators → Offsets → Tracker → Robot
+                           ↓
+                    [Voice detected?]
+                     Yes → Scale up
+                     No  → Fade out
+```
+
 ## Usage
 
 ```go
@@ -27,10 +84,10 @@ headTracker.ClearSpeechOffsets()
 
 ## How It Works
 
-1. **Audio Analysis**: Computes RMS dB from audio frames
-2. **Voice Activity Detection (VAD)**: Hysteresis-based detection with attack/release
-3. **Envelope Follower**: Smooth ramping up/down of movement intensity
-4. **Oscillators**: Multiple sinusoidal oscillators at different frequencies for natural motion
+1. **Audio Analysis**: Computes RMS dB from audio frames (20ms window)
+2. **Voice Activity Detection (VAD)**: Hysteresis-based detection (-35dB on, -45dB off)
+3. **Envelope Follower**: Smooth attack (40ms) / release (250ms) ramping
+4. **Oscillators**: Sinusoidal oscillators at different frequencies for organic motion
 
 ### Movement Characteristics
 
