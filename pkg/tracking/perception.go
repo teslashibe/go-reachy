@@ -209,3 +209,73 @@ func (p *Perception) GetConsecutiveMisses() int {
 func (p *Perception) GetLastValidPosition() float64 {
 	return p.lastValidPosition
 }
+
+// FaceDetection represents a single detected face with world coordinates
+type FaceDetection struct {
+	ID         string  // Unique identifier based on position (e.g., "face_0")
+	PositionX  float64 // Frame position X (0-100%)
+	PositionY  float64 // Frame position Y (0-100%)
+	RoomYaw    float64 // Yaw angle in room coordinates
+	Pitch      float64 // Target pitch to center face
+	FaceWidth  float64 // Normalized face width (0-1) for depth
+	Confidence float64 // Detection confidence
+	Area       float64 // Face area (for prioritization)
+}
+
+// DetectAllFaces detects all faces in the frame and returns their positions.
+// This enables multi-face tracking by returning all detected faces.
+func (p *Perception) DetectAllFaces(video VideoSource, headYaw, headPitch, bodyYaw float64) ([]FaceDetection, error) {
+	if video == nil || p.detector == nil {
+		return nil, nil
+	}
+
+	frame, err := video.CaptureJPEG()
+	if err != nil {
+		return nil, err
+	}
+
+	// Run local face detection
+	detections, err := p.detector.Detect(frame)
+	if err != nil {
+		debug.Log("👁️  Detection error: %v\n", err)
+		p.consecutiveMisses++
+		return nil, err
+	}
+
+	if len(detections) == 0 {
+		p.consecutiveMisses++
+		return nil, nil
+	}
+
+	p.consecutiveMisses = 0
+
+	// Convert all detections to FaceDetection structs
+	result := make([]FaceDetection, 0, len(detections))
+	for i, det := range detections {
+		cx, cy := det.Center()
+		posX := clamp(cx*100.0, 0, 100)
+		posY := clamp(cy*100.0, 0, 100)
+
+		// Convert to room coordinates
+		roomYaw := p.FrameToRoomAngle(posX, headYaw, bodyYaw)
+		pitch := p.FrameToPitch(posY, headPitch)
+
+		result = append(result, FaceDetection{
+			ID:         faceIDFromIndex(i),
+			PositionX:  posX,
+			PositionY:  posY,
+			RoomYaw:    roomYaw,
+			Pitch:      pitch,
+			FaceWidth:  det.W,
+			Confidence: det.Confidence,
+			Area:       det.Area(),
+		})
+	}
+
+	return result, nil
+}
+
+// faceIDFromIndex generates a unique ID for a face based on its detection index
+func faceIDFromIndex(index int) string {
+	return "face_" + string(rune('0'+index))
+}

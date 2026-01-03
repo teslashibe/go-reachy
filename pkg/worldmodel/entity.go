@@ -14,7 +14,7 @@ type TrackedEntity struct {
 	Velocity      float64   // Estimated angular velocity (rad/sec)
 	FramePosition float64   // Last known position in frame (0-100)
 
-	// Audio-visual association
+	// Audio-visual association (for multi-face prioritization)
 	AudioConfidence float64   // How confident we are this entity is speaking (0-1)
 	LastAudioMatch  time.Time // When audio was last associated with this entity
 

@@ -109,6 +109,72 @@ func (w *WorldModel) GetFocusTarget() *TrackedEntity {
 	return entity
 }
 
+// SelectPriorityTarget chooses the best entity from all tracked entities.
+// Priority factors:
+// 1. Speaking (audio-visual match) - highest priority
+// 2. Largest/closest (by frame position or face width)
+// 3. Most centered in frame
+// Returns the best entity or nil if none are valid.
+func (w *WorldModel) SelectPriorityTarget() *TrackedEntity {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if len(w.entities) == 0 {
+		return nil
+	}
+
+	var best *TrackedEntity
+	bestScore := -1.0
+
+	for _, entity := range w.entities {
+		// Skip stale entities
+		if entity.Confidence < w.forgetThreshold {
+			continue
+		}
+
+		// Calculate priority score
+		score := 0.0
+
+		// Factor 1: Speaking gets highest priority boost
+		if entity.AudioConfidence > 0.5 && time.Since(entity.LastAudioMatch) < 1*time.Second {
+			score += 100.0 // Dominant factor
+		}
+
+		// Factor 2: Confidence (visibility)
+		score += entity.Confidence * 10.0
+
+		// Factor 3: Centered in frame (50% is center)
+		// Score decreases as distance from center increases
+		distFromCenter := abs(entity.FramePosition - 50) / 50.0 // 0-1
+		score += (1.0 - distFromCenter) * 5.0
+
+		// Factor 4: Recency (prefer recently seen)
+		secsSinceSeen := time.Since(entity.LastSeen).Seconds()
+		if secsSinceSeen < 1.0 {
+			score += (1.0 - secsSinceSeen) * 3.0
+		}
+
+		if score > bestScore {
+			bestScore = score
+			best = entity
+		}
+	}
+
+	// Update focus target to best entity
+	if best != nil {
+		w.focusTarget = best.ID
+	}
+
+	return best
+}
+
+// GetEntityCount returns the number of tracked entities
+func (w *WorldModel) GetEntityCount() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(w.entities)
+}
+
 // GetTargetWorldAngle returns the world angle Eva should look at.
 // The returned angle is body-relative (for head movement).
 // If no target, returns (0, false) to indicate no valid target.
