@@ -277,7 +277,7 @@ func (p *Perception) DetectFaceOffset(video VideoSource) (yawOffset, pitchOffset
 	yawOffset = frameOffsetX * p.CameraFOV   // Scale by FOV
 
 	// Pitch: face above center = need to look up (negative pitch for Reachy)
-	frameOffsetY := (50 - positionY) / 100.0 // -0.5 to +0.5
+	frameOffsetY := (50 - positionY) / 100.0    // -0.5 to +0.5
 	pitchOffset = -frameOffsetY * p.VerticalFOV // Negative because up is negative pitch
 
 	return yawOffset, pitchOffset, faceWidth, true

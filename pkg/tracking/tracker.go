@@ -517,7 +517,14 @@ func (t *Tracker) updateMovement() {
 	// Get next pitch from PD controller
 	newPitch, pitchShouldMove := t.controller.UpdatePitch()
 
+	// Debug: log when we're not moving and why
 	if !yawShouldMove && !pitchShouldMove {
+		// Only log occasionally to avoid spam
+		if hasFace {
+			debug.Log("⏸️  Not moving: yaw error=%.3f (deadzone=%.3f), at limit=%v\n",
+				t.controller.GetError(), t.config.ControlDeadZone,
+				math.Abs(t.controller.GetCurrentYaw()) > t.config.YawRange*0.95)
+		}
 		return
 	}
 
@@ -736,6 +743,11 @@ func (t *Tracker) detectAndUpdate() {
 	yawOffset, pitchOffset, faceWidth, found := t.perception.DetectFaceOffset(t.video)
 
 	if !found {
+		// Clear face target when no face detected
+		t.mu.Lock()
+		t.hasFaceTarget = false
+		t.mu.Unlock()
+
 		// Log occasional misses
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
