@@ -35,10 +35,17 @@ func New() *WorldModel {
 
 // UpdateEntity updates or creates an entity based on a detection
 func (w *WorldModel) UpdateEntity(id string, worldAngle float64, framePosition float64) {
+	w.UpdateEntityWithDepth(id, worldAngle, framePosition, 0)
+}
+
+// UpdateEntityWithDepth updates or creates an entity with depth estimation.
+// faceWidth is the normalized face width (0-1) used to estimate distance.
+func (w *WorldModel) UpdateEntityWithDepth(id string, worldAngle float64, framePosition float64, faceWidth float64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	now := time.Now()
+	distance := EstimateDepth(faceWidth)
 
 	if entity, exists := w.entities[id]; exists {
 		// Calculate velocity based on position change
@@ -53,6 +60,15 @@ func (w *WorldModel) UpdateEntity(id string, worldAngle float64, framePosition f
 		entity.FramePosition = framePosition
 		entity.LastSeen = now
 		entity.Confidence = 1.0
+		entity.FaceWidth = faceWidth
+		if distance > 0 {
+			// Smooth distance updates
+			if entity.Distance > 0 {
+				entity.Distance = smoothing*distance + (1-smoothing)*entity.Distance
+			} else {
+				entity.Distance = distance
+			}
+		}
 	} else {
 		// New entity
 		w.entities[id] = &TrackedEntity{
@@ -62,6 +78,8 @@ func (w *WorldModel) UpdateEntity(id string, worldAngle float64, framePosition f
 			LastSeen:      now,
 			FramePosition: framePosition,
 			Velocity:      0,
+			FaceWidth:     faceWidth,
+			Distance:      distance,
 		}
 		// Auto-focus on first entity
 		if w.focusTarget == "" {
