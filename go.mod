@@ -3,6 +3,7 @@ module github.com/teslashibe/go-reachy
 go 1.25
 
 require (
+	github.com/gofiber/contrib/websocket v1.3.4
 	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/gofiber/websocket/v2 v2.2.1
 	github.com/gorilla/websocket v1.5.3
