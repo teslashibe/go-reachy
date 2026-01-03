@@ -14,6 +14,7 @@ type HeadController interface {
 // AntennaController provides antenna position control.
 type AntennaController interface {
 	SetAntennas(left, right float64) error
+	SetAntennasSmooth(left, right, duration float64) error
 }
 
 // BodyController provides body rotation control.

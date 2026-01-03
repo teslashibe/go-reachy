@@ -165,6 +165,11 @@ func (r *Reachy) SetAntennas(left, right float64) {
 	r.targetMu.Unlock()
 }
 
+// SetAntennasSmooth sets antenna positions (duration ignored in this implementation)
+func (r *Reachy) SetAntennasSmooth(left, right, duration float64) {
+	r.SetAntennas(left, right)
+}
+
 // SetBodyYaw sets the target body rotation
 func (r *Reachy) SetBodyYaw(yaw float64) {
 	r.targetMu.Lock()

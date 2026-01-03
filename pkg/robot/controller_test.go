@@ -35,6 +35,10 @@ func (m *mockRobot) SetAntennas(left, right float64) error {
 	return nil
 }
 
+func (m *mockRobot) SetAntennasSmooth(left, right, duration float64) error {
+	return m.SetAntennas(left, right) // Mock ignores duration
+}
+
 func (m *mockRobot) SetBodyYaw(yaw float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
