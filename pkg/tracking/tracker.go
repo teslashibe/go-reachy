@@ -790,12 +790,13 @@ func (t *Tracker) updateNoTarget() {
 
 		timeSinceFace := time.Since(t.lastFaceSeenAt)
 		if timeSinceFace >= t.config.ScanStartDelay {
-			// Start smooth interpolation to neutral
+			// Grace period expired - start smooth interpolation to neutral
 			t.isInterpolating = true
 			t.interpStartedAt = time.Now()
 			t.controller.InterpolateToNeutral(1 * time.Second)
-			debug.Logln("👁️  Face lost, returning to neutral")
+			debug.Logln("👁️  Grace period expired, returning to neutral")
 		}
+		// During grace period: hold current position (do nothing)
 		return
 	}
 
@@ -880,10 +881,12 @@ func (t *Tracker) detectAndUpdate() {
 		t.hasFaceTarget = false
 		t.mu.Unlock()
 
-		// Log occasional misses
+		// Log occasional misses and reset smoothing on face loss
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
 			debug.Logln("👁️  Lost face (5 consecutive misses)")
+			// Reset offset smoothing to avoid stale values when face returns
+			t.perception.ResetOffsetSmoothing()
 		}
 		return
 	}
