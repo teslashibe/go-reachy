@@ -172,6 +172,11 @@ func (t *Tracker) GetCurrentYaw() float64 {
 	return t.controller.GetCurrentYaw()
 }
 
+// GetCurrentPitch returns the current head pitch
+func (t *Tracker) GetCurrentPitch() float64 {
+	return t.controller.GetCurrentPitch()
+}
+
 // GetWorld returns the world model for inspection
 func (t *Tracker) GetWorld() *worldmodel.WorldModel {
 	return t.world
@@ -312,31 +317,34 @@ func (t *Tracker) updateMovement() {
 	t.controller.SetTarget(targetAngle)
 
 	// Get next yaw from PD controller
-	newYaw, shouldMove := t.controller.Update()
+	newYaw, yawShouldMove := t.controller.Update()
 
-	if !shouldMove {
+	// Get next pitch from PD controller
+	newPitch, pitchShouldMove := t.controller.UpdatePitch()
+
+	if !yawShouldMove && !pitchShouldMove {
 		return
 	}
 
-	// Output the result
-	t.outputYaw(newYaw, targetAngle)
+	// Output the result (combined yaw and pitch)
+	t.outputPose(newYaw, newPitch, targetAngle)
 
 	// Check if body rotation is needed (head at mechanical limits)
 	t.checkBodyRotation()
 }
 
-// outputYaw sends the yaw to either offset handler or direct robot control
-func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
+// outputPose sends yaw and pitch to either offset handler or direct robot control
+func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 	t.mu.RLock()
 	handler := t.onOffset
 	t.mu.RUnlock()
 
 	if handler != nil {
 		// Offset mode: output for fusion with unified controller
-		handler(robot.Offset{Roll: 0, Pitch: 0, Yaw: yaw})
+		handler(robot.Offset{Roll: 0, Pitch: pitch, Yaw: yaw})
 	} else if t.robot != nil {
-		// Direct mode: control robot directly
-		err := t.robot.SetHeadPose(0, 0, yaw)
+		// Direct mode: control robot directly (roll=0, pitch, yaw)
+		err := t.robot.SetHeadPose(0, pitch, yaw)
 		if err != nil {
 			// Log errors but don't spam - only log every 5 seconds
 			if t.lastRobotError.IsZero() || time.Since(t.lastRobotError) > 5*time.Second {
@@ -347,8 +355,8 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 			t.lastRobotError = time.Time{} // Clear error state on success
 			// Log significant movements
 			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
-				debug.Log("🔄 Head: yaw=%.2f (target=%.2f, error=%.2f)\n",
-					yaw, targetAngle, t.controller.GetError())
+				debug.Log("🔄 Head: yaw=%.2f pitch=%.2f (target=%.2f, error=%.2f)\n",
+					yaw, pitch, targetAngle, t.controller.GetError())
 				t.lastLoggedYaw = yaw
 			}
 		}
@@ -399,7 +407,8 @@ func (t *Tracker) updateNoTarget() {
 	if t.isInterpolating {
 		newYaw, shouldMove := t.controller.Update()
 		if shouldMove {
-			t.outputYaw(newYaw, 0)
+			// During interpolation to neutral, also return pitch to 0
+			t.outputPose(newYaw, 0, 0)
 		}
 
 		// Check if interpolation is complete, then start scanning
@@ -423,10 +432,13 @@ func (t *Tracker) updateNoTarget() {
 // detectAndUpdate detects faces and updates the world model
 func (t *Tracker) detectAndUpdate() {
 	currentYaw := t.controller.GetCurrentYaw()
+	currentPitch := t.controller.GetCurrentPitch()
 	bodyYaw := t.world.GetBodyYaw()
 
-	// Detect face in current frame using local detector (room coordinates)
-	framePos, roomAngle, found := t.perception.DetectFaceRoom(t.video, currentYaw, bodyYaw)
+	// Detect face in current frame using local detector (room coordinates + pitch)
+	frameX, frameY, roomYaw, targetPitch, found := t.perception.DetectFaceRoomWithPitch(
+		t.video, currentYaw, currentPitch, bodyYaw,
+	)
 
 	if !found {
 		// Log occasional misses
@@ -439,16 +451,19 @@ func (t *Tracker) detectAndUpdate() {
 
 	// Update world model with detection (room coordinates)
 	// Using "primary" as the entity ID for single-person tracking
-	t.world.UpdateEntity("primary", roomAngle, framePos)
+	t.world.UpdateEntity("primary", roomYaw, frameX)
+
+	// Update pitch target
+	t.controller.SetTargetPitch(targetPitch)
 
 	// Log detection
-	debug.Log("👁️  Face at %.0f%% → room %.2f rad (head=%.2f, body=%.2f)\n",
-		framePos, roomAngle, currentYaw, bodyYaw)
+	debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad\n",
+		frameX, frameY, roomYaw, targetPitch)
 
 	// Update dashboard
 	if t.state != nil {
-		t.state.UpdateFacePosition(framePos, roomAngle)
-		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → room %.2f", framePos, roomAngle))
+		t.state.UpdateFacePosition(frameX, roomYaw)
+		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → room %.2f", frameX, roomYaw))
 	}
 }
 
@@ -476,8 +491,8 @@ func (t *Tracker) updateScanning() {
 	// Update controller state
 	t.controller.SetCurrentYaw(newYaw)
 
-	// Output the scan position
-	t.outputYaw(newYaw, 0)
+	// Output the scan position (pitch neutral during scanning)
+	t.outputPose(newYaw, 0, 0)
 
 	// Log occasionally
 	if math.Abs(newYaw-t.lastLoggedYaw) > 0.2 {

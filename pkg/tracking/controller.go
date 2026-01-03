@@ -7,42 +7,65 @@ import (
 
 // PDController implements proportional-derivative control for smooth head tracking
 type PDController struct {
-	// Gains
+	// Yaw gains
 	Kp float64 // Proportional gain
 	Kd float64 // Derivative gain
 
-	// Limits
+	// Pitch gains
+	KpPitch float64 // Proportional gain for pitch
+	KdPitch float64 // Derivative gain for pitch
+
+	// Yaw limits
 	MaxYaw    float64 // Maximum yaw (±radians)
 	SoftLimit float64 // Start slowing down here
 	MaxSpeed  float64 // Maximum movement speed per tick
 
-	// Dead zone
-	DeadZone float64 // Ignore errors smaller than this (radians)
+	// Pitch limits
+	MaxPitchUp   float64 // Maximum pitch looking up (positive)
+	MaxPitchDown float64 // Maximum pitch looking down (stored positive, applied negative)
 
-	// State
-	lastError    float64
-	lastOutput   float64
-	currentYaw   float64
-	targetYaw    float64
-	isSettled    bool // True when within dead zone
+	// Dead zone
+	DeadZone      float64 // Ignore yaw errors smaller than this (radians)
+	PitchDeadZone float64 // Ignore pitch errors smaller than this (radians)
+
+	// Yaw state
+	lastError  float64
+	lastOutput float64
+	currentYaw float64
+	targetYaw  float64
+	isSettled  bool // True when yaw within dead zone
+
+	// Pitch state
+	lastPitchError float64
+	lastPitchOutput float64
+	currentPitch   float64
+	targetPitch    float64
+	isPitchSettled bool // True when pitch within dead zone
 
 	// Interpolation state (for smooth return to neutral)
-	interpStart    time.Time
-	interpDuration time.Duration
-	interpFrom     float64
-	interpTo       float64
+	interpStart     time.Time
+	interpDuration  time.Duration
+	interpFrom      float64
+	interpTo        float64
 	isInterpolating bool
 }
 
 // NewPDController creates a new PD controller with default values
 func NewPDController(config Config) *PDController {
 	return &PDController{
+		// Yaw
 		Kp:        config.Kp,
 		Kd:        config.Kd,
 		MaxYaw:    config.YawRange,
 		SoftLimit: config.YawRange * 0.85, // 85% of max
 		MaxSpeed:  config.MaxSpeed,
 		DeadZone:  config.ControlDeadZone,
+		// Pitch
+		KpPitch:       config.EffectiveKpPitch(),
+		KdPitch:       config.EffectiveKdPitch(),
+		MaxPitchUp:    config.PitchRangeUp,
+		MaxPitchDown:  config.PitchRangeDown,
+		PitchDeadZone: config.EffectivePitchDeadZone(),
 	}
 }
 
@@ -171,6 +194,77 @@ func (c *PDController) GetError() float64 {
 // GetTargetYaw returns the current target yaw
 func (c *PDController) GetTargetYaw() float64 {
 	return c.targetYaw
+}
+
+// SetTargetPitch sets the desired pitch angle.
+// Positive = look up, negative = look down.
+func (c *PDController) SetTargetPitch(pitch float64) {
+	c.targetPitch = c.clampPitch(pitch)
+	c.isPitchSettled = false
+}
+
+// GetCurrentPitch returns the current head pitch
+func (c *PDController) GetCurrentPitch() float64 {
+	return c.currentPitch
+}
+
+// SetCurrentPitch sets the current pitch (for initialization)
+func (c *PDController) SetCurrentPitch(pitch float64) {
+	c.currentPitch = pitch
+}
+
+// GetTargetPitch returns the current target pitch
+func (c *PDController) GetTargetPitch() float64 {
+	return c.targetPitch
+}
+
+// IsPitchSettled returns true if pitch is at target (within dead zone)
+func (c *PDController) IsPitchSettled() bool {
+	return c.isPitchSettled
+}
+
+// UpdatePitch calculates the next pitch position
+// Returns the new pitch and whether the head should move
+func (c *PDController) UpdatePitch() (float64, bool) {
+	// Calculate error
+	error := c.targetPitch - c.currentPitch
+
+	// Dead zone
+	if math.Abs(error) < c.PitchDeadZone {
+		c.isPitchSettled = true
+		c.lastPitchError = error
+		return c.currentPitch, false
+	}
+
+	// PD control
+	pTerm := c.KpPitch * error
+	dTerm := c.KdPitch * (error - c.lastPitchError)
+	output := pTerm + dTerm
+
+	// Rate limit
+	output = clamp(output, -c.MaxSpeed, c.MaxSpeed)
+
+	// Apply output
+	newPitch := c.currentPitch + output
+	newPitch = c.clampPitch(newPitch)
+
+	// Update state
+	c.lastPitchError = error
+	c.lastPitchOutput = output
+	c.currentPitch = newPitch
+
+	return newPitch, true
+}
+
+// clampPitch limits pitch to mechanical limits (asymmetric)
+func (c *PDController) clampPitch(pitch float64) float64 {
+	if pitch > c.MaxPitchUp {
+		return c.MaxPitchUp
+	}
+	if pitch < -c.MaxPitchDown {
+		return -c.MaxPitchDown
+	}
+	return pitch
 }
 
 // NeedsBodyRotation checks if head is at mechanical limits and body should rotate.
