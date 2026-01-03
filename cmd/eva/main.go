@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
+	"github.com/teslashibe/go-reachy/pkg/camera"
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/eva"
 	"github.com/teslashibe/go-reachy/pkg/memory"
@@ -110,7 +111,8 @@ var (
 	ttsProvider    tts.Provider      // HTTP TTS provider
 	ttsStreaming   *tts.ElevenLabsWS // WebSocket streaming TTS
 	objectDetector *detection.YOLODetector
-	speechWobbler  *speech.Wobbler // Speech-synced head movement
+	speechWobbler  *speech.Wobbler   // Speech-synced head movement
+	cameraManager  *camera.Manager   // Camera configuration manager
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -621,6 +623,26 @@ func startWebDashboard(ctx context.Context) {
 		}
 	}
 
+	// Initialize camera configuration manager
+	cameraManager = camera.NewManager()
+	cfg := cameraManager.GetConfig()
+	fmt.Printf("📷 Camera config: %dx%d @ %dfps (default: 1080p for better tracking)\n",
+		cfg.Width, cfg.Height, cfg.Framerate)
+
+	// Wire up camera API callbacks
+	webServer.OnGetCameraConfig = func() interface{} {
+		return cameraManager.GetConfigJSON()
+	}
+	webServer.OnSetCameraConfig = func(params map[string]interface{}) error {
+		if err := cameraManager.UpdateConfig(params); err != nil {
+			return err
+		}
+		cfg := cameraManager.GetConfig()
+		fmt.Printf("📷 Camera config updated: %dx%d @ %dfps\n",
+			cfg.Width, cfg.Height, cfg.Framerate)
+		return nil
+	}
+
 	// Connect head tracker to web dashboard for state updates
 	if headTracker != nil {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
@@ -660,7 +682,10 @@ func streamCameraToWeb(ctx context.Context) {
 
 	fmt.Println("📷 Camera streaming to dashboard started")
 
-	ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
+	// Stream at 10 FPS to dashboard - much smoother than trying to hit 30 FPS
+	// The H264 decoder can't keep up with 30 FPS anyway, and 10 FPS is 
+	// plenty smooth for monitoring purposes while saving ~70% CPU
+	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS
 	defer ticker.Stop()
 
 	frameCount := 0
