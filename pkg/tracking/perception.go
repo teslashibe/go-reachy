@@ -211,3 +211,79 @@ func (p *Perception) GetConsecutiveMisses() int {
 func (p *Perception) GetLastValidPosition() float64 {
 	return p.lastValidPosition
 }
+
+// DetectFaceOffset detects a face and returns camera-relative offsets.
+// Returns (yawOffset, pitchOffset, faceWidth, found).
+// yawOffset: how much to turn horizontally (positive = turn left, negative = turn right)
+// pitchOffset: how much to tilt vertically (positive = tilt down, negative = tilt up)
+// faceWidth: normalized face width (0-1) for depth estimation
+// This is self-correcting: when face is centered, offsets are 0.
+func (p *Perception) DetectFaceOffset(video VideoSource) (yawOffset, pitchOffset, faceWidth float64, found bool) {
+	if video == nil || p.detector == nil {
+		return 0, 0, 0, false
+	}
+
+	frame, err := video.CaptureJPEG()
+	if err != nil {
+		return 0, 0, 0, false
+	}
+
+	// Run local face detection
+	detections, err := p.detector.Detect(frame)
+	if err != nil {
+		debug.Log("👁️  Detection error: %v\n", err)
+		p.consecutiveMisses++
+		return 0, 0, 0, false
+	}
+
+	// Select best face if multiple found
+	best := detection.SelectBest(detections)
+	if best == nil {
+		p.consecutiveMisses++
+		return 0, 0, 0, false
+	}
+
+	// Convert detection center to frame position (0-100%)
+	cx, cy := best.Center()
+	positionX := clamp(cx*100.0, 0, 100)
+	positionY := clamp(cy*100.0, 0, 100)
+
+	// Get face width for depth estimation (already normalized 0-1)
+	faceWidth = best.W
+
+	// Apply smoothing to X (horizontal)
+	if p.hasLastPosition {
+		positionX = p.smoothingFactor*positionX + (1-p.smoothingFactor)*p.smoothedPosition
+	}
+	p.smoothedPosition = positionX
+	p.hasLastPosition = true
+	p.lastValidPosition = positionX
+
+	// Apply smoothing to Y (vertical)
+	if p.hasLastPositionY {
+		positionY = p.smoothingFactor*positionY + (1-p.smoothingFactor)*p.smoothedPositionY
+	}
+	p.smoothedPositionY = positionY
+	p.hasLastPositionY = true
+	p.lastValidPositionY = positionY
+
+	p.consecutiveMisses = 0
+
+	// Calculate camera-relative offsets
+	// Face at 50% = centered, offset = 0
+	// Face at 75% = 25% right of center, need to turn right (negative yaw)
+	// Face at 25% = 25% left of center, need to turn left (positive yaw)
+	frameOffsetX := (50 - positionX) / 100.0 // -0.5 to +0.5
+	yawOffset = frameOffsetX * p.CameraFOV   // Scale by FOV
+
+	// Pitch: face above center = need to look up (negative pitch for Reachy)
+	frameOffsetY := (50 - positionY) / 100.0 // -0.5 to +0.5
+	pitchOffset = -frameOffsetY * p.VerticalFOV // Negative because up is negative pitch
+
+	return yawOffset, pitchOffset, faceWidth, true
+}
+
+// GetFramePosition returns the last detected frame position (0-100%)
+func (p *Perception) GetFramePosition() (x, y float64) {
+	return p.lastValidPosition, p.lastValidPositionY
+}
