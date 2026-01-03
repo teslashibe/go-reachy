@@ -273,9 +273,13 @@ func (t *Tracker) handleAudioDOA(doa *audio.DOAResult) {
 	// Update world model with audio source
 	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
 
-	// Log when speaking detected
+	// Try to associate audio with a visible face
 	if doa.Speaking {
-		debug.Log("🎤 DOA (ws): %.2f rad, confidence=%.2f (speaking)\n", doa.Angle, doa.Confidence)
+		if entityID := t.world.AssociateAudio(doa.Angle, doa.Speaking, doa.Confidence); entityID != "" {
+			debug.Log("🎤 DOA (ws): %.2f rad → matched face %s\n", doa.Angle, entityID)
+		} else {
+			debug.Log("🎤 DOA (ws): %.2f rad, confidence=%.2f (no face match)\n", doa.Angle, doa.Confidence)
+		}
 	}
 }
 
@@ -418,9 +422,13 @@ func (t *Tracker) pollAudioDOA() {
 	// Update world model with audio source
 	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
 
-	// Log when speaking detected
+	// Try to associate audio with a visible face
 	if doa.Speaking {
-		debug.Log("🎤 DOA: %.2f rad, confidence=%.2f (speaking)\n", doa.Angle, doa.Confidence)
+		if entityID := t.world.AssociateAudio(doa.Angle, doa.Speaking, doa.Confidence); entityID != "" {
+			debug.Log("🎤 DOA: %.2f rad → matched face %s\n", doa.Angle, entityID)
+		} else {
+			debug.Log("🎤 DOA: %.2f rad, confidence=%.2f (no face match)\n", doa.Angle, doa.Confidence)
+		}
 	}
 }
 

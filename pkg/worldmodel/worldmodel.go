@@ -245,15 +245,83 @@ func (w *WorldModel) GetAudioSource() *AudioSource {
 	return w.audioSource
 }
 
-// GetTarget returns the best target angle using priority: Face > Audio > None
-// Returns (angle, source, ok) where source is "face", "audio", or ""
+// AssociationThreshold is the maximum angle difference (radians) to associate audio with a face
+// ~15 degrees in radians
+const AssociationThreshold = 0.26
+
+// AssociateAudio matches audio DOA to the nearest face entity.
+// If a face is within AssociationThreshold of the audio angle, it's marked as speaking.
+// Returns the associated entity ID, or "" if no match.
+func (w *WorldModel) AssociateAudio(audioAngle float64, speaking bool, confidence float64) string {
+	if !speaking || confidence < 0.3 {
+		return ""
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var closest *TrackedEntity
+	minDiff := AssociationThreshold
+
+	// Find face entity closest to audio direction
+	for _, entity := range w.entities {
+		// Skip stale entities
+		if entity.Confidence < w.forgetThreshold {
+			continue
+		}
+
+		diff := abs(entity.WorldAngle - audioAngle)
+		if diff < minDiff {
+			minDiff = diff
+			closest = entity
+		}
+	}
+
+	if closest != nil {
+		// Boost audio confidence for matched entity
+		closest.AudioConfidence = confidence
+		closest.LastAudioMatch = time.Now()
+		return closest.ID
+	}
+
+	return ""
+}
+
+// GetSpeakingEntity returns the entity that is currently speaking (if any).
+// An entity is considered speaking if it was matched to audio within the last second.
+func (w *WorldModel) GetSpeakingEntity() *TrackedEntity {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	for _, entity := range w.entities {
+		if entity.AudioConfidence > 0.3 &&
+			time.Since(entity.LastAudioMatch) < 1*time.Second {
+			return entity
+		}
+	}
+	return nil
+}
+
+// GetTarget returns the best target angle using priority:
+// 1. Face that is also speaking (audio-visual match)
+// 2. Any visible face
+// 3. Audio source alone
+// Returns (angle, source, ok) where source is "face+audio", "face", "audio", or ""
 func (w *WorldModel) GetTarget() (angle float64, source string, ok bool) {
-	// Priority 1: Face (visual tracking)
+	// Priority 1: Face that is speaking (audio-visual match)
+	if speaking := w.GetSpeakingEntity(); speaking != nil {
+		w.mu.RLock()
+		bodyYaw := w.bodyYaw
+		w.mu.RUnlock()
+		return speaking.WorldAngle - bodyYaw, "face+audio", true
+	}
+
+	// Priority 2: Any face (visual tracking)
 	if faceAngle, hasTarget := w.GetTargetWorldAngle(); hasTarget {
 		return faceAngle, "face", true
 	}
 
-	// Priority 2: Audio (if speaking with good confidence)
+	// Priority 3: Audio alone (if speaking with good confidence)
 	audio := w.GetAudioSource()
 	if audio != nil && audio.Speaking && audio.Confidence > 0.3 {
 		// Audio angle is already in Eva coordinates, but needs body adjustment
@@ -268,6 +336,14 @@ func (w *WorldModel) GetTarget() (angle float64, source string, ok bool) {
 
 	// No target
 	return 0, "", false
+}
+
+// abs returns the absolute value of x
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 
