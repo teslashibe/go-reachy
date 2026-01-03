@@ -67,6 +67,11 @@ type Server struct {
 
 	// Frame capture callback
 	OnCaptureFrame func() ([]byte, error)
+
+	// Tuning callbacks (for tracking parameter adjustment)
+	OnGetTuningParams func() interface{}
+	OnSetTuningParams func(params map[string]interface{})
+	OnSetTuningMode   func(enabled bool)
 }
 
 // NewServer creates a new web dashboard server
@@ -98,6 +103,11 @@ func NewServer(port string) *Server {
 	api.Post("/tools/:name", s.handleTriggerTool)
 	api.Get("/logs", s.handleGetLogs)
 	api.Get("/conversation", s.handleGetConversation)
+
+	// Tuning API routes
+	api.Get("/tracking/params", s.handleGetTuningParams)
+	api.Post("/tracking/params", s.handleSetTuningParams)
+	api.Post("/tracking/tuning-mode", s.handleSetTuningMode)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
@@ -207,4 +217,65 @@ func (s *Server) GetCameraHub() *hub.Hub {
 // Shutdown gracefully stops the web server
 func (s *Server) Shutdown() error {
 	return s.app.Shutdown()
+}
+
+// handleGetTuningParams returns current tracking parameters
+func (s *Server) handleGetTuningParams(c *fiber.Ctx) error {
+	if s.OnGetTuningParams == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Tuning not available (tracker not connected)",
+		})
+	}
+	return c.JSON(s.OnGetTuningParams())
+}
+
+// handleSetTuningParams updates tracking parameters
+func (s *Server) handleSetTuningParams(c *fiber.Ctx) error {
+	if s.OnSetTuningParams == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Tuning not available (tracker not connected)",
+		})
+	}
+
+	var params map[string]interface{}
+	if err := c.BodyParser(&params); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid JSON: " + err.Error(),
+		})
+	}
+
+	s.OnSetTuningParams(params)
+	return c.JSON(fiber.Map{
+		"status": "ok",
+		"updated": params,
+	})
+}
+
+// handleSetTuningMode enables/disables tuning mode
+func (s *Server) handleSetTuningMode(c *fiber.Ctx) error {
+	if s.OnSetTuningMode == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Tuning not available (tracker not connected)",
+		})
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid JSON: " + err.Error(),
+		})
+	}
+
+	s.OnSetTuningMode(req.Enabled)
+
+	mode := "normal"
+	if req.Enabled {
+		mode = "tuning (secondary features disabled)"
+	}
+	return c.JSON(fiber.Map{
+		"status": "ok",
+		"mode":   mode,
+	})
 }
