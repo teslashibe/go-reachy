@@ -9,13 +9,6 @@ import (
 	"time"
 )
 
-// PersonMemory stores facts about a person.
-type PersonMemory struct {
-	Name     string    `json:"name"`
-	Facts    []string  `json:"facts"`
-	LastSeen time.Time `json:"last_seen"`
-}
-
 // Memory stores information about people and conversations.
 type Memory struct {
 	People   map[string]*PersonMemory `json:"people"`

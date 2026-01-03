@@ -6,6 +6,11 @@ Persistent memory system for Eva's conversations.
 
 This package provides a simple key-value memory system that persists to disk. Eva uses this to remember information about people and past conversations.
 
+## Files
+
+- `memory.go` - Main Memory store with persistence
+- `person.go` - PersonMemory struct and methods
+
 ## Usage
 
 ```go
