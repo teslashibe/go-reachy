@@ -576,20 +576,21 @@ func (t *Tracker) updateMovement() {
 	if !yawShouldMove && !pitchShouldMove {
 		// Only log occasionally to avoid spam
 		if hasFace {
-			debug.Log("⏸️  Not moving: yaw error=%.3f (deadzone=%.3f), at limit=%v\n",
-				t.controller.GetError(), t.config.ControlDeadZone,
-				math.Abs(t.controller.GetCurrentYaw()) > t.config.YawRange*0.95)
+			headYaw := t.controller.GetCurrentYaw()
+			debug.Log("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
+				headYaw, t.controller.GetError(), t.config.ControlDeadZone,
+				math.Abs(headYaw) > t.config.YawRange*0.95)
 		}
+		// STILL check body alignment even when head not moving!
+		t.checkBodyAlignment()
 		return
 	}
 
 	// Output the result (combined yaw and pitch)
 	t.outputPose(newYaw, newPitch, t.controller.GetTargetYaw())
 
-	// Check if body rotation is needed using offset-based trigger
-	t.checkBodyRotationOffset(yawOffset)
-
-	// Check if gradual body alignment should occur (when locked on target)
+	// Check if gradual body alignment should occur
+	// (Removed checkBodyRotationOffset - checkBodyAlignment handles all body movement now)
 	t.checkBodyAlignment()
 }
 
@@ -717,11 +718,9 @@ func (t *Tracker) updateLockState(hasFace bool) {
 	}
 }
 
-// checkBodyAlignment checks if body should rotate to center the head while locked on a target.
-// This gradually rotates the body to bring the head back toward center, freeing up range.
-// Also returns body to center when head is centered but camera still sees persistent offset.
+// checkBodyAlignment rotates body to stay under the head.
+// Simple rule: If head is turned, body slowly rotates to center it.
 func (t *Tracker) checkBodyAlignment() {
-	// Skip if disabled
 	if !t.config.BodyAlignmentEnabled {
 		return
 	}
@@ -729,79 +728,73 @@ func (t *Tracker) checkBodyAlignment() {
 	t.mu.RLock()
 	handler := t.onBodyRotation
 	lastAlignment := t.lastBodyAlignmentAt
-	cameraYawOffset := t.lastYawOffset // Camera-detected offset (self-correcting signal)
 	hasFace := t.hasFaceTarget
-	lockedAt := t.lockedOnFaceAt
 	t.mu.RUnlock()
 
-	if handler == nil {
+	if handler == nil || !hasFace {
 		return
 	}
 
-	// Check if locked on target (with diagnostic logging)
-	if !t.isLockedOnTarget() {
-		// Log why we're not locked (once per second to avoid spam)
-		if time.Since(t.lastBodyAlignmentAt) > time.Second || t.lastBodyAlignmentAt.IsZero() {
-			if !hasFace {
-				debug.Log("⏳ Body alignment waiting: no face\n")
-			} else if lockedAt.IsZero() {
-				debug.Log("⏳ Body alignment waiting: lock not started\n")
-			} else {
-				remaining := t.config.BodyAlignmentDelay - time.Since(lockedAt)
-				if remaining > 0 {
-					debug.Log("⏳ Body alignment waiting: %.1fs until locked\n", remaining.Seconds())
-				}
-			}
-		}
-		return
-	}
-
-	// Check cooldown
+	// Cooldown to prevent jitter
 	if !lastAlignment.IsZero() && time.Since(lastAlignment) < t.config.BodyAlignmentCooldown {
 		return
 	}
 
 	currentHeadYaw := t.controller.GetCurrentYaw()
 	absHeadYaw := math.Abs(currentHeadYaw)
-	absCameraOffset := math.Abs(cameraYawOffset)
+	currentBodyYaw := t.world.GetBodyYaw()
+	absBodyYaw := math.Abs(currentBodyYaw)
 
-	// Calculate rotation amount for this tick
-	dt := t.config.MovementInterval.Seconds()
-	rotationStep := t.config.BodyAlignmentSpeed * dt
-
-	var bodyDelta float64
+	// Compute body error: how much does body need to move?
+	// When head is turned, body moves to center the head (make headYaw → 0)
+	// When head is centered, body moves toward room center (0)
+	var bodyError float64
 	var reason string
-
-	// Case 1: Head is turned significantly - rotate body to center head
-	if absHeadYaw >= t.config.BodyAlignmentThreshold {
-		// Rotate body toward where head is looking
-		if currentHeadYaw > 0 {
-			bodyDelta = rotationStep // Rotate body left
-		} else {
-			bodyDelta = -rotationStep // Rotate body right
-		}
+	
+	if absHeadYaw > 0.05 {
+		// Head is turned - move body in direction head is looking
+		bodyError = currentHeadYaw
 		reason = "centering head"
-	} else if absCameraOffset >= t.config.BodyAlignmentDeadZone {
-		// Case 2: Head is settled but camera sees persistent offset
-		// This is the OBSERVABLE signal - doesn't rely on world model accuracy
-		// If camera says "face is to the left" but head isn't moving, body must be offset right
-		// Rotate body in direction of the offset to align
-		if cameraYawOffset > 0 {
-			bodyDelta = rotationStep // Face on left, rotate body left
-		} else {
-			bodyDelta = -rotationStep // Face on right, rotate body right
-		}
-		reason = "camera offset correction"
-		debug.Log("📷 Camera offset: %.2f rad, head: %.2f rad → body needs correction\n",
-			cameraYawOffset, currentHeadYaw)
+	} else if absBodyYaw > 0.02 {
+		// Head is centered but body is not at room center - return body to 0
+		bodyError = -currentBodyYaw // Move body toward 0
+		reason = "returning to neutral"
 	} else {
-		// Head centered AND camera offset small - aligned!
+		// Both head and body are centered - nothing to do
 		return
 	}
+	
+	debug.Log("🌍 Body: body=%.2f, head=%.2f, error=%.2f (%s)\n", 
+		currentBodyYaw, currentHeadYaw, bodyError, reason)
+	
+	// Calculate rotation step - PROPORTIONAL to error
+	dt := t.config.MovementInterval.Seconds()
+	maxStep := t.config.BodyAlignmentSpeed * dt
+	
+	// Proportional: move faster when error is larger
+	absError := math.Abs(bodyError)
+	proportion := math.Min(absError/0.5, 1.0)
+	rotationStep := maxStep * proportion
+	
+	// Minimum step to ensure movement when there's error
+	if absError > 0.01 {
+		minStep := maxStep * 0.2
+		if rotationStep < minStep {
+			rotationStep = minStep
+		}
+	}
 
-	// Log the alignment
-	debug.Log("🎯 Body alignment (%s): head=%.2f, camOffset=%.2f, delta=%.3f rad\n",
-		reason, currentHeadYaw, cameraYawOffset, bodyDelta)
+	// Move body toward target (in direction of error)
+	var bodyDelta float64
+	if bodyError > 0 {
+		bodyDelta = rotationStep // Need to rotate left
+	} else {
+		bodyDelta = -rotationStep // Need to rotate right
+	}
+
+	// Log movement
+	debug.Log("🎯 Body alignment: head=%.2f, body=%.2f, delta=%.3f → newBody=%.2f\n",
+		currentHeadYaw, currentBodyYaw, bodyDelta, currentBodyYaw+bodyDelta)
 
 	// Update state
 	t.mu.Lock()

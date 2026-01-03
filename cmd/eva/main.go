@@ -714,6 +714,11 @@ func wakeUpRobot() error {
 		debug.Log("⚠️  Failed to reset body to neutral: %v\n", err)
 	} else {
 		debug.Log("🔄 Body reset to neutral (0.0 rad)\n")
+		// Sync head tracker's world model with the physical robot state
+		if headTracker != nil {
+			headTracker.SetBodyYaw(0.0)
+			debug.Log("🔄 World model synced: body=0.0 rad\n")
+		}
 	}
 
 	return nil

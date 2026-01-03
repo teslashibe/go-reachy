@@ -129,12 +129,13 @@ func DefaultConfig() Config {
 		BodyRotationStep:      0.5, // Rotate body by 0.5 rad (~29°) per trigger
 
 		// Body alignment (gradual centering when locked on target)
-		BodyAlignmentEnabled:   true,              // Enable by default
-		BodyAlignmentDelay:     2 * time.Second,   // 2s stable tracking before trigger
-		BodyAlignmentThreshold: 0.10,              // ~6° min head yaw to trigger (lowered for sensitivity)
-		BodyAlignmentSpeed:     0.30,              // Rotation speed (rad/s) - 0.015 rad/tick at 50ms
-		BodyAlignmentDeadZone:  0.05,              // ~3° stop threshold
-		BodyAlignmentCooldown:  500 * time.Millisecond, // Allow frequent small adjustments
+		// Design: Head tracks face (fast), body follows to center head (slow)
+		BodyAlignmentEnabled:   true,                   // Enable by default
+		BodyAlignmentDelay:     2 * time.Second,        // Wait for head tracking to settle
+		BodyAlignmentThreshold: 0.10,                   // ~6° - sensitive enough for return-to-center
+		BodyAlignmentSpeed:     0.25,                   // Moderate rotation (rad/s)
+		BodyAlignmentDeadZone:  0.05,                   // ~3° stop threshold
+		BodyAlignmentCooldown:  150 * time.Millisecond, // Smooth continuous movement
 
 		// Pitch tracking (asymmetric range is typical for head mechanics)
 		PitchRangeUp:   0.4,         // +23° up
@@ -147,19 +148,19 @@ func DefaultConfig() Config {
 		PitchDeadZone: 0, // Use ControlDeadZone
 
 		// Breathing animation (matches Python reachy for visibility)
-		BreathingEnabled:    true,               // Enable by default
-		BreathingAmplitude:  0.05,               // ~3° pitch oscillation
-		BreathingFrequency:  0.08,               // Match Python: one breath every ~12.5 seconds
-		BreathingRollAmp:    0.02,               // ~1° roll (subtle)
+		BreathingEnabled:    true,                // Enable by default
+		BreathingAmplitude:  0.05,                // ~3° pitch oscillation
+		BreathingFrequency:  0.08,                // Match Python: one breath every ~12.5 seconds
+		BreathingRollAmp:    0.02,                // ~1° roll (subtle)
 		BreathingAntennaAmp: 5.0 * math.Pi / 180, // 5° antenna sway (like Python)
 
 		// Response scaling (matches Python reachy behavior)
 		ResponseScale: 0.45, // Scale down response to prevent overshoot (tuned from 0.6)
 
 		// Audio-triggered speaker switching
-		AudioSwitchEnabled:       true,                  // Enable by default
-		AudioSwitchThreshold:     0.52,                  // ~30° - turn toward voice if more than this from current gaze
-		AudioSwitchMinConfidence: 0.6,                   // Require high confidence to avoid false triggers
+		AudioSwitchEnabled:       true,                    // Enable by default
+		AudioSwitchThreshold:     0.52,                    // ~30° - turn toward voice if more than this from current gaze
+		AudioSwitchMinConfidence: 0.6,                     // Require high confidence to avoid false triggers
 		AudioSwitchLookDuration:  1500 * time.Millisecond, // Look for face at audio direction for 1.5 seconds
 	}
 }
