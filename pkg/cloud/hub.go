@@ -37,15 +37,15 @@ func (r *RobotConnection) Send(msg *protocol.Message) error {
 
 // Hub manages WebSocket connections from robots
 type Hub struct {
-	mu      sync.RWMutex
-	robots  map[string]*RobotConnection
-	debug   bool
+	mu     sync.RWMutex
+	robots map[string]*RobotConnection
+	debug  bool
 
 	// Callbacks
-	onFrame    func(robotID string, frame *protocol.FrameData)
-	onDOA      func(robotID string, doa *protocol.DOAData)
-	onMic      func(robotID string, mic *protocol.MicData)
-	onState    func(robotID string, state *protocol.StateData)
+	onFrame func(robotID string, frame *protocol.FrameData)
+	onDOA   func(robotID string, doa *protocol.DOAData)
+	onMic   func(robotID string, mic *protocol.MicData)
+	onState func(robotID string, state *protocol.StateData)
 
 	// Stats
 	messagesReceived atomic.Uint64
@@ -425,4 +425,3 @@ func (h *Hub) RegisterAPIRoutes(api fiber.Router) {
 func generateRobotID() string {
 	return time.Now().Format("20060102150405")
 }
-
