@@ -23,6 +23,14 @@ type TuningParams struct {
 
 	// Tuning mode
 	TuningModeEnabled bool `json:"tuning_mode_enabled"` // Disables secondary features for clean tuning
+
+	// Body alignment (gradual body rotation when locked on target)
+	BodyAlignmentEnabled   bool    `json:"body_alignment_enabled"`   // Enable automatic body alignment
+	BodyAlignmentDelay     float64 `json:"body_alignment_delay"`     // Seconds before alignment starts
+	BodyAlignmentThreshold float64 `json:"body_alignment_threshold"` // Min head yaw to trigger (radians)
+	BodyAlignmentSpeed     float64 `json:"body_alignment_speed"`     // Body rotation speed (rad/s)
+	BodyAlignmentDeadZone  float64 `json:"body_alignment_dead_zone"` // Stop threshold (radians)
+	BodyAlignmentCooldown  float64 `json:"body_alignment_cooldown"`  // Seconds between actions
 }
 
 // GetTuningParams returns current tuning parameters from the tracker.
@@ -42,6 +50,13 @@ func (t *Tracker) GetTuningParams() TuningParams {
 		ResponseScale:        t.config.ResponseScale,
 		DetectionHz:          detectionHz,
 		TuningModeEnabled:    !t.config.AudioSwitchEnabled && !t.config.BreathingEnabled,
+		// Body alignment
+		BodyAlignmentEnabled:   t.config.BodyAlignmentEnabled,
+		BodyAlignmentDelay:     t.config.BodyAlignmentDelay.Seconds(),
+		BodyAlignmentThreshold: t.config.BodyAlignmentThreshold,
+		BodyAlignmentSpeed:     t.config.BodyAlignmentSpeed,
+		BodyAlignmentDeadZone:  t.config.BodyAlignmentDeadZone,
+		BodyAlignmentCooldown:  t.config.BodyAlignmentCooldown.Seconds(),
 	}
 }
 
@@ -84,6 +99,25 @@ func (t *Tracker) SetTuningParams(params TuningParams) {
 	// Detection rate (handled outside lock via channel)
 	if params.DetectionHz > 0 {
 		t.setDetectionHz(params.DetectionHz)
+	}
+
+	// Body alignment - note: enabled is a bool so we check explicitly
+	// Use a sentinel approach: only apply if the value looks intentional
+	t.config.BodyAlignmentEnabled = params.BodyAlignmentEnabled
+	if params.BodyAlignmentDelay > 0 {
+		t.config.BodyAlignmentDelay = time.Duration(params.BodyAlignmentDelay * float64(time.Second))
+	}
+	if params.BodyAlignmentThreshold > 0 {
+		t.config.BodyAlignmentThreshold = params.BodyAlignmentThreshold
+	}
+	if params.BodyAlignmentSpeed > 0 {
+		t.config.BodyAlignmentSpeed = params.BodyAlignmentSpeed
+	}
+	if params.BodyAlignmentDeadZone > 0 {
+		t.config.BodyAlignmentDeadZone = params.BodyAlignmentDeadZone
+	}
+	if params.BodyAlignmentCooldown > 0 {
+		t.config.BodyAlignmentCooldown = time.Duration(params.BodyAlignmentCooldown * float64(time.Second))
 	}
 }
 

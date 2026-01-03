@@ -109,6 +109,11 @@ type Tracker struct {
 	audioSwitchStartedAt time.Time // When we started the audio switch
 	audioSwitchTarget    float64   // Target yaw for audio switch
 	preSwitchFaceTarget  string    // Focus target before switching (to return to)
+
+	// Body alignment state (gradual centering when locked on target)
+	lockedOnFaceAt      time.Time // When stable tracking started (for lock detection)
+	lastBodyAlignmentAt time.Time // Last alignment action (for cooldown)
+	isBodyAligning      bool      // Currently performing body alignment
 }
 
 // New creates a new head tracker with local face detection.
@@ -497,6 +502,9 @@ func (t *Tracker) updateMovement() {
 	audioSwitchTarget := t.audioSwitchTarget
 	t.mu.RUnlock()
 
+	// Update lock state for body alignment
+	t.updateLockState(hasFace)
+
 	if !hasFace && !hasAudio && !audioSwitchActive {
 		// No target - check if we should scan or interpolate to neutral
 		t.updateNoTarget()
@@ -580,6 +588,9 @@ func (t *Tracker) updateMovement() {
 
 	// Check if body rotation is needed using offset-based trigger
 	t.checkBodyRotationOffset(yawOffset)
+
+	// Check if gradual body alignment should occur (when locked on target)
+	t.checkBodyAlignment()
 }
 
 // outputPose sends yaw and pitch to either offset handler or direct robot control
@@ -666,6 +677,114 @@ func (t *Tracker) checkBodyRotationOffset(yawOffset float64) {
 		debug.Log("🔄 Body rotation triggered (offset): head at %.2f, offset %.2f → rotate right\n", currentYaw, yawOffset)
 		handler(-step)
 	}
+}
+
+// isLockedOnTarget returns true if Eva has been stably tracking a face for
+// the configured delay period (body alignment delay).
+func (t *Tracker) isLockedOnTarget() bool {
+	t.mu.RLock()
+	hasFace := t.hasFaceTarget
+	lockedAt := t.lockedOnFaceAt
+	t.mu.RUnlock()
+
+	if !hasFace {
+		return false
+	}
+
+	// Check if we've been tracking long enough
+	if lockedAt.IsZero() {
+		return false
+	}
+
+	return time.Since(lockedAt) >= t.config.BodyAlignmentDelay
+}
+
+// updateLockState tracks when stable face tracking started.
+// Called from updateMovement when we have a face target.
+func (t *Tracker) updateLockState(hasFace bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if hasFace {
+		// If we just acquired a face, record the time
+		if t.lockedOnFaceAt.IsZero() {
+			t.lockedOnFaceAt = time.Now()
+		}
+	} else {
+		// Lost face - reset lock state
+		t.lockedOnFaceAt = time.Time{}
+		t.isBodyAligning = false
+	}
+}
+
+// checkBodyAlignment checks if body should rotate to center the head while locked on a target.
+// This gradually rotates the body to bring the head back toward center, freeing up range.
+func (t *Tracker) checkBodyAlignment() {
+	// Skip if disabled
+	if !t.config.BodyAlignmentEnabled {
+		return
+	}
+
+	t.mu.RLock()
+	handler := t.onBodyRotation
+	lastAlignment := t.lastBodyAlignmentAt
+	t.mu.RUnlock()
+
+	if handler == nil {
+		return
+	}
+
+	// Check if locked on target
+	if !t.isLockedOnTarget() {
+		return
+	}
+
+	// Check cooldown
+	if !lastAlignment.IsZero() && time.Since(lastAlignment) < t.config.BodyAlignmentCooldown {
+		return
+	}
+
+	currentYaw := t.controller.GetCurrentYaw()
+	absYaw := math.Abs(currentYaw)
+
+	// Check if head yaw exceeds threshold (worth aligning)
+	if absYaw < t.config.BodyAlignmentThreshold {
+		return
+	}
+
+	// Check if already within dead zone (no alignment needed)
+	if absYaw < t.config.BodyAlignmentDeadZone {
+		return
+	}
+
+	// Calculate rotation amount for this tick
+	// Use movement interval as dt since this is called from updateMovement
+	dt := t.config.MovementInterval.Seconds()
+	rotationStep := t.config.BodyAlignmentSpeed * dt
+
+	// Determine direction: rotate body toward where head is looking to center head
+	// If head is turned left (positive yaw), rotate body left (positive) so head can return to center
+	var bodyDelta float64
+	if currentYaw > 0 {
+		bodyDelta = rotationStep // Rotate body left
+	} else {
+		bodyDelta = -rotationStep // Rotate body right
+	}
+
+	// Log the alignment
+	debug.Log("🎯 Body alignment: head at %.2f rad, rotating body by %.3f rad\n", currentYaw, bodyDelta)
+
+	// Update state
+	t.mu.Lock()
+	t.lastBodyAlignmentAt = time.Now()
+	t.isBodyAligning = true
+	t.mu.Unlock()
+
+	// Trigger body rotation
+	handler(bodyDelta)
+
+	// Counter-rotate head to maintain gaze
+	t.controller.AdjustForBodyRotation(bodyDelta)
 }
 
 // checkAudioSwitch determines if we should turn toward a new audio source.

@@ -47,6 +47,14 @@ type Config struct {
 	BodyRotationThreshold float64 // Trigger rotation when head yaw exceeds this fraction of YawRange (0-1)
 	BodyRotationStep      float64 // How much to rotate body per trigger (radians)
 
+	// Body alignment (gradual body rotation when locked on target to center head)
+	BodyAlignmentEnabled   bool          // Enable automatic body alignment
+	BodyAlignmentDelay     time.Duration // How long to be locked before alignment starts
+	BodyAlignmentThreshold float64       // Min head yaw to trigger alignment (radians)
+	BodyAlignmentSpeed     float64       // Body rotation speed (rad/s)
+	BodyAlignmentDeadZone  float64       // Stop alignment when head yaw within this (radians)
+	BodyAlignmentCooldown  time.Duration // Minimum time between alignment actions
+
 	// Pitch (up/down) tracking
 	PitchRangeUp   float64 // Max pitch looking up (positive radians)
 	PitchRangeDown float64 // Max pitch looking down (positive radians, applied as negative)
@@ -119,6 +127,14 @@ func DefaultConfig() Config {
 		// Body rotation
 		BodyRotationThreshold: 0.8, // Trigger when head yaw > 80% of max range
 		BodyRotationStep:      0.5, // Rotate body by 0.5 rad (~29°) per trigger
+
+		// Body alignment (gradual centering when locked on target)
+		BodyAlignmentEnabled:   true,             // Enable by default
+		BodyAlignmentDelay:     2 * time.Second,  // 2s stable tracking before trigger
+		BodyAlignmentThreshold: 0.20,             // ~11° min head yaw to trigger
+		BodyAlignmentSpeed:     0.02,             // Slow rotation (rad/s)
+		BodyAlignmentDeadZone:  0.10,             // ~6° stop threshold
+		BodyAlignmentCooldown:  2 * time.Second,  // Prevent rapid re-triggering
 
 		// Pitch tracking (asymmetric range is typical for head mechanics)
 		PitchRangeUp:   0.4,         // +23° up
