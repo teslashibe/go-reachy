@@ -1,6 +1,6 @@
 # tracking
 
-Head tracking system for Reachy Mini with face detection and audio DOA.
+Head tracking system for Reachy Mini with face detection, audio DOA, and speech animation.
 
 ## Overview
 
@@ -8,8 +8,10 @@ This package provides a complete head tracking system that:
 - Detects faces using local YuNet model
 - Tracks audio sources via Direction of Arrival (DOA)
 - Maintains a world model with spatial awareness
-- Uses PD control for smooth head movement
+- Uses PD control for smooth head movement (yaw + pitch)
 - Scans for faces when none are visible
+- Animates "breathing" motion during idle
+- Integrates speech wobble for natural speaking gestures
 
 ## Architecture
 
@@ -28,6 +30,20 @@ This package provides a complete head tracking system that:
                                               ▼
                                         ┌─────────────┐
                                         │ PD Control  │
+                                        │ (Yaw+Pitch) │
+                                        └─────────────┘
+                                              │
+                    ┌─────────────┐           │
+                    │   Speech    │           │
+                    │   Wobbler   │──────────▶│ (additive offsets)
+                    │(pkg/speech) │           │
+                    └─────────────┘           │
+                                              ▼
+                                        ┌─────────────┐
+                                        │ outputPose  │
+                                        │ finalPose = │
+                                        │ tracking +  │
+                                        │ speech      │
                                         └─────────────┘
                                               │
                                               ▼
@@ -36,6 +52,35 @@ This package provides a complete head tracking system that:
                                         │   Head      │
                                         └─────────────┘
 ```
+
+## Speech Integration
+
+The tracker supports additive speech wobble offsets for natural speaking gestures:
+
+```go
+// Set offsets from speech wobbler (called continuously during speech)
+tracker.SetSpeechOffsets(roll, pitch, yaw)
+
+// Clear offsets when speech ends
+tracker.ClearSpeechOffsets()
+```
+
+These offsets are added to the tracking output in `outputPose()`, allowing the robot to track faces while simultaneously animating speech gestures.
+
+## Idle Behavior
+
+When no targets are detected, the tracker follows this sequence:
+
+```
+[No target] → Wait (2s) → Scan → Breathing Animation
+                              ↓
+                        [Target found?]
+                         Yes → Track
+                         No  → Continue scanning/breathing
+```
+
+- **Scanning**: Slow pan left/right looking for faces
+- **Breathing**: Subtle sinusoidal pitch/roll movement for lifelike appearance
 
 ## Usage
 

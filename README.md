@@ -44,14 +44,20 @@ ssh pollen@reachy-mini.local "./dance"
 ```
 go-reachy/
 ├── cmd/
-│   ├── reachy/          # Main CLI (WIP)
+│   ├── eva/             # Eva conversational AI agent
+│   ├── reachy/          # Main CLI
 │   ├── poc/             # Proof of concept
 │   └── dance/           # Dance demo ← start here!
 ├── pkg/
-│   ├── robot/           # Robot control library
-│   │   ├── robot.go     # High-level abstraction
-│   │   └── zenoh.go     # HTTP/WebSocket client
-│   └── speech/          # OpenAI integration (WIP)
+│   ├── robot/           # Robot control (HTTP/WebSocket)
+│   ├── tracking/        # Head tracking (face + audio DOA)
+│   ├── speech/          # Speech-synced head wobble
+│   ├── video/           # WebRTC video stream
+│   ├── tts/             # Text-to-speech (ElevenLabs, OpenAI)
+│   ├── eva/             # Eva AI tools and personality
+│   ├── worldmodel/      # Entity tracking and spatial awareness
+│   ├── memory/          # Persistent memory storage
+│   └── debug/           # Conditional debug logging
 ├── docs/
 │   ├── ARCHITECTURE.md  # System design
 │   ├── SETUP.md         # Installation guide
@@ -71,9 +77,13 @@ go-reachy/
 - [x] Dance/movement demos
 - [x] Cross-compilation for ARM64
 - [x] Run directly on robot
-- [ ] OpenAI Realtime API integration
-- [ ] Microphone audio capture (ALSA)
-- [ ] Speaker audio playback
+- [x] OpenAI Realtime API integration
+- [x] Head tracking (face detection + audio DOA)
+- [x] Speech-synced head wobble animation
+- [x] Breathing animation for idle state
+- [x] ElevenLabs TTS streaming
+- [x] Microphone audio capture
+- [x] Speaker audio playback
 - [ ] Systemd service for auto-start
 - [ ] Web UI control panel
 
