@@ -63,6 +63,10 @@ type Tracker struct {
 	lastLoggedYaw float64
 	isRunning     bool
 
+	// Enable/disable state
+	isEnabled  bool      // Whether tracking is active (default: true)
+	disabledAt time.Time // When tracking was disabled (for delayed return to neutral)
+
 	// Scanning state
 	isScanning     bool
 	scanDirection  float64 // 1 = right, -1 = left
@@ -102,6 +106,7 @@ func New(config Config, robotCtrl robot.HeadController, video VideoSource, model
 		controller:    NewPDController(config),
 		perception:    NewPerception(config, detector),
 		lastLoggedYaw: 999.0,
+		isEnabled:     true, // Tracking enabled by default
 	}, nil
 }
 
@@ -147,6 +152,37 @@ func (t *Tracker) SetBodyYaw(yaw float64) {
 // GetBodyYaw returns the current body orientation from the world model.
 func (t *Tracker) GetBodyYaw() float64 {
 	return t.world.GetBodyYaw()
+}
+
+// SetEnabled enables or disables head tracking.
+// When disabled, the tracker stops detecting faces and smoothly returns to neutral.
+// When re-enabled, tracking resumes immediately.
+func (t *Tracker) SetEnabled(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isEnabled == enabled {
+		return // No change
+	}
+
+	t.isEnabled = enabled
+
+	if enabled {
+		// Re-enabling: clear disabled state, stop any return-to-neutral
+		t.disabledAt = time.Time{}
+		debug.Logln("👁️  Head tracking enabled")
+	} else {
+		// Disabling: record time for delayed return to neutral
+		t.disabledAt = time.Now()
+		debug.Logln("👁️  Head tracking disabled")
+	}
+}
+
+// IsEnabled returns whether head tracking is currently enabled.
+func (t *Tracker) IsEnabled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.isEnabled
 }
 
 // SetAudioClient enables audio DOA integration with go-eva
@@ -288,6 +324,18 @@ func (t *Tracker) pollAudioDOA() {
 
 // updateMovement uses the PD controller to smoothly move toward target
 func (t *Tracker) updateMovement() {
+	// Check if tracking is disabled
+	t.mu.RLock()
+	enabled := t.isEnabled
+	disabledAt := t.disabledAt
+	t.mu.RUnlock()
+
+	if !enabled {
+		// Tracking disabled - return to neutral
+		t.updateDisabled(disabledAt)
+		return
+	}
+
 	// Get target from world model (priority: Face > Audio > None)
 	targetAngle, source, hasTarget := t.world.GetTarget()
 
@@ -429,8 +477,45 @@ func (t *Tracker) updateNoTarget() {
 	t.updateScanning()
 }
 
+// updateDisabled handles movement when tracking is disabled.
+// Smoothly returns to neutral position.
+func (t *Tracker) updateDisabled(disabledAt time.Time) {
+	// Stop scanning when disabled
+	if t.isScanning {
+		t.isScanning = false
+	}
+
+	// Start interpolation to neutral if not already interpolating
+	if !t.isInterpolating {
+		t.isInterpolating = true
+		t.interpStartedAt = time.Now()
+		t.controller.InterpolateToNeutral(1 * time.Second)
+		debug.Logln("👁️  Tracking disabled, returning to neutral")
+	}
+
+	// Continue interpolation
+	newYaw, shouldMove := t.controller.Update()
+	if shouldMove {
+		t.outputPose(newYaw, 0, 0)
+	}
+
+	// When interpolation completes, just hold position
+	if !t.controller.IsInterpolating() {
+		t.isInterpolating = false
+		// Hold at neutral - no further movement needed
+	}
+}
+
 // detectAndUpdate detects faces and updates the world model
 func (t *Tracker) detectAndUpdate() {
+	// Skip detection if tracking is disabled
+	t.mu.RLock()
+	enabled := t.isEnabled
+	t.mu.RUnlock()
+	if !enabled {
+		return
+	}
+
 	currentYaw := t.controller.GetCurrentYaw()
 	currentPitch := t.controller.GetCurrentPitch()
 	bodyYaw := t.world.GetBodyYaw()
