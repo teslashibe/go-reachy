@@ -29,6 +29,12 @@ type AudioSource struct {
 	Confidence float64   // 0-1 confidence
 	Speaking   bool      // Voice activity detected
 	LastSeen   time.Time // When last updated
+
+	// Enhanced 3D positioning (from XVF3800 speech energy)
+	EstX        float64    // Estimated forward distance (meters)
+	EstY        float64    // Estimated lateral position (meters, + = left)
+	TotalEnergy float64    // Total speech energy (higher = closer)
+	MicEnergy   [4]float64 // Per-mic speech energy
 }
 
 // DetectedObject represents a detected object or animal in the scene

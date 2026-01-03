@@ -239,14 +239,24 @@ func (w *WorldModel) GetBodyYaw() float64 {
 
 // UpdateAudioSource updates the audio direction from go-eva
 func (w *WorldModel) UpdateAudioSource(angle float64, confidence float64, speaking bool) {
+	w.UpdateAudioSourceEnhanced(angle, confidence, speaking, 0, 0, 0, [4]float64{})
+}
+
+// UpdateAudioSourceEnhanced updates the audio direction with enhanced 3D positioning data
+func (w *WorldModel) UpdateAudioSourceEnhanced(angle, confidence float64, speaking bool,
+	estX, estY, totalEnergy float64, micEnergy [4]float64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.audioSource = &AudioSource{
-		Angle:      angle,
-		Confidence: confidence,
-		Speaking:   speaking,
-		LastSeen:   time.Now(),
+		Angle:       angle,
+		Confidence:  confidence,
+		Speaking:    speaking,
+		LastSeen:    time.Now(),
+		EstX:        estX,
+		EstY:        estY,
+		TotalEnergy: totalEnergy,
+		MicEnergy:   micEnergy,
 	}
 }
 

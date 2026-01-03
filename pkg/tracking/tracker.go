@@ -86,7 +86,7 @@ type Tracker struct {
 	breathingPhase float64 // Current phase in radians (0 to 2π)
 
 	// Detection rate control (for runtime tuning)
-	detectTicker     *time.Ticker
+	detectTicker      *time.Ticker
 	detectTickerReset chan time.Duration
 
 	// Speech wobble offsets (additive to tracking output)
@@ -141,9 +141,9 @@ func New(config Config, robotCtrl robot.HeadController, video VideoSource, model
 		controller:        NewPDController(config),
 		perception:        NewPerception(config, detector),
 		lastLoggedYaw:     999.0,
-		isEnabled:         true,                      // Tracking enabled by default
-		isFaceEnabled:     true,                      // Face tracking enabled by default
-		isAudioEnabled:    true,                      // Audio tracking enabled by default
+		isEnabled:         true,                        // Tracking enabled by default
+		isFaceEnabled:     true,                        // Face tracking enabled by default
+		isAudioEnabled:    true,                        // Audio tracking enabled by default
 		detectTickerReset: make(chan time.Duration, 1), // Buffer of 1 for non-blocking send
 	}, nil
 }
@@ -302,15 +302,28 @@ func (t *Tracker) handleAudioDOA(doa *audio.DOAResult) {
 		return
 	}
 
-	// Update world model with audio source
-	t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
+	// Update world model with audio source (use enhanced data if available)
+	if doa.HasEnhancedData() {
+		t.world.UpdateAudioSourceEnhanced(doa.Angle, doa.Confidence, doa.Speaking,
+			doa.EstX, doa.EstY, doa.TotalEnergy, doa.MicEnergy)
+	} else {
+		t.world.UpdateAudioSource(doa.Angle, doa.Confidence, doa.Speaking)
+	}
 
 	// Try to associate audio with a visible face
 	if doa.Speaking {
 		if entityID := t.world.AssociateAudio(doa.Angle, doa.Speaking, doa.Confidence); entityID != "" {
-			debug.Log("🎤 DOA (ws): %.2f rad → matched face %s\n", doa.Angle, entityID)
+			if doa.HasEnhancedData() {
+				debug.Log("🎤 DOA (ws): %.2f rad @ ~%.1fm → matched face %s\n", doa.Angle, doa.EstX, entityID)
+			} else {
+				debug.Log("🎤 DOA (ws): %.2f rad → matched face %s\n", doa.Angle, entityID)
+			}
 		} else {
-			debug.Log("🎤 DOA (ws): %.2f rad, confidence=%.2f (no face match)\n", doa.Angle, doa.Confidence)
+			if doa.HasEnhancedData() {
+				debug.Log("🎤 DOA (ws): %.2f rad @ ~%.1fm, energy=%.3f (no face match)\n", doa.Angle, doa.EstX, doa.TotalEnergy)
+			} else {
+				debug.Log("🎤 DOA (ws): %.2f rad, confidence=%.2f (no face match)\n", doa.Angle, doa.Confidence)
+			}
 		}
 	}
 }
@@ -750,7 +763,7 @@ func (t *Tracker) checkBodyAlignment() {
 	// When head is centered, body moves toward room center (0)
 	var bodyError float64
 	var reason string
-	
+
 	if absHeadYaw > 0.05 {
 		// Head is turned - move body in direction head is looking
 		bodyError = currentHeadYaw
@@ -763,19 +776,19 @@ func (t *Tracker) checkBodyAlignment() {
 		// Both head and body are centered - nothing to do
 		return
 	}
-	
-	debug.Log("🌍 Body: body=%.2f, head=%.2f, error=%.2f (%s)\n", 
+
+	debug.Log("🌍 Body: body=%.2f, head=%.2f, error=%.2f (%s)\n",
 		currentBodyYaw, currentHeadYaw, bodyError, reason)
-	
+
 	// Calculate rotation step - PROPORTIONAL to error
 	dt := t.config.MovementInterval.Seconds()
 	maxStep := t.config.BodyAlignmentSpeed * dt
-	
+
 	// Proportional: move faster when error is larger
 	absError := math.Abs(bodyError)
 	proportion := math.Min(absError/0.5, 1.0)
 	rotationStep := maxStep * proportion
-	
+
 	// Minimum step to ensure movement when there's error
 	if absError > 0.01 {
 		minStep := maxStep * 0.2

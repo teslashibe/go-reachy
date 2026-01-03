@@ -20,6 +20,17 @@ type DOAResult struct {
 	Confidence float64   `json:"confidence"`  // 0-1 confidence score
 	Timestamp  time.Time `json:"timestamp"`   // When this reading was taken
 	RawAngle   float64   `json:"raw_angle"`   // Original XVF3800 angle
+
+	// Enhanced 3D positioning data (from XVF3800 speech energy)
+	EstX        float64    `json:"est_x,omitempty"`        // Estimated forward distance (meters)
+	EstY        float64    `json:"est_y,omitempty"`        // Estimated lateral position (meters, + = left)
+	TotalEnergy float64    `json:"total_energy,omitempty"` // Total speech energy (higher = closer)
+	MicEnergy   [4]float64 `json:"mic_energy,omitempty"`   // Per-mic speech energy
+}
+
+// HasEnhancedData returns true if the reading contains enhanced 3D positioning data
+func (r *DOAResult) HasEnhancedData() bool {
+	return r.TotalEnergy > 0
 }
 
 // wsMessage represents a WebSocket message from go-eva
