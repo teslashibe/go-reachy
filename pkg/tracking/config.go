@@ -19,14 +19,16 @@ type Config struct {
 	YawRange float64 // Maximum yaw in radians (symmetric: ±YawRange)
 
 	// PD Controller
-	Kp              float64 // Proportional gain
-	Kd              float64 // Derivative gain (dampening)
-	ControlDeadZone float64 // Don't move if error < this (radians)
+	Kp                float64 // Proportional gain
+	Kd                float64 // Derivative gain (dampening)
+	ControlDeadZone   float64 // Don't move if error < this (radians)
+	MaxTargetVelocity float64 // Max target change per tick (radians, 0 = no limit)
 
 	// Perception
-	CameraFOV         float64 // Horizontal field of view in radians
-	PositionSmoothing float64 // Exponential smoothing factor (0-1, higher = more new data)
-	JitterThreshold   float64 // Ignore frame position changes < this %
+	CameraFOV            float64 // Horizontal field of view in radians
+	PositionSmoothing    float64 // Exponential smoothing factor (0-1, higher = more new data)
+	JitterThreshold      float64 // Ignore frame position changes < this %
+	OffsetSmoothingAlpha float64 // EMA alpha for offset smoothing (0.3=smooth, 0.6=responsive, 1.0=off)
 
 	// World Model
 	ConfidenceDecay float64       // How fast confidence decays (per second)
@@ -79,7 +81,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		// Timing - fast and responsive
-		DetectionInterval: 250 * time.Millisecond, // 4 detections per second
+		DetectionInterval: 50 * time.Millisecond,  // 20 detections per second (tuned up from 4Hz)
 		MovementInterval:  50 * time.Millisecond,  // 20 updates per second
 		DecayInterval:     100 * time.Millisecond, // 10 decay updates per second
 
@@ -89,15 +91,17 @@ func DefaultConfig() Config {
 		// Range - almost full 180° rotation
 		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
 
-		// PD Controller - tuned for smooth tracking (matches Python reachy)
-		Kp:              0.10, // Proportional: respond to error
-		Kd:              0.08, // Derivative: dampen oscillations
-		ControlDeadZone: 0.05, // ~3° dead zone
+		// PD Controller - tuned for smooth tracking at 20Hz
+		Kp:                0.10, // Proportional: respond to error
+		Kd:                0.12, // Derivative: dampen oscillations (tuned up from 0.08)
+		ControlDeadZone:   0.05, // ~3° dead zone
+		MaxTargetVelocity: 0.15, // Smooth acceleration (tuned up from 0.05)
 
 		// Perception
-		CameraFOV:         math.Pi / 2, // 90° horizontal FOV
-		PositionSmoothing: 0.6,         // 60% new, 40% old
-		JitterThreshold:   5.0,         // Ignore <5% position changes
+		CameraFOV:            math.Pi / 2, // 90° horizontal FOV
+		PositionSmoothing:    0.6,         // 60% new, 40% old
+		JitterThreshold:      5.0,         // Ignore <5% position changes
+		OffsetSmoothingAlpha: 0.7,         // EMA alpha for offsets (tuned up from 0.4 for responsiveness)
 
 		// World Model
 		ConfidenceDecay: 0.3,              // Lose 30% confidence per second
@@ -134,7 +138,7 @@ func DefaultConfig() Config {
 		BreathingAntennaAmp: 5.0 * math.Pi / 180, // 5° antenna sway (like Python)
 
 		// Response scaling (matches Python reachy behavior)
-		ResponseScale: 0.6, // Scale down response to prevent overshoot
+		ResponseScale: 0.45, // Scale down response to prevent overshoot (tuned from 0.6)
 
 		// Audio-triggered speaker switching
 		AudioSwitchEnabled:       true,                  // Enable by default

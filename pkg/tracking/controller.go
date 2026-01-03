@@ -24,6 +24,9 @@ type PDController struct {
 	MaxPitchUp   float64 // Maximum pitch looking up (positive)
 	MaxPitchDown float64 // Maximum pitch looking down (stored positive, applied negative)
 
+	// Velocity limiting (prevents target from jumping too fast)
+	MaxTargetVelocity float64 // Maximum target change per tick (radians)
+
 	// Dead zone
 	DeadZone      float64 // Ignore yaw errors smaller than this (radians)
 	PitchDeadZone float64 // Ignore pitch errors smaller than this (radians)
@@ -36,11 +39,11 @@ type PDController struct {
 	isSettled  bool // True when yaw within dead zone
 
 	// Pitch state
-	lastPitchError float64
+	lastPitchError  float64
 	lastPitchOutput float64
-	currentPitch   float64
-	targetPitch    float64
-	isPitchSettled bool // True when pitch within dead zone
+	currentPitch    float64
+	targetPitch     float64
+	isPitchSettled  bool // True when pitch within dead zone
 
 	// Interpolation state (for smooth return to neutral)
 	interpStart     time.Time
@@ -66,6 +69,8 @@ func NewPDController(config Config) *PDController {
 		MaxPitchUp:    config.PitchRangeUp,
 		MaxPitchDown:  config.PitchRangeDown,
 		PitchDeadZone: config.EffectivePitchDeadZone(),
+		// Velocity limiting
+		MaxTargetVelocity: config.MaxTargetVelocity,
 	}
 }
 
@@ -82,10 +87,27 @@ func (c *PDController) SetTarget(worldAngle float64) {
 // SetTargetFromOffset sets the target based on a camera-relative offset.
 // offset: how much to turn from current position (positive = left, negative = right)
 // This is self-correcting: offset should approach 0 as face becomes centered.
+// Velocity limiting is applied to prevent the target from jumping too fast.
 func (c *PDController) SetTargetFromOffset(offset float64) {
 	c.isInterpolating = false
-	// Target is current position plus offset, clamped to limits
-	c.targetYaw = clamp(c.currentYaw+offset, -c.MaxYaw, c.MaxYaw)
+
+	// Calculate desired new target
+	desiredTarget := clamp(c.currentYaw+offset, -c.MaxYaw, c.MaxYaw)
+
+	// Apply velocity limiting: limit how fast target can change
+	if c.MaxTargetVelocity > 0 {
+		delta := desiredTarget - c.targetYaw
+		if delta > c.MaxTargetVelocity {
+			delta = c.MaxTargetVelocity
+		} else if delta < -c.MaxTargetVelocity {
+			delta = -c.MaxTargetVelocity
+		}
+		c.targetYaw = clamp(c.targetYaw+delta, -c.MaxYaw, c.MaxYaw)
+	} else {
+		// No velocity limiting
+		c.targetYaw = desiredTarget
+	}
+
 	c.isSettled = false
 }
 
@@ -215,8 +237,25 @@ func (c *PDController) SetTargetPitch(pitch float64) {
 
 // SetTargetPitchFromOffset sets the pitch target based on a camera-relative offset.
 // offset: how much to tilt from current position (positive = down, negative = up for Reachy)
+// Velocity limiting is applied to prevent the target from jumping too fast.
 func (c *PDController) SetTargetPitchFromOffset(offset float64) {
-	c.targetPitch = c.clampPitch(c.currentPitch + offset)
+	// Calculate desired new target
+	desiredTarget := c.clampPitch(c.currentPitch + offset)
+
+	// Apply velocity limiting: limit how fast target can change
+	if c.MaxTargetVelocity > 0 {
+		delta := desiredTarget - c.targetPitch
+		if delta > c.MaxTargetVelocity {
+			delta = c.MaxTargetVelocity
+		} else if delta < -c.MaxTargetVelocity {
+			delta = -c.MaxTargetVelocity
+		}
+		c.targetPitch = c.clampPitch(c.targetPitch + delta)
+	} else {
+		// No velocity limiting
+		c.targetPitch = desiredTarget
+	}
+
 	c.isPitchSettled = false
 }
 
@@ -300,6 +339,15 @@ func (c *PDController) NeedsBodyRotation(threshold, step float64) (bool, float64
 		return true, -step // Rotate body right
 	}
 	return false, 0
+}
+
+// SetMaxTargetVelocity updates the velocity limit for runtime tuning.
+// velocity: max radians per tick (0 = no limit)
+func (c *PDController) SetMaxTargetVelocity(velocity float64) {
+	if velocity < 0 {
+		velocity = 0
+	}
+	c.MaxTargetVelocity = velocity
 }
 
 // clamp limits a value to a range

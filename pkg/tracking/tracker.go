@@ -85,6 +85,10 @@ type Tracker struct {
 	isBreathing    bool
 	breathingPhase float64 // Current phase in radians (0 to 2π)
 
+	// Detection rate control (for runtime tuning)
+	detectTicker     *time.Ticker
+	detectTickerReset chan time.Duration
+
 	// Speech wobble offsets (additive to tracking output)
 	speechOffsets robot.Offset
 
@@ -124,17 +128,18 @@ func New(config Config, robotCtrl robot.HeadController, video VideoSource, model
 	}
 
 	return &Tracker{
-		config:         config,
-		robot:          robotCtrl,
-		video:          video,
-		detector:       detector,
-		world:          worldmodel.New(),
-		controller:     NewPDController(config),
-		perception:     NewPerception(config, detector),
-		lastLoggedYaw:  999.0,
-		isEnabled:      true, // Tracking enabled by default
-		isFaceEnabled:  true, // Face tracking enabled by default
-		isAudioEnabled: true, // Audio tracking enabled by default
+		config:            config,
+		robot:             robotCtrl,
+		video:             video,
+		detector:          detector,
+		world:             worldmodel.New(),
+		controller:        NewPDController(config),
+		perception:        NewPerception(config, detector),
+		lastLoggedYaw:     999.0,
+		isEnabled:         true,                      // Tracking enabled by default
+		isFaceEnabled:     true,                      // Face tracking enabled by default
+		isAudioEnabled:    true,                      // Audio tracking enabled by default
+		detectTickerReset: make(chan time.Duration, 1), // Buffer of 1 for non-blocking send
 	}, nil
 }
 
@@ -347,17 +352,17 @@ func (t *Tracker) GetWorld() *worldmodel.WorldModel {
 // Run starts the head tracking loops
 func (t *Tracker) Run(ctx context.Context) {
 	moveTicker := time.NewTicker(t.config.MovementInterval)
-	detectTicker := time.NewTicker(t.config.DetectionInterval)
+	t.detectTicker = time.NewTicker(t.config.DetectionInterval)
 	decayTicker := time.NewTicker(t.config.DecayInterval)
 	defer moveTicker.Stop()
-	defer detectTicker.Stop()
+	defer t.detectTicker.Stop()
 	defer decayTicker.Stop()
 
 	t.isRunning = true
 
 	fmt.Println("👁️  Head tracker started (local YuNet face detection)")
-	debug.Log("    Detection: %v, Movement: %v, Range: ±%.1f rad\n",
-		t.config.DetectionInterval, t.config.MovementInterval, t.config.YawRange)
+	debug.Log("    Detection: %v (%.1f Hz), Movement: %v, Range: ±%.1f rad\n",
+		t.config.DetectionInterval, 1.0/t.config.DetectionInterval.Seconds(), t.config.MovementInterval, t.config.YawRange)
 	debug.Log("    PD Control: Kp=%.2f, Kd=%.2f, DeadZone=%.2f rad\n",
 		t.config.Kp, t.config.Kd, t.config.ControlDeadZone)
 
@@ -406,10 +411,18 @@ func (t *Tracker) Run(ctx context.Context) {
 		case <-moveTicker.C:
 			t.updateMovement()
 
-		case <-detectTicker.C:
+		case <-t.detectTicker.C:
 			if t.video != nil {
 				go t.detectAndUpdate()
 			}
+
+		case newInterval := <-t.detectTickerReset:
+			// Reset detection ticker with new interval
+			t.detectTicker.Stop()
+			t.detectTicker = time.NewTicker(newInterval)
+			t.config.DetectionInterval = newInterval
+			hz := 1.0 / newInterval.Seconds()
+			debug.Log("🎛️  Detection rate changed to %.1f Hz (%v)\n", hz, newInterval)
 
 		case <-decayTicker.C:
 			dt := time.Since(lastDecay).Seconds()
@@ -790,12 +803,13 @@ func (t *Tracker) updateNoTarget() {
 
 		timeSinceFace := time.Since(t.lastFaceSeenAt)
 		if timeSinceFace >= t.config.ScanStartDelay {
-			// Start smooth interpolation to neutral
+			// Grace period expired - start smooth interpolation to neutral
 			t.isInterpolating = true
 			t.interpStartedAt = time.Now()
 			t.controller.InterpolateToNeutral(1 * time.Second)
-			debug.Logln("👁️  Face lost, returning to neutral")
+			debug.Logln("👁️  Grace period expired, returning to neutral")
 		}
+		// During grace period: hold current position (do nothing)
 		return
 	}
 
@@ -880,10 +894,12 @@ func (t *Tracker) detectAndUpdate() {
 		t.hasFaceTarget = false
 		t.mu.Unlock()
 
-		// Log occasional misses
+		// Log occasional misses and reset smoothing on face loss
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
 			debug.Logln("👁️  Lost face (5 consecutive misses)")
+			// Reset offset smoothing to avoid stale values when face returns
+			t.perception.ResetOffsetSmoothing()
 		}
 		return
 	}

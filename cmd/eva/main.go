@@ -562,6 +562,46 @@ func startWebDashboard(ctx context.Context) {
 		return videoClient.GetFrame()
 	}
 
+	// Configure tuning API callbacks
+	if headTracker != nil {
+		webServer.OnGetTuningParams = func() interface{} {
+			return headTracker.GetTuningParams()
+		}
+		webServer.OnSetTuningParams = func(params map[string]interface{}) {
+			tp := tracking.TuningParams{}
+			if v, ok := params["offset_smoothing_alpha"].(float64); ok {
+				tp.OffsetSmoothingAlpha = v
+			}
+			if v, ok := params["position_smoothing"].(float64); ok {
+				tp.PositionSmoothing = v
+			}
+			if v, ok := params["max_target_velocity"].(float64); ok {
+				tp.MaxTargetVelocity = v
+			}
+			if v, ok := params["kp"].(float64); ok {
+				tp.Kp = v
+			}
+			if v, ok := params["kd"].(float64); ok {
+				tp.Kd = v
+			}
+			if v, ok := params["control_dead_zone"].(float64); ok {
+				tp.ControlDeadZone = v
+			}
+			if v, ok := params["response_scale"].(float64); ok {
+				tp.ResponseScale = v
+			}
+			if v, ok := params["detection_hz"].(float64); ok {
+				tp.DetectionHz = v
+			}
+			headTracker.SetTuningParams(tp)
+			fmt.Printf("🎛️  Tuning params updated: %+v\n", tp)
+		}
+		webServer.OnSetTuningMode = func(enabled bool) {
+			headTracker.EnableTuningMode(enabled)
+			fmt.Printf("🎛️  Tuning mode: %v\n", enabled)
+		}
+	}
+
 	// Connect head tracker to web dashboard for state updates
 	if headTracker != nil {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
