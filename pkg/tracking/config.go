@@ -81,7 +81,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		// Timing - fast and responsive
-		DetectionInterval: 250 * time.Millisecond, // 4 detections per second
+		DetectionInterval: 50 * time.Millisecond,  // 20 detections per second (tuned up from 4Hz)
 		MovementInterval:  50 * time.Millisecond,  // 20 updates per second
 		DecayInterval:     100 * time.Millisecond, // 10 decay updates per second
 
@@ -91,17 +91,17 @@ func DefaultConfig() Config {
 		// Range - almost full 180° rotation
 		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
 
-		// PD Controller - tuned for smooth tracking (matches Python reachy)
+		// PD Controller - tuned for smooth tracking at 20Hz
 		Kp:                0.10, // Proportional: respond to error
-		Kd:                0.08, // Derivative: dampen oscillations
+		Kd:                0.12, // Derivative: dampen oscillations (tuned up from 0.08)
 		ControlDeadZone:   0.05, // ~3° dead zone
-		MaxTargetVelocity: 0.05, // ~3°/tick = ~60°/sec max target velocity
+		MaxTargetVelocity: 0.15, // Smooth acceleration (tuned up from 0.05)
 
 		// Perception
 		CameraFOV:            math.Pi / 2, // 90° horizontal FOV
 		PositionSmoothing:    0.6,         // 60% new, 40% old
 		JitterThreshold:      5.0,         // Ignore <5% position changes
-		OffsetSmoothingAlpha: 0.4,         // EMA alpha for offsets (0.4 = smooth but responsive)
+		OffsetSmoothingAlpha: 0.7,         // EMA alpha for offsets (tuned up from 0.4 for responsiveness)
 
 		// World Model
 		ConfidenceDecay: 0.3,              // Lose 30% confidence per second
@@ -138,7 +138,7 @@ func DefaultConfig() Config {
 		BreathingAntennaAmp: 5.0 * math.Pi / 180, // 5° antenna sway (like Python)
 
 		// Response scaling (matches Python reachy behavior)
-		ResponseScale: 0.6, // Scale down response to prevent overshoot
+		ResponseScale: 0.45, // Scale down response to prevent overshoot (tuned from 0.6)
 
 		// Audio-triggered speaker switching
 		AudioSwitchEnabled:       true,                  // Enable by default
