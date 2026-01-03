@@ -13,16 +13,22 @@ type Perception struct {
 	detector detection.Detector
 
 	// Camera properties
-	CameraFOV float64 // Horizontal field of view in radians
+	CameraFOV   float64 // Horizontal field of view in radians
+	VerticalFOV float64 // Vertical field of view in radians
 
-	// Smoothing
+	// Smoothing (horizontal)
 	smoothedPosition float64
 	hasLastPosition  bool
 	smoothingFactor  float64 // 0-1, higher = more weight on new reading
 
+	// Smoothing (vertical)
+	smoothedPositionY float64
+	hasLastPositionY  bool
+
 	// Detection state
-	lastValidPosition float64
-	consecutiveMisses int
+	lastValidPosition  float64
+	lastValidPositionY float64
+	consecutiveMisses  int
 }
 
 // NewPerception creates a new perception system
@@ -30,6 +36,7 @@ func NewPerception(config Config, detector detection.Detector) *Perception {
 	return &Perception{
 		detector:        detector,
 		CameraFOV:       config.CameraFOV,
+		VerticalFOV:     config.VerticalFOV,
 		smoothingFactor: config.PositionSmoothing,
 	}
 }
@@ -85,6 +92,23 @@ func (p *Perception) IsInFrame(worldAngle float64, currentYaw float64) bool {
 	return cameraAngle < p.CameraFOV/2
 }
 
+// FrameToPitch converts vertical frame position to pitch angle.
+// framePositionY: 0 = top of frame, 100 = bottom of frame
+// currentPitch: current head pitch in radians
+// Returns: target pitch in radians (positive = looking up, negative = looking down)
+func (p *Perception) FrameToPitch(framePositionY float64, currentPitch float64) float64 {
+	// Frame offset from center: -0.5 (top) to +0.5 (bottom)
+	frameOffset := (framePositionY - 50) / 100.0
+
+	// Convert to camera-relative pitch angle
+	// Face above center (negative offset) = need to pitch up (positive pitch)
+	// Face below center (positive offset) = need to pitch down (negative pitch)
+	cameraPitch := -frameOffset * p.VerticalFOV
+
+	// Add current pitch to get world-relative angle
+	return currentPitch + cameraPitch
+}
+
 // DetectFace captures a frame and detects face position using local vision.
 // Returns (framePosition, worldAngle, found).
 // The worldAngle is body-relative (for backwards compatibility).
@@ -96,14 +120,24 @@ func (p *Perception) DetectFace(video VideoSource, currentYaw float64) (float64,
 // DetectFaceRoom captures a frame and detects face position using local vision.
 // Returns (framePosition, roomAngle, found).
 // The roomAngle is in room coordinates (accounts for body rotation).
+// Note: For pitch tracking, use DetectFaceRoomWithPitch instead.
 func (p *Perception) DetectFaceRoom(video VideoSource, headYaw float64, bodyYaw float64) (float64, float64, bool) {
+	posX, _, roomYaw, _, found := p.DetectFaceRoomWithPitch(video, headYaw, 0, bodyYaw)
+	return posX, roomYaw, found
+}
+
+// DetectFaceRoomWithPitch captures a frame and detects face position with full 2D tracking.
+// Returns (positionX, positionY, roomYaw, targetPitch, found).
+// positionX/Y are frame positions (0-100%), roomYaw is in room coordinates,
+// targetPitch is the pitch angle needed to center the face vertically.
+func (p *Perception) DetectFaceRoomWithPitch(video VideoSource, headYaw, headPitch, bodyYaw float64) (float64, float64, float64, float64, bool) {
 	if video == nil || p.detector == nil {
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 
 	frame, err := video.CaptureJPEG()
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 
 	// Run local face detection
@@ -111,36 +145,46 @@ func (p *Perception) DetectFaceRoom(video VideoSource, headYaw float64, bodyYaw 
 	if err != nil {
 		debug.Log("👁️  Detection error: %v\n", err)
 		p.consecutiveMisses++
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 
 	// Select best face if multiple found
 	best := detection.SelectBest(detections)
 	if best == nil {
 		p.consecutiveMisses++
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 
 	// Convert detection center to frame position (0-100%)
-	cx, _ := best.Center()
-	position := cx * 100.0 // Normalized 0-1 to 0-100%
+	cx, cy := best.Center()
+	positionX := clamp(cx*100.0, 0, 100)
+	positionY := clamp(cy*100.0, 0, 100)
 
-	// Clamp to 0-100
-	position = clamp(position, 0, 100)
-
-	// Apply smoothing
+	// Apply smoothing to X (horizontal)
 	if p.hasLastPosition {
-		position = p.smoothingFactor*position + (1-p.smoothingFactor)*p.smoothedPosition
+		positionX = p.smoothingFactor*positionX + (1-p.smoothingFactor)*p.smoothedPosition
 	}
-	p.smoothedPosition = position
+	p.smoothedPosition = positionX
 	p.hasLastPosition = true
-	p.lastValidPosition = position
+	p.lastValidPosition = positionX
+
+	// Apply smoothing to Y (vertical)
+	if p.hasLastPositionY {
+		positionY = p.smoothingFactor*positionY + (1-p.smoothingFactor)*p.smoothedPositionY
+	}
+	p.smoothedPositionY = positionY
+	p.hasLastPositionY = true
+	p.lastValidPositionY = positionY
+
 	p.consecutiveMisses = 0
 
-	// Convert to room coordinates
-	roomAngle := p.FrameToRoomAngle(position, headYaw, bodyYaw)
+	// Convert to room coordinates (yaw)
+	roomYaw := p.FrameToRoomAngle(positionX, headYaw, bodyYaw)
 
-	return position, roomAngle, true
+	// Calculate target pitch
+	targetPitch := p.FrameToPitch(positionY, headPitch)
+
+	return positionX, positionY, roomYaw, targetPitch, true
 }
 
 // GetConsecutiveMisses returns how many consecutive detections have failed

@@ -44,6 +44,16 @@ type Config struct {
 	// Body rotation (when head reaches mechanical limits)
 	BodyRotationThreshold float64 // Trigger rotation when head yaw exceeds this fraction of YawRange (0-1)
 	BodyRotationStep      float64 // How much to rotate body per trigger (radians)
+
+	// Pitch (up/down) tracking
+	PitchRangeUp   float64 // Max pitch looking up (positive radians)
+	PitchRangeDown float64 // Max pitch looking down (positive radians, applied as negative)
+	VerticalFOV    float64 // Vertical field of view in radians
+
+	// Pitch PD gains (0 = inherit from Kp/Kd)
+	KpPitch       float64 // Proportional gain for pitch (0 = use Kp)
+	KdPitch       float64 // Derivative gain for pitch (0 = use Kd)
+	PitchDeadZone float64 // Dead zone for pitch (0 = use ControlDeadZone)
 }
 
 // DefaultConfig returns the recommended configuration for responsive tracking
@@ -86,7 +96,41 @@ func DefaultConfig() Config {
 		// Body rotation
 		BodyRotationThreshold: 0.8, // Trigger when head yaw > 80% of max range
 		BodyRotationStep:      0.5, // Rotate body by 0.5 rad (~29°) per trigger
+
+		// Pitch tracking (asymmetric range is typical for head mechanics)
+		PitchRangeUp:   0.4,         // +23° up
+		PitchRangeDown: 0.3,         // -17° down (less mechanical range)
+		VerticalFOV:    math.Pi / 3, // 60° vertical FOV (narrower than horizontal)
+
+		// Pitch gains (0 = inherit from yaw gains)
+		KpPitch:       0, // Use Kp
+		KdPitch:       0, // Use Kd
+		PitchDeadZone: 0, // Use ControlDeadZone
 	}
+}
+
+// EffectiveKpPitch returns the pitch proportional gain (inherits from Kp if 0)
+func (c Config) EffectiveKpPitch() float64 {
+	if c.KpPitch > 0 {
+		return c.KpPitch
+	}
+	return c.Kp
+}
+
+// EffectiveKdPitch returns the pitch derivative gain (inherits from Kd if 0)
+func (c Config) EffectiveKdPitch() float64 {
+	if c.KdPitch > 0 {
+		return c.KdPitch
+	}
+	return c.Kd
+}
+
+// EffectivePitchDeadZone returns the pitch dead zone (inherits from ControlDeadZone if 0)
+func (c Config) EffectivePitchDeadZone() float64 {
+	if c.PitchDeadZone > 0 {
+		return c.PitchDeadZone
+	}
+	return c.ControlDeadZone
 }
 
 // SlowConfig returns a configuration for slower, smoother tracking
