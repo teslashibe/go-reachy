@@ -79,6 +79,16 @@ func (c *PDController) SetTarget(worldAngle float64) {
 	c.isSettled = false
 }
 
+// SetTargetFromOffset sets the target based on a camera-relative offset.
+// offset: how much to turn from current position (positive = left, negative = right)
+// This is self-correcting: offset should approach 0 as face becomes centered.
+func (c *PDController) SetTargetFromOffset(offset float64) {
+	c.isInterpolating = false
+	// Target is current position plus offset, clamped to limits
+	c.targetYaw = clamp(c.currentYaw+offset, -c.MaxYaw, c.MaxYaw)
+	c.isSettled = false
+}
+
 // InterpolateToNeutral starts smooth interpolation back to center.
 // The head will smoothly move from current position to 0 over the given duration.
 func (c *PDController) InterpolateToNeutral(duration time.Duration) {
@@ -200,6 +210,13 @@ func (c *PDController) GetTargetYaw() float64 {
 // Positive = look up, negative = look down.
 func (c *PDController) SetTargetPitch(pitch float64) {
 	c.targetPitch = c.clampPitch(pitch)
+	c.isPitchSettled = false
+}
+
+// SetTargetPitchFromOffset sets the pitch target based on a camera-relative offset.
+// offset: how much to tilt from current position (positive = down, negative = up for Reachy)
+func (c *PDController) SetTargetPitchFromOffset(offset float64) {
+	c.targetPitch = c.clampPitch(c.currentPitch + offset)
 	c.isPitchSettled = false
 }
 

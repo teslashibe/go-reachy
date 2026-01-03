@@ -91,6 +91,11 @@ type Tracker struct {
 
 	// Error tracking (avoid log spam)
 	lastRobotError time.Time
+
+	// Camera-relative offsets (from latest detection)
+	lastYawOffset   float64 // How much to turn horizontally
+	lastPitchOffset float64 // How much to tilt vertically
+	hasFaceTarget   bool    // Whether we have a recent face detection
 }
 
 // New creates a new head tracker with local face detection.
@@ -438,6 +443,9 @@ func (t *Tracker) updateMovement() {
 	t.mu.RLock()
 	enabled := t.isEnabled
 	disabledAt := t.disabledAt
+	hasFace := t.hasFaceTarget
+	yawOffset := t.lastYawOffset
+	pitchOffset := t.lastPitchOffset
 	t.mu.RUnlock()
 
 	if !enabled {
@@ -446,13 +454,21 @@ func (t *Tracker) updateMovement() {
 		return
 	}
 
-	// Get target from world model (priority: Face > Audio > None)
-	targetAngle, source, hasTarget := t.world.GetTarget()
+	// Check for audio-only target (when no face but audio DOA active)
+	audioAngle, hasAudio := t.getAudioTarget()
 
-	if !hasTarget {
+	if !hasFace && !hasAudio {
 		// No target - check if we should scan or interpolate to neutral
 		t.updateNoTarget()
 		return
+	}
+
+	// Determine source and target
+	var source string
+	if hasFace {
+		source = "face"
+	} else {
+		source = "audio"
 	}
 
 	// We have a target - stop scanning, breathing, and interpolation
@@ -477,8 +493,23 @@ func (t *Tracker) updateMovement() {
 		t.lastFaceSeenAt = time.Now()
 	}
 
-	// Update controller target
-	t.controller.SetTarget(targetAngle)
+	// Apply response scaling to offsets
+	scale := t.config.ResponseScale
+	if scale <= 0 {
+		scale = 1.0
+	}
+
+	// Set controller targets using offset-based approach
+	if hasFace {
+		// Face tracking: use camera-relative offsets (self-correcting)
+		t.controller.SetTargetFromOffset(yawOffset * scale)
+		t.controller.SetTargetPitchFromOffset(pitchOffset * scale)
+	} else if hasAudio {
+		// Audio tracking: turn toward audio direction
+		// Audio angle is already relative to Eva's current orientation
+		currentYaw := t.controller.GetCurrentYaw()
+		t.controller.SetTarget(currentYaw + audioAngle*scale)
+	}
 
 	// Get next yaw from PD controller
 	newYaw, yawShouldMove := t.controller.Update()
@@ -486,15 +517,22 @@ func (t *Tracker) updateMovement() {
 	// Get next pitch from PD controller
 	newPitch, pitchShouldMove := t.controller.UpdatePitch()
 
+	// Debug: log when we're not moving and why
 	if !yawShouldMove && !pitchShouldMove {
+		// Only log occasionally to avoid spam
+		if hasFace {
+			debug.Log("⏸️  Not moving: yaw error=%.3f (deadzone=%.3f), at limit=%v\n",
+				t.controller.GetError(), t.config.ControlDeadZone,
+				math.Abs(t.controller.GetCurrentYaw()) > t.config.YawRange*0.95)
+		}
 		return
 	}
 
 	// Output the result (combined yaw and pitch)
-	t.outputPose(newYaw, newPitch, targetAngle)
+	t.outputPose(newYaw, newPitch, t.controller.GetTargetYaw())
 
-	// Check if body rotation is needed (head at mechanical limits)
-	t.checkBodyRotation()
+	// Check if body rotation is needed using offset-based trigger
+	t.checkBodyRotationOffset(yawOffset)
 }
 
 // outputPose sends yaw and pitch to either offset handler or direct robot control
@@ -504,17 +542,12 @@ func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 	speech := t.speechOffsets
 	t.mu.RUnlock()
 
-	// Apply response scaling to reduce overshoot (matches Python reachy behavior)
-	scale := t.config.ResponseScale
-	if scale <= 0 {
-		scale = 1.0 // Fallback to full response if not configured
-	}
-	scaledYaw := yaw * scale
-	scaledPitch := pitch * scale
+	// Note: Response scaling is now applied to offsets in updateMovement,
+	// so yaw/pitch coming in are already scaled appropriately.
 
 	// Add speech wobble offsets for natural speaking gestures
-	finalYaw := scaledYaw + speech.Yaw
-	finalPitch := scaledPitch + speech.Pitch
+	finalYaw := yaw + speech.Yaw
+	finalPitch := pitch + speech.Pitch
 	finalRoll := speech.Roll // Roll only from speech (tracking doesn't use roll)
 
 	if handler != nil {
@@ -560,6 +593,53 @@ func (t *Tracker) checkBodyRotation() {
 		debug.Log("🔄 Body rotation triggered: direction=%.2f rad\n", direction)
 		handler(direction)
 	}
+}
+
+// checkBodyRotationOffset checks if body rotation is needed using offset-based trigger.
+// This triggers when: head is near limit AND offset still points in same direction.
+func (t *Tracker) checkBodyRotationOffset(yawOffset float64) {
+	t.mu.RLock()
+	handler := t.onBodyRotation
+	t.mu.RUnlock()
+
+	if handler == nil {
+		return
+	}
+
+	currentYaw := t.controller.GetCurrentYaw()
+	limit := t.config.YawRange * t.config.BodyRotationThreshold
+	step := t.config.BodyRotationStep
+
+	// Trigger if head near limit AND face still off-center in that direction
+	// Positive yaw = looking left, positive offset = face on left (need to turn more left)
+	if currentYaw > limit*0.9 && yawOffset > 0.05 {
+		debug.Log("🔄 Body rotation triggered (offset): head at %.2f, offset %.2f → rotate left\n", currentYaw, yawOffset)
+		handler(step)
+	} else if currentYaw < -limit*0.9 && yawOffset < -0.05 {
+		debug.Log("🔄 Body rotation triggered (offset): head at %.2f, offset %.2f → rotate right\n", currentYaw, yawOffset)
+		handler(-step)
+	}
+}
+
+// getAudioTarget returns audio-based target offset if available
+func (t *Tracker) getAudioTarget() (float64, bool) {
+	t.mu.RLock()
+	audioEnabled := t.isAudioEnabled
+	t.mu.RUnlock()
+
+	if !audioEnabled {
+		return 0, false
+	}
+
+	// Check if there's an active audio source
+	audio := t.world.GetAudioSource()
+	if audio == nil || !audio.Speaking || audio.Confidence < 0.3 {
+		return 0, false
+	}
+
+	// Audio angle is relative to Eva's current orientation
+	// Return as offset from current position
+	return audio.Angle, true
 }
 
 // updateNoTarget handles the case when no face is detected
@@ -658,16 +738,16 @@ func (t *Tracker) detectAndUpdate() {
 		return
 	}
 
-	currentYaw := t.controller.GetCurrentYaw()
-	currentPitch := t.controller.GetCurrentPitch()
-	bodyYaw := t.world.GetBodyYaw()
-
-	// Detect face in current frame using local detector (room coordinates + pitch + depth)
-	frameX, frameY, roomYaw, targetPitch, faceWidth, found := t.perception.DetectFaceRoomFull(
-		t.video, currentYaw, currentPitch, bodyYaw,
-	)
+	// Detect face using camera-relative offset approach
+	// No dependency on knowing head or body position - self-correcting
+	yawOffset, pitchOffset, faceWidth, found := t.perception.DetectFaceOffset(t.video)
 
 	if !found {
+		// Clear face target when no face detected
+		t.mu.Lock()
+		t.hasFaceTarget = false
+		t.mu.Unlock()
+
 		// Log occasional misses
 		misses := t.perception.GetConsecutiveMisses()
 		if misses == 5 {
@@ -676,27 +756,39 @@ func (t *Tracker) detectAndUpdate() {
 		return
 	}
 
-	// Update world model with detection (room coordinates + depth estimation)
-	// Using "primary" as the entity ID for single-person tracking
-	t.world.UpdateEntityWithDepth("primary", roomYaw, frameX, faceWidth)
+	// Get frame position for logging and world model
+	frameX, frameY := t.perception.GetFramePosition()
 
-	// Update pitch target
-	t.controller.SetTargetPitch(targetPitch)
+	// Update world model with frame-based detection
+	// Store frame position, not room angle - world model handles confidence
+	t.world.UpdateEntityWithDepth("primary", frameX, frameX, faceWidth)
+
+	// Store the current offsets for use by updateMovement
+	t.mu.Lock()
+	t.lastYawOffset = yawOffset
+	t.lastPitchOffset = pitchOffset
+	t.hasFaceTarget = true
+	t.mu.Unlock()
 
 	// Log detection with distance
 	entity := t.world.GetFocusTarget()
-	if entity != nil && entity.Distance > 0 {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad, dist %.1fm\n",
-			frameX, frameY, roomYaw, targetPitch, entity.Distance)
+	dist := float64(0)
+	if entity != nil {
+		dist = entity.Distance
+	}
+	if dist > 0 {
+		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad, dist %.1fm\n",
+			frameX, frameY, yawOffset, pitchOffset, dist)
 	} else {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → room %.2f rad, pitch %.2f rad\n",
-			frameX, frameY, roomYaw, targetPitch)
+		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad\n",
+			frameX, frameY, yawOffset, pitchOffset)
 	}
 
 	// Update dashboard
 	if t.state != nil {
-		t.state.UpdateFacePosition(frameX, roomYaw)
-		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → room %.2f", frameX, roomYaw))
+		currentYaw := t.controller.GetCurrentYaw()
+		t.state.UpdateFacePosition(frameX, currentYaw)
+		t.state.AddLog("face", fmt.Sprintf("Face at %.0f%% → offset %.2f", frameX, yawOffset))
 	}
 }
 
