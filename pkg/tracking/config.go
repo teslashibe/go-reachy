@@ -132,7 +132,7 @@ func DefaultConfig() Config {
 		// Design: Head tracks face (fast), body follows to center head (slow)
 		BodyAlignmentEnabled:   true,                   // Enable by default
 		BodyAlignmentDelay:     2 * time.Second,        // Wait for head tracking to settle
-		BodyAlignmentThreshold: 0.10,                   // ~6° - sensitive enough for return-to-center
+		BodyAlignmentThreshold: 0.15,                   // ~9° - trigger when head moderately turned
 		BodyAlignmentSpeed:     0.25,                   // Moderate rotation (rad/s)
 		BodyAlignmentDeadZone:  0.05,                   // ~3° stop threshold
 		BodyAlignmentCooldown:  150 * time.Millisecond, // Smooth continuous movement
