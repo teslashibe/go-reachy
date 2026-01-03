@@ -19,9 +19,10 @@ type Config struct {
 	YawRange float64 // Maximum yaw in radians (symmetric: ±YawRange)
 
 	// PD Controller
-	Kp              float64 // Proportional gain
-	Kd              float64 // Derivative gain (dampening)
-	ControlDeadZone float64 // Don't move if error < this (radians)
+	Kp                float64 // Proportional gain
+	Kd                float64 // Derivative gain (dampening)
+	ControlDeadZone   float64 // Don't move if error < this (radians)
+	MaxTargetVelocity float64 // Max target change per tick (radians, 0 = no limit)
 
 	// Perception
 	CameraFOV            float64 // Horizontal field of view in radians
@@ -91,9 +92,10 @@ func DefaultConfig() Config {
 		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
 
 		// PD Controller - tuned for smooth tracking (matches Python reachy)
-		Kp:              0.10, // Proportional: respond to error
-		Kd:              0.08, // Derivative: dampen oscillations
-		ControlDeadZone: 0.05, // ~3° dead zone
+		Kp:                0.10, // Proportional: respond to error
+		Kd:                0.08, // Derivative: dampen oscillations
+		ControlDeadZone:   0.05, // ~3° dead zone
+		MaxTargetVelocity: 0.05, // ~3°/tick = ~60°/sec max target velocity
 
 		// Perception
 		CameraFOV:            math.Pi / 2, // 90° horizontal FOV
