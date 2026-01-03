@@ -14,17 +14,30 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
-	"github.com/teslashibe/go-reachy/pkg/realtime"
+	"github.com/teslashibe/go-reachy/pkg/eva"
+	"github.com/teslashibe/go-reachy/pkg/memory"
+	"github.com/teslashibe/go-reachy/pkg/openai"
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
+	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
+	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
 
 const (
-	robotIP = "192.168.68.77"
-	sshUser = "pollen"
-	sshPass = "root"
+	defaultRobotIP = "192.168.68.77"
+	sshUser        = "pollen"
+	sshPass        = "root"
 )
+
+var robotIP = defaultRobotIP
+
+func init() {
+	if ip := os.Getenv("ROBOT_IP"); ip != "" {
+		robotIP = ip
+	}
+}
 
 // Eva's personality and instructions
 const evaInstructions = `You are Eva, a friendly and curious robot with expressive antenna ears and a camera. You're warm, engaging, and love meeting people.
@@ -86,16 +99,22 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
-	realtimeClient *realtime.Client
+	realtimeClient *openai.Client
 	videoClient    *video.Client
-	audioPlayer    *realtime.AudioPlayer
-	robot          *realtime.SimpleRobotController
-	memory         *realtime.Memory
+	audioPlayer    *audio.Player
+	robotCtrl      *robot.HTTPController
+	memoryStore    *memory.Memory
 	webServer      *web.Server
 	headTracker    *tracking.Tracker
+	ttsProvider    tts.Provider      // HTTP TTS provider
+	ttsStreaming   *tts.ElevenLabsWS // WebSocket streaming TTS
+	objectDetector *detection.YOLODetector
 
 	speaking   bool
 	speakingMu sync.Mutex
+
+	// TTS mode: "realtime", "elevenlabs", "elevenlabs-streaming", or "openai-tts"
+	ttsMode string
 
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
@@ -125,8 +144,14 @@ func (a *webStateAdapter) AddLog(logType, message string) {
 func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
+	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
+	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	flag.Parse()
 	debug.Enabled = *debugFlag
+	if *robotIPFlag != "" {
+		robotIP = *robotIPFlag
+	}
 
 	fmt.Println("🤖 Eva 2.0 - Low-Latency Conversational Agent")
 	fmt.Println("==============================================")
@@ -137,6 +162,121 @@ func main() {
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	if openaiKey == "" {
 		fmt.Println("❌ Set OPENAI_API_KEY!")
+		os.Exit(1)
+	}
+
+	// Set TTS mode
+	ttsMode = *ttsFlag
+	switch ttsMode {
+	case "realtime":
+		fmt.Println("🎙️  TTS: OpenAI Realtime (streaming audio)")
+	case "elevenlabs":
+		elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+		if elevenLabsKey == "" {
+			fmt.Println("❌ Set ELEVENLABS_API_KEY for ElevenLabs TTS!")
+			os.Exit(1)
+		}
+		voiceID := *ttsVoice
+		if voiceID == "" {
+			voiceID = os.Getenv("ELEVENLABS_VOICE_ID")
+		}
+		if voiceID == "" {
+			voiceID = "charlotte" // Default
+		}
+		// Map named presets to voice IDs
+		voicePresets := map[string]string{
+			"charlotte": "XB0fDUnXU5powFXDhCwa", // British female, warm
+			"aria":      "9BWtsMINqrJLrRacOk9x", // American female, expressive
+			"sarah":     "EXAVITQu4vr4xnSDxMaL", // American female, soft
+			"lily":      "pFZP5JQG7iQjIQuC4Bku", // British female, warm
+			"rachel":    "21m00Tcm4TlvDq8ikWAM", // American female, calm
+			"domi":      "AZnzlk1XvdvUeBnXmlld", // American female, strong
+			"bella":     "EXAVITQu4vr4xnSDxMaL", // American female, soft
+			"elli":      "MF3mGyEYCl7XYWbV9V6O", // American female, young
+			"josh":      "TxGEqnHWrfWFTfGW9XjX", // American male, deep
+			"adam":      "pNInz6obpgDQGcFmaJgB", // American male, deep
+			"sam":       "yoZ06aMxZJJ28mfd3POQ", // American male, raspy
+		}
+		if preset, ok := voicePresets[voiceID]; ok {
+			fmt.Printf("   Voice preset: %s\n", voiceID)
+			voiceID = preset
+		}
+		var err error
+		ttsProvider, err = tts.NewElevenLabs(
+			tts.WithAPIKey(elevenLabsKey),
+			tts.WithVoice(voiceID),
+			tts.WithModel(tts.ModelFlashV2_5), // Fastest model (~150ms)
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ ElevenLabs init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("🎙️  TTS: ElevenLabs (voice: %s)\n", voiceID)
+	case "elevenlabs-streaming":
+		elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY")
+		if elevenLabsKey == "" {
+			fmt.Println("❌ Set ELEVENLABS_API_KEY for ElevenLabs TTS!")
+			os.Exit(1)
+		}
+		voiceID := *ttsVoice
+		if voiceID == "" {
+			voiceID = os.Getenv("ELEVENLABS_VOICE_ID")
+		}
+		if voiceID == "" {
+			voiceID = "charlotte"
+		}
+		// Map named presets to voice IDs
+		voicePresets := map[string]string{
+			"charlotte": "XB0fDUnXU5powFXDhCwa",
+			"aria":      "9BWtsMINqrJLrRacOk9x",
+			"sarah":     "EXAVITQu4vr4xnSDxMaL",
+			"lily":      "pFZP5JQG7iQjIQuC4Bku",
+			"rachel":    "21m00Tcm4TlvDq8ikWAM",
+			"domi":      "AZnzlk1XvdvUeBnXmlld",
+			"bella":     "EXAVITQu4vr4xnSDxMaL",
+			"elli":      "MF3mGyEYCl7XYWbV9V6O",
+			"josh":      "TxGEqnHWrfWFTfGW9XjX",
+			"adam":      "pNInz6obpgDQGcFmaJgB",
+			"sam":       "yoZ06aMxZJJ28mfd3POQ",
+		}
+		if preset, ok := voicePresets[voiceID]; ok {
+			fmt.Printf("   Voice preset: %s\n", voiceID)
+			voiceID = preset
+		}
+		var err error
+		ttsStreaming, err = tts.NewElevenLabsWS(
+			tts.WithAPIKey(elevenLabsKey),
+			tts.WithVoice(voiceID),
+			tts.WithModel(tts.ModelFlashV2_5),
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ ElevenLabs streaming init failed: %v\n", err)
+			os.Exit(1)
+		}
+		// Pre-warm WebSocket connection
+		fmt.Printf("🎙️  TTS: ElevenLabs WebSocket Streaming (voice: %s)\n", voiceID)
+		fmt.Println("   Pre-warming WebSocket connection...")
+		if err := ttsStreaming.Connect(context.Background()); err != nil {
+			fmt.Printf("⚠️  WebSocket pre-warm failed (will retry): %v\n", err)
+		} else {
+			fmt.Println("   WebSocket connected ✓")
+		}
+	case "openai-tts":
+		var err error
+		ttsProvider, err = tts.NewOpenAI(
+			tts.WithAPIKey(openaiKey),
+			tts.WithVoice("shimmer"),
+			tts.WithOutputFormat(tts.EncodingPCM24),
+		)
+		if err != nil {
+			fmt.Printf("❌ OpenAI TTS init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🎙️  TTS: OpenAI TTS API")
+	default:
+		fmt.Printf("❌ Unknown TTS provider: %s (use: realtime, elevenlabs, elevenlabs-streaming, openai-tts)\n", ttsMode)
 		os.Exit(1)
 	}
 
@@ -182,14 +322,25 @@ func main() {
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robot, videoClient, modelPath)
+	headTracker, err = tracking.New(tracking.DefaultConfig(), robotCtrl, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
 		fmt.Println("✅")
+	}
 
-		// Connect audio DOA from go-eva
+	// Initialize YOLO object detection
+	fmt.Print("🔍 Initializing object detection... ")
+	objectDetector, err = detection.NewYOLO(detection.DefaultYOLOConfig())
+	if err != nil {
+		fmt.Printf("⚠️  Disabled: %v\n", err)
+	} else {
+		fmt.Println("✅")
+	}
+
+	// Connect audio DOA from go-eva
+	if headTracker != nil {
 		fmt.Print("🎤 Connecting to go-eva audio DOA... ")
 		audioClient := audio.NewClient(robotIP)
 		if err := audioClient.Health(); err != nil {
@@ -198,6 +349,22 @@ func main() {
 			headTracker.SetAudioClient(audioClient)
 			fmt.Println("✅")
 		}
+
+		// Set up automatic body rotation when head reaches limits
+		headTracker.SetBodyRotationHandler(func(direction float64) {
+			currentBody := headTracker.GetBodyYaw()
+			newBody := currentBody + direction
+			// Clamp to reasonable body rotation range (±1.0 rad ≈ ±57°)
+			if newBody > 1.0 {
+				newBody = 1.0
+			} else if newBody < -1.0 {
+				newBody = -1.0
+			}
+			debug.Log("🔄 Body rotation: %.2f → %.2f rad\n", currentBody, newBody)
+			robotCtrl.SetBodyYaw(newBody)
+			headTracker.SetBodyYaw(newBody) // Sync world model
+		})
+		fmt.Println("🔄 Auto body rotation enabled")
 	}
 
 	// Connect to OpenAI Realtime API
@@ -261,16 +428,16 @@ func main() {
 
 func initialize() error {
 	// Create robot controller
-	robot = realtime.NewSimpleRobotController(robotIP)
+	robotCtrl = robot.NewHTTPController(robotIP)
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
 	homeDir, _ := os.UserHomeDir()
 	memoryPath := homeDir + "/.eva/memory.json"
-	memory = realtime.NewMemoryWithFile(memoryPath)
+	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
 
 	// Create audio player
-	audioPlayer = realtime.NewAudioPlayer(robotIP, sshUser, sshPass)
+	audioPlayer = audio.NewPlayer(robotIP, sshUser, sshPass)
 	audioPlayer.OnPlaybackStart = func() {
 		speakingMu.Lock()
 		speaking = true
@@ -280,6 +447,42 @@ func initialize() error {
 		speakingMu.Lock()
 		speaking = false
 		speakingMu.Unlock()
+	}
+
+	// Wire up streaming TTS audio callback (if using WebSocket streaming)
+	if ttsStreaming != nil {
+		ttsStreaming.OnAudio = func(pcmData []byte) {
+			// Stream audio chunks directly to the player for lowest latency
+			if err := audioPlayer.AppendPCMChunk(pcmData); err != nil {
+				debug.Log("⚠️  Streaming audio chunk error: %v\n", err)
+			}
+		}
+		ttsStreaming.OnConnected = func() {
+			debug.Log("🔌 ElevenLabs WebSocket connected\n")
+		}
+		ttsStreaming.OnDisconnect = func() {
+			debug.Log("🔌 ElevenLabs WebSocket disconnected\n")
+		}
+		ttsStreaming.OnError = func(err error) {
+			fmt.Printf("⚠️  Streaming TTS error: %v\n", err)
+		}
+		ttsStreaming.OnStreamComplete = func() {
+			// Audio stream complete, flush the player to finish playback
+			fmt.Println("🗣️  [streaming audio complete, flushing...]")
+			if err := audioPlayer.FlushAndPlay(); err != nil {
+				fmt.Printf("⚠️  Audio flush error: %v\n", err)
+			}
+			fmt.Println("🗣️  [done]")
+
+			// Update web dashboard
+			if webServer != nil {
+				webServer.UpdateState(func(s *web.EvaState) {
+					s.Speaking = false
+					s.Listening = true
+				})
+				webServer.AddLog("speech", "Streaming audio done")
+			}
+		}
 	}
 
 	return nil
@@ -294,17 +497,18 @@ func startWebDashboard(ctx context.Context) {
 		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
 
 		// Get tool config
-		cfg := realtime.EvaToolsConfig{
-			Robot:        robot,
-			Memory:       memory,
-			Vision:       &videoVisionAdapter{videoClient},
-			GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
-			AudioPlayer:  audioPlayer,
-			Tracker:      headTracker,
+		cfg := eva.ToolsConfig{
+			Robot:          robotCtrl,
+			Memory:         memoryStore,
+			Vision:         &videoVisionAdapter{videoClient},
+			ObjectDetector: &yoloAdapter{objectDetector},
+			GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
+			AudioPlayer:    audioPlayer,
+			Tracker:        headTracker,
 		}
 
 		// Get tools and find the one requested
-		tools := realtime.EvaTools(cfg)
+		tools := eva.Tools(cfg)
 		for _, tool := range tools {
 			if tool.Name == name {
 				result, err := tool.Handler(args)
@@ -405,7 +609,7 @@ func streamCameraToWeb(ctx context.Context) {
 }
 
 func wakeUpRobot() error {
-	status, err := robot.GetDaemonStatus()
+	status, err := robotCtrl.GetDaemonStatus()
 	if err != nil {
 		return err
 	}
@@ -413,7 +617,7 @@ func wakeUpRobot() error {
 		return fmt.Errorf("daemon not running: %s", status)
 	}
 	// Set volume to max
-	robot.SetVolume(100)
+	robotCtrl.SetVolume(100)
 	return nil
 }
 
@@ -423,23 +627,29 @@ func connectWebRTC() error {
 }
 
 func connectRealtime(apiKey string) error {
-	realtimeClient = realtime.NewClient(apiKey)
+	realtimeClient = openai.NewClient(apiKey)
 
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
-	toolsCfg := realtime.EvaToolsConfig{
-		Robot:        robot,
-		Memory:       memory,
-		Vision:       &videoVisionAdapter{videoClient},
-		GoogleAPIKey: os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:  audioPlayer,
-		Tracker:      headTracker, // For body rotation sync
+	toolsCfg := eva.ToolsConfig{
+		Robot:          robotCtrl,
+		Memory:         memoryStore,
+		Vision:         &videoVisionAdapter{videoClient},
+		ObjectDetector: &yoloAdapter{objectDetector},
+		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:    audioPlayer,
+		Tracker:        headTracker, // For body rotation sync
 	}
-	tools := realtime.EvaTools(toolsCfg)
+	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {
-		realtimeClient.RegisterTool(tool)
+		realtimeClient.RegisterTool(openai.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			Handler:     tool.Handler,
+		})
 	}
 
 	// Set up callbacks
@@ -466,16 +676,31 @@ func connectRealtime(apiKey string) error {
 			}
 			fmt.Print(text)
 			evaCurrentResponse += text
+
+			// Stream text to ElevenLabs WebSocket for lowest latency
+			if ttsMode == "elevenlabs-streaming" && ttsStreaming != nil {
+				if err := ttsStreaming.SendText(text); err != nil {
+					debug.Log("⚠️  Streaming TTS send error: %v\n", err)
+				}
+			}
 		}
 	}
 
 	realtimeClient.OnAudioDelta = func(audioBase64 string) {
-		if err := audioPlayer.AppendAudio(audioBase64); err != nil {
-			fmt.Printf("⚠️  Audio append error: %v\n", err)
+		// Only use OpenAI audio in realtime mode
+		if ttsMode == "realtime" {
+			if err := audioPlayer.AppendAudio(audioBase64); err != nil {
+				fmt.Printf("⚠️  Audio append error: %v\n", err)
+			}
 		}
 	}
 
 	realtimeClient.OnAudioDone = func() {
+		// Only handle realtime TTS mode here
+		if ttsMode != "realtime" {
+			return // External TTS handled in OnTranscriptDone
+		}
+
 		// End the Eva response line
 		if evaResponseStarted {
 			fmt.Println() // newline after streaming text
@@ -493,6 +718,7 @@ func connectRealtime(apiKey string) error {
 			webServer.AddLog("speech", "Playing audio...")
 		}
 
+		// Use OpenAI Realtime audio
 		fmt.Println("🗣️  [playing audio...]")
 		if err := audioPlayer.FlushAndPlay(); err != nil {
 			fmt.Printf("⚠️  Audio error: %v\n", err)
@@ -507,6 +733,78 @@ func connectRealtime(apiKey string) error {
 			})
 			webServer.AddLog("speech", "Audio done")
 		}
+		evaCurrentResponse = ""
+	}
+
+	// OnTranscriptDone fires when OpenAI's transcript is complete
+	// Use this for external TTS (ElevenLabs/OpenAI TTS) to ensure we have full text
+	realtimeClient.OnTranscriptDone = func() {
+		// Only handle external TTS modes here
+		if ttsMode == "realtime" {
+			return // Realtime audio handled in OnAudioDone
+		}
+
+		// End the Eva response line
+		if evaResponseStarted {
+			fmt.Println() // newline after streaming text
+			evaResponseStarted = false
+		}
+
+		// Skip if no text to synthesize
+		if evaCurrentResponse == "" {
+			return
+		}
+
+		// Update web dashboard with Eva's response
+		if webServer != nil {
+			webServer.UpdateState(func(s *web.EvaState) {
+				s.Speaking = true
+				s.Listening = false
+				s.LastEvaMessage = evaCurrentResponse
+			})
+			webServer.AddConversation("eva", evaCurrentResponse)
+			webServer.AddLog("speech", "Synthesizing with "+ttsMode+"...")
+		}
+
+		// Streaming TTS: just flush to signal end of text
+		if ttsMode == "elevenlabs-streaming" && ttsStreaming != nil {
+			debug.Log("🗣️  Flushing streaming TTS...\n")
+			if err := ttsStreaming.Flush(); err != nil {
+				fmt.Printf("⚠️  Streaming TTS flush error: %v\n", err)
+			}
+			// Audio playback handled by ttsStreaming.OnAudio callback
+			evaCurrentResponse = ""
+			return
+		}
+
+		// Use HTTP TTS provider (ElevenLabs or OpenAI TTS)
+		if ttsProvider != nil {
+			fmt.Printf("🗣️  [synthesizing with %s...]\n", ttsMode)
+			go func(text string) {
+				result, err := ttsProvider.Synthesize(context.Background(), text)
+				if err != nil {
+					fmt.Printf("⚠️  TTS error: %v\n", err)
+					return
+				}
+				fmt.Printf("🗣️  TTS: %d bytes, %d latency\n", len(result.Audio), result.LatencyMs)
+
+				// Play the PCM audio
+				if err := audioPlayer.PlayPCM(result.Audio); err != nil {
+					fmt.Printf("⚠️  Audio playback error: %v\n", err)
+				}
+				fmt.Println("🗣️  [done]")
+
+				// Update web dashboard
+				if webServer != nil {
+					webServer.UpdateState(func(s *web.EvaState) {
+						s.Speaking = false
+						s.Listening = true
+					})
+					webServer.AddLog("speech", "Audio done")
+				}
+			}(evaCurrentResponse)
+		}
+
 		evaCurrentResponse = ""
 	}
 
@@ -594,13 +892,13 @@ func streamAudioToRealtime(ctx context.Context) {
 		}
 
 		// Resample from 48kHz to 24kHz (OpenAI Realtime uses 24kHz)
-		resampled := realtime.Resample(pcmData, 48000, 24000)
+		resampled := audio.Resample(pcmData, 48000, 24000)
 		audioBuffer = append(audioBuffer, resampled...)
 
 		// Send when we have enough
 		if len(audioBuffer) >= chunkSize {
 			// Convert to bytes
-			pcm16Bytes := realtime.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
+			pcm16Bytes := audio.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
 			audioBuffer = audioBuffer[chunkSize:]
 
 			// Send to Realtime API
@@ -632,6 +930,12 @@ func shutdown() {
 	if videoClient != nil {
 		videoClient.Close()
 	}
+	if ttsProvider != nil {
+		ttsProvider.Close()
+	}
+	if ttsStreaming != nil {
+		ttsStreaming.Close()
+	}
 }
 
 // videoVisionAdapter wraps video.Client to implement VisionProvider
@@ -644,4 +948,32 @@ func (v *videoVisionAdapter) CaptureFrame() ([]byte, error) {
 		return nil, fmt.Errorf("video client not connected")
 	}
 	return v.client.CaptureJPEG()
+}
+
+// yoloAdapter wraps YOLO detector to implement ObjectDetector interface
+type yoloAdapter struct {
+	detector *detection.YOLODetector
+}
+
+func (y *yoloAdapter) Detect(jpeg []byte) ([]eva.ObjectDetectionResult, error) {
+	if y.detector == nil {
+		return nil, fmt.Errorf("object detector not initialized")
+	}
+	detections, err := y.detector.Detect(jpeg)
+	if err != nil {
+		return nil, err
+	}
+	// Convert to eva package type
+	results := make([]eva.ObjectDetectionResult, len(detections))
+	for i, det := range detections {
+		results[i] = eva.ObjectDetectionResult{
+			ClassName:  det.ClassName,
+			Confidence: det.Confidence,
+			X:          det.X,
+			Y:          det.Y,
+			W:          det.W,
+			H:          det.H,
+		}
+	}
+	return results, nil
 }

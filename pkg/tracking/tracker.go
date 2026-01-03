@@ -9,13 +9,10 @@ import (
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/debug"
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
+	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
-
-// RobotController interface for head movement
-type RobotController interface {
-	SetHeadPose(roll, pitch, yaw float64) error
-}
 
 // VideoSource interface for capturing frames
 type VideoSource interface {
@@ -28,26 +25,27 @@ type StateUpdater interface {
 	AddLog(logType, message string)
 }
 
-// Offset represents head position adjustments (matches robot.Offset)
-type Offset struct {
-	Roll, Pitch, Yaw float64
-}
-
 // OffsetHandler is called when tracker computes a new head offset.
 // If set, the tracker operates in "offset mode" and outputs offsets
 // instead of directly controlling the robot.
-type OffsetHandler func(offset Offset)
+// Uses robot.Offset for consistency with the robot package.
+type OffsetHandler func(offset robot.Offset)
+
+// BodyRotationHandler is called when the head reaches its mechanical limits
+// and the body should rotate to bring the target back into range.
+// direction: positive = rotate body left, negative = rotate body right (radians)
+type BodyRotationHandler func(direction float64)
 
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
 	config Config
-	robot  RobotController
+	robot  robot.HeadController
 	video  VideoSource
 	state  StateUpdater
 
 	// Core components
 	detector   detection.Detector
-	world      *WorldModel
+	world      *worldmodel.WorldModel
 	controller *PDController
 	perception *Perception
 
@@ -56,6 +54,9 @@ type Tracker struct {
 
 	// Offset mode: if set, output offsets instead of direct control
 	onOffset OffsetHandler
+
+	// Body rotation callback: if set, called when head reaches limits
+	onBodyRotation BodyRotationHandler
 
 	// State
 	mu            sync.RWMutex
@@ -71,10 +72,14 @@ type Tracker struct {
 	// Interpolation for smooth return to neutral
 	interpStartedAt time.Time
 	isInterpolating bool
+
+	// Error tracking (avoid log spam)
+	lastRobotError time.Time
 }
 
-// New creates a new head tracker with local face detection
-func New(config Config, robot RobotController, video VideoSource, modelPath string) (*Tracker, error) {
+// New creates a new head tracker with local face detection.
+// The robot parameter only needs to implement HeadController (not the full Controller).
+func New(config Config, robotCtrl robot.HeadController, video VideoSource, modelPath string) (*Tracker, error) {
 	// Initialize detector
 	detConfig := detection.Config{
 		ModelPath:        modelPath,
@@ -90,10 +95,10 @@ func New(config Config, robot RobotController, video VideoSource, modelPath stri
 
 	return &Tracker{
 		config:        config,
-		robot:         robot,
+		robot:         robotCtrl,
 		video:         video,
 		detector:      detector,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(config),
 		perception:    NewPerception(config, detector),
 		lastLoggedYaw: 999.0,
@@ -121,6 +126,16 @@ func (t *Tracker) SetOffsetHandler(handler OffsetHandler) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onOffset = handler
+}
+
+// SetBodyRotationHandler sets the callback for automatic body rotation.
+// When the head reaches its mechanical limits while tracking a target,
+// this callback is invoked with the rotation direction (radians).
+// The caller should rotate the body and call SetBodyYaw to update the world model.
+func (t *Tracker) SetBodyRotationHandler(handler BodyRotationHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onBodyRotation = handler
 }
 
 // SetBodyYaw updates the world model with current body orientation.
@@ -158,7 +173,7 @@ func (t *Tracker) GetCurrentYaw() float64 {
 }
 
 // GetWorld returns the world model for inspection
-func (t *Tracker) GetWorld() *WorldModel {
+func (t *Tracker) GetWorld() *worldmodel.WorldModel {
 	return t.world
 }
 
@@ -305,6 +320,9 @@ func (t *Tracker) updateMovement() {
 
 	// Output the result
 	t.outputYaw(newYaw, targetAngle)
+
+	// Check if body rotation is needed (head at mechanical limits)
+	t.checkBodyRotation()
 }
 
 // outputYaw sends the yaw to either offset handler or direct robot control
@@ -315,11 +333,18 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 
 	if handler != nil {
 		// Offset mode: output for fusion with unified controller
-		handler(Offset{Roll: 0, Pitch: 0, Yaw: yaw})
+		handler(robot.Offset{Roll: 0, Pitch: 0, Yaw: yaw})
 	} else if t.robot != nil {
 		// Direct mode: control robot directly
 		err := t.robot.SetHeadPose(0, 0, yaw)
-		if err == nil {
+		if err != nil {
+			// Log errors but don't spam - only log every 5 seconds
+			if t.lastRobotError.IsZero() || time.Since(t.lastRobotError) > 5*time.Second {
+				fmt.Printf("⚠️  SetHeadPose error: %v\n", err)
+				t.lastRobotError = time.Now()
+			}
+		} else {
+			t.lastRobotError = time.Time{} // Clear error state on success
 			// Log significant movements
 			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
 				debug.Log("🔄 Head: yaw=%.2f (target=%.2f, error=%.2f)\n",
@@ -327,6 +352,27 @@ func (t *Tracker) outputYaw(yaw float64, targetAngle float64) {
 				t.lastLoggedYaw = yaw
 			}
 		}
+	}
+}
+
+// checkBodyRotation checks if head is at limits and triggers body rotation
+func (t *Tracker) checkBodyRotation() {
+	t.mu.RLock()
+	handler := t.onBodyRotation
+	t.mu.RUnlock()
+
+	if handler == nil {
+		return
+	}
+
+	needsRotation, direction := t.controller.NeedsBodyRotation(
+		t.config.BodyRotationThreshold,
+		t.config.BodyRotationStep,
+	)
+
+	if needsRotation {
+		debug.Log("🔄 Body rotation triggered: direction=%.2f rad\n", direction)
+		handler(direction)
 	}
 }
 

@@ -77,7 +77,7 @@ func TestOffset_Add(t *testing.T) {
 
 func TestController_FusesPoses(t *testing.T) {
 	mock := &mockRobot{}
-	ctrl := NewController(mock, 10*time.Millisecond)
+	ctrl := NewRateController(mock, 10*time.Millisecond)
 	
 	// Set base and tracking offsets
 	ctrl.SetBaseHead(Offset{Roll: 0, Pitch: 0, Yaw: 0.3})
@@ -100,7 +100,7 @@ func TestController_FusesPoses(t *testing.T) {
 }
 
 func TestController_BodyYaw(t *testing.T) {
-	ctrl := NewController(nil, 10*time.Millisecond)
+	ctrl := NewRateController(nil, 10*time.Millisecond)
 	
 	// Initial value should be 0
 	if ctrl.BodyYaw() != 0 {
@@ -115,7 +115,7 @@ func TestController_BodyYaw(t *testing.T) {
 }
 
 func TestController_BodyYaw_ThreadSafe(t *testing.T) {
-	ctrl := NewController(nil, 10*time.Millisecond)
+	ctrl := NewRateController(nil, 10*time.Millisecond)
 	
 	var wg sync.WaitGroup
 	
@@ -147,7 +147,7 @@ func TestController_BodyYaw_ThreadSafe(t *testing.T) {
 
 func TestController_RunStop(t *testing.T) {
 	mock := &mockRobot{}
-	ctrl := NewController(mock, 5*time.Millisecond)
+	ctrl := NewRateController(mock, 5*time.Millisecond)
 	
 	// Start controller in goroutine
 	done := make(chan struct{})
@@ -178,7 +178,7 @@ func TestController_RunStop(t *testing.T) {
 
 func TestController_Rate(t *testing.T) {
 	mock := &mockRobot{}
-	ctrl := NewController(mock, 10*time.Millisecond) // 100Hz
+	ctrl := NewRateController(mock, 10*time.Millisecond) // 100Hz
 	
 	go func() {
 		ctrl.Run()
@@ -196,7 +196,7 @@ func TestController_Rate(t *testing.T) {
 }
 
 func TestController_CombinedHead(t *testing.T) {
-	ctrl := NewController(nil, 10*time.Millisecond)
+	ctrl := NewRateController(nil, 10*time.Millisecond)
 	
 	ctrl.SetBaseHead(Offset{Roll: 0.1, Pitch: 0.2, Yaw: 0.3})
 	ctrl.SetTrackingOffset(Offset{Roll: 0.05, Pitch: -0.1, Yaw: 0.1})
@@ -215,7 +215,7 @@ func TestController_CombinedHead(t *testing.T) {
 }
 
 func TestController_NilRobot(t *testing.T) {
-	ctrl := NewController(nil, 10*time.Millisecond)
+	ctrl := NewRateController(nil, 10*time.Millisecond)
 	
 	// Should not panic with nil robot
 	ctrl.SetBaseHead(Offset{Yaw: 0.5})

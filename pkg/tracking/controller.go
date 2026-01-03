@@ -168,6 +168,28 @@ func (c *PDController) GetError() float64 {
 	return c.targetYaw - c.currentYaw
 }
 
+// GetTargetYaw returns the current target yaw
+func (c *PDController) GetTargetYaw() float64 {
+	return c.targetYaw
+}
+
+// NeedsBodyRotation checks if head is at mechanical limits and body should rotate.
+// threshold is the fraction of MaxYaw (0-1) at which rotation triggers.
+// step is how much to rotate the body (radians).
+// Returns (needsRotation, rotationAmount) where positive = rotate left, negative = rotate right.
+func (c *PDController) NeedsBodyRotation(threshold, step float64) (bool, float64) {
+	limit := c.MaxYaw * threshold
+
+	// If target exceeds what head can comfortably reach, rotate body
+	if c.targetYaw > limit && c.currentYaw >= limit*0.95 {
+		return true, step // Rotate body left to bring target into range
+	}
+	if c.targetYaw < -limit && c.currentYaw <= -limit*0.95 {
+		return true, -step // Rotate body right
+	}
+	return false, 0
+}
+
 // clamp limits a value to a range
 func clamp(value, min, max float64) float64 {
 	if value < min {

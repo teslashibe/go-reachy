@@ -5,6 +5,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/worldmodel"
 )
 
 // mockRobotController records head poses for testing
@@ -37,10 +40,10 @@ func (m *mockRobotController) callCount() int {
 
 func TestTracker_OffsetMode(t *testing.T) {
 	// Create a mock offset handler
-	var receivedOffsets []Offset
+	var receivedOffsets []robot.Offset
 	var mu sync.Mutex
 
-	handler := func(offset Offset) {
+	handler := func(offset robot.Offset) {
 		mu.Lock()
 		receivedOffsets = append(receivedOffsets, offset)
 		mu.Unlock()
@@ -55,7 +58,7 @@ func TestTracker_OffsetMode(t *testing.T) {
 	tracker := &Tracker{
 		config:        cfg,
 		robot:         robot,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -95,7 +98,7 @@ func TestTracker_DirectMode(t *testing.T) {
 	tracker := &Tracker{
 		config:        cfg,
 		robot:         robot,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -118,7 +121,7 @@ func TestTracker_BodyRotation(t *testing.T) {
 	cfg := DefaultConfig()
 	tracker := &Tracker{
 		config:        cfg,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
@@ -152,17 +155,17 @@ func TestTracker_SmoothInterpolation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ScanStartDelay = 50 * time.Millisecond // Short delay for testing
 
-	var receivedOffsets []Offset
+	var receivedOffsets []robot.Offset
 	var mu sync.Mutex
 
 	tracker := &Tracker{
 		config:        cfg,
-		world:         NewWorldModel(),
+		world:         worldmodel.New(),
 		controller:    NewPDController(cfg),
 		lastLoggedYaw: 999.0,
 	}
 
-	tracker.SetOffsetHandler(func(offset Offset) {
+	tracker.SetOffsetHandler(func(offset robot.Offset) {
 		mu.Lock()
 		receivedOffsets = append(receivedOffsets, offset)
 		mu.Unlock()
