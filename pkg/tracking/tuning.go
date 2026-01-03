@@ -1,5 +1,7 @@
 package tracking
 
+import "time"
+
 // TuningParams holds the real-time adjustable tracking parameters.
 // These can be modified via the tuning API without restarting Eva.
 type TuningParams struct {
@@ -11,10 +13,13 @@ type TuningParams struct {
 	MaxTargetVelocity float64 `json:"max_target_velocity"` // Max target change per tick (rad)
 
 	// PD Controller
-	Kp              float64 `json:"kp"`               // Proportional gain
-	Kd              float64 `json:"kd"`               // Derivative gain
+	Kp              float64 `json:"kp"`                // Proportional gain
+	Kd              float64 `json:"kd"`                // Derivative gain
 	ControlDeadZone float64 `json:"control_dead_zone"` // Dead zone (rad)
-	ResponseScale   float64 `json:"response_scale"`   // Response scaling (0-1)
+	ResponseScale   float64 `json:"response_scale"`    // Response scaling (0-1)
+
+	// Detection rate
+	DetectionHz float64 `json:"detection_hz"` // Face detection frequency (4-20 Hz)
 
 	// Tuning mode
 	TuningModeEnabled bool `json:"tuning_mode_enabled"` // Disables secondary features for clean tuning
@@ -25,6 +30,8 @@ func (t *Tracker) GetTuningParams() TuningParams {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	detectionHz := 1.0 / t.config.DetectionInterval.Seconds()
+
 	return TuningParams{
 		OffsetSmoothingAlpha: t.perception.offsetSmoothingAlpha,
 		PositionSmoothing:    t.perception.smoothingFactor,
@@ -33,6 +40,7 @@ func (t *Tracker) GetTuningParams() TuningParams {
 		Kd:                   t.controller.Kd,
 		ControlDeadZone:      t.controller.DeadZone,
 		ResponseScale:        t.config.ResponseScale,
+		DetectionHz:          detectionHz,
 		TuningModeEnabled:    !t.config.AudioSwitchEnabled && !t.config.BreathingEnabled,
 	}
 }
@@ -72,6 +80,33 @@ func (t *Tracker) SetTuningParams(params TuningParams) {
 	if params.ResponseScale > 0 {
 		t.config.ResponseScale = clamp(params.ResponseScale, 0.0, 1.0)
 	}
+
+	// Detection rate (handled outside lock via channel)
+	if params.DetectionHz > 0 {
+		t.setDetectionHz(params.DetectionHz)
+	}
+}
+
+// setDetectionHz updates the detection rate at runtime.
+// Valid range: 1-20 Hz (50ms to 1000ms interval)
+func (t *Tracker) setDetectionHz(hz float64) {
+	// Clamp to valid range
+	if hz < 1 {
+		hz = 1
+	}
+	if hz > 20 {
+		hz = 20
+	}
+
+	interval := time.Duration(float64(time.Second) / hz)
+
+	// Send to the ticker reset channel (non-blocking)
+	select {
+	case t.detectTickerReset <- interval:
+		// Sent successfully
+	default:
+		// Channel full, skip (previous update still pending)
+	}
 }
 
 // EnableTuningMode disables secondary features for clean tuning.
@@ -94,4 +129,3 @@ func (t *Tracker) EnableTuningMode(enabled bool) {
 		t.config.ScanStartDelay = defaults.ScanStartDelay
 	}
 }
-
