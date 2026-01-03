@@ -52,3 +52,100 @@ func (p *PersonMemory) Touch() {
 func (p *PersonMemory) TimeSinceLastSeen() time.Duration {
 	return time.Since(p.LastSeen)
 }
+
+// --- Memory collection methods for People ---
+
+// RememberPerson stores a fact about a person and auto-saves.
+func (m *Memory) RememberPerson(name, fact string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || fact == "" {
+		return
+	}
+
+	m.mu.Lock()
+	if _, ok := m.People[name]; !ok {
+		m.People[name] = NewPerson(name)
+	}
+	m.People[name].AddFact(fact)
+	m.mu.Unlock()
+
+	m.Save()
+}
+
+// RecallPerson retrieves facts about a person.
+func (m *Memory) RecallPerson(name string) []string {
+	name = strings.ToLower(strings.TrimSpace(name))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if person, ok := m.People[name]; ok {
+		person.Touch()
+		return person.Facts
+	}
+	return nil
+}
+
+// FindPerson searches for a person by partial name match.
+func (m *Memory) FindPerson(query string) *PersonMemory {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Exact match first
+	if person, ok := m.People[query]; ok {
+		return person
+	}
+
+	// Partial match
+	for name, person := range m.People {
+		if strings.Contains(name, query) {
+			return person
+		}
+	}
+
+	return nil
+}
+
+// GetPerson retrieves a person by exact name.
+func (m *Memory) GetPerson(name string) *PersonMemory {
+	name = strings.ToLower(strings.TrimSpace(name))
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.People[name]
+}
+
+// GetAllPeople returns names of all known people.
+func (m *Memory) GetAllPeople() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	names := make([]string, 0, len(m.People))
+	for name := range m.People {
+		names = append(names, name)
+	}
+	return names
+}
+
+// ForgetPerson removes a person from memory.
+func (m *Memory) ForgetPerson(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+
+	m.mu.Lock()
+	_, exists := m.People[name]
+	if exists {
+		delete(m.People, name)
+	}
+	m.mu.Unlock()
+
+	if exists {
+		m.Save()
+	}
+	return exists
+}

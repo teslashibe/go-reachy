@@ -1,140 +1,172 @@
-// Package memory provides persistence for Eva's long-term memory of people and conversations.
+// Package memory provides persistent knowledge storage for Eva.
+//
+// Memory is organized into four categories:
+//   - Context: Situational key-value facts ("owner_name" -> "Brendan")
+//   - Spatial: Known locations and places
+//   - People: Information about individuals
+//   - Knowledge: Dynamic agent-created topic collections
 package memory
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
+	"sync"
 )
 
-// Memory stores information about people and conversations.
+// Memory is the central knowledge store for Eva.
+// All data persists to the configured Store backend.
 type Memory struct {
-	People   map[string]*PersonMemory `json:"people"`
-	FilePath string                   `json:"-"`
+	// Context stores situational key-value facts.
+	// Examples: "owner_name", "time_of_day", "current_mood"
+	Context map[string]string `json:"context"`
+
+	// Spatial stores known locations and places.
+	// Examples: "kitchen", "living_room", "front_door"
+	Spatial map[string]*Location `json:"spatial"`
+
+	// People stores information about individuals.
+	// Keyed by lowercase name.
+	People map[string]*PersonMemory `json:"people"`
+
+	// Knowledge stores dynamic agent-created topic collections.
+	// Examples: "recipes", "tasks", "preferences"
+	Knowledge map[string]map[string]any `json:"knowledge"`
+
+	// store is the persistence backend (not serialized)
+	store Store `json:"-"`
+
+	// mu protects concurrent access
+	mu sync.RWMutex `json:"-"`
 }
 
 // New creates a new in-memory store (no persistence).
 func New() *Memory {
 	return &Memory{
-		People: make(map[string]*PersonMemory),
+		Context:   make(map[string]string),
+		Spatial:   make(map[string]*Location),
+		People:    make(map[string]*PersonMemory),
+		Knowledge: make(map[string]map[string]any),
 	}
 }
 
-// NewWithFile creates a memory store that persists to a file.
-// Automatically loads existing memory if the file exists.
-func NewWithFile(filePath string) *Memory {
-	m := &Memory{
-		People:   make(map[string]*PersonMemory),
-		FilePath: filePath,
-	}
-	m.Load() // Load existing memory if file exists
+// NewWithStore creates a memory with a custom storage backend.
+func NewWithStore(store Store) *Memory {
+	m := New()
+	m.store = store
+	m.Load() // Load existing data if available
 	return m
 }
 
-// Save persists memory to file.
+// NewWithFile creates a memory that persists to a JSON file.
+// This is a convenience wrapper around NewWithStore.
+func NewWithFile(path string) *Memory {
+	return NewWithStore(NewJSONStore(path))
+}
+
+// Save persists memory to the configured store.
 func (m *Memory) Save() error {
-	if m.FilePath == "" {
+	if m.store == nil {
 		return nil
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(m.FilePath)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-	}
-
+	m.mu.RLock()
 	data, err := json.MarshalIndent(m, "", "  ")
+	m.mu.RUnlock()
+
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(m.FilePath, data, 0644)
+	return m.store.Save(data)
 }
 
-// Load reads memory from file.
+// Load reads memory from the configured store.
 func (m *Memory) Load() error {
-	if m.FilePath == "" {
+	if m.store == nil {
 		return nil
 	}
 
-	data, err := os.ReadFile(m.FilePath)
+	data, err := m.store.Load()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // File doesn't exist yet, that's OK
-		}
 		return err
 	}
 
-	return json.Unmarshal(data, m)
-}
-
-// RememberPerson stores a fact about a person and auto-saves.
-func (m *Memory) RememberPerson(name, fact string) {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		return
+	if data == nil {
+		return nil // No data yet
 	}
 
-	if _, ok := m.People[name]; !ok {
-		m.People[name] = NewPerson(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Unmarshal into a temporary struct to preserve existing maps
+	var loaded Memory
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return err
 	}
 
-	m.People[name].AddFact(fact)
-
-	// Auto-save to file
-	m.Save()
-}
-
-// RecallPerson retrieves facts about a person.
-func (m *Memory) RecallPerson(name string) []string {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if person, ok := m.People[name]; ok {
-		person.Touch() // Update last seen
-		return person.Facts
+	// Merge loaded data (don't overwrite if nil)
+	if loaded.Context != nil {
+		m.Context = loaded.Context
 	}
+	if loaded.Spatial != nil {
+		m.Spatial = loaded.Spatial
+	}
+	if loaded.People != nil {
+		m.People = loaded.People
+	}
+	if loaded.Knowledge != nil {
+		m.Knowledge = loaded.Knowledge
+	}
+
 	return nil
 }
 
-// FindPerson searches for a person by partial name match.
-func (m *Memory) FindPerson(query string) *PersonMemory {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
+// Close releases resources held by the store.
+func (m *Memory) Close() error {
+	if m.store == nil {
 		return nil
 	}
-
-	// Exact match first
-	if person, ok := m.People[query]; ok {
-		return person
-	}
-
-	// Partial match
-	for name, person := range m.People {
-		if strings.Contains(name, query) {
-			return person
-		}
-	}
-
-	return nil
+	return m.store.Close()
 }
 
-// GetAllPeople returns names of all known people.
-func (m *Memory) GetAllPeople() []string {
-	names := make([]string, 0, len(m.People))
-	for name := range m.People {
-		names = append(names, name)
-	}
-	return names
-}
-
-// ToJSON serializes memory to JSON.
+// ToJSON serializes memory to JSON bytes.
 func (m *Memory) ToJSON() ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return json.MarshalIndent(m, "", "  ")
 }
 
-// FromJSON deserializes memory from JSON.
+// FromJSON deserializes memory from JSON bytes.
 func (m *Memory) FromJSON(data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return json.Unmarshal(data, m)
+}
+
+// Clear resets all memory to empty state.
+func (m *Memory) Clear() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Context = make(map[string]string)
+	m.Spatial = make(map[string]*Location)
+	m.People = make(map[string]*PersonMemory)
+	m.Knowledge = make(map[string]map[string]any)
+}
+
+// Stats returns counts of items in each category.
+func (m *Memory) Stats() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	knowledgeItems := 0
+	for _, items := range m.Knowledge {
+		knowledgeItems += len(items)
+	}
+
+	return map[string]int{
+		"context":          len(m.Context),
+		"spatial":          len(m.Spatial),
+		"people":           len(m.People),
+		"knowledge_topics": len(m.Knowledge),
+		"knowledge_items":  knowledgeItems,
+	}
 }
