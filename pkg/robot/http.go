@@ -45,14 +45,16 @@ func (r *HTTPController) SetHeadPose(roll, pitch, yaw float64) error {
 
 // SetAntennas sets the robot's antenna positions.
 func (r *HTTPController) SetAntennas(left, right float64) error {
+	return r.SetAntennasSmooth(left, right, 0.15)
+}
+
+// SetAntennasSmooth sets antenna positions with custom duration for fluid motion.
+// Use duration slightly longer than your update interval for smooth blending.
+func (r *HTTPController) SetAntennasSmooth(left, right, duration float64) error {
 	payload := map[string]interface{}{
-		"target_head_pose": map[string]float64{
-			"roll":  0,
-			"pitch": 0,
-			"yaw":   0,
-		},
-		"target_antennas": []float64{left, right},
-		"duration":        0.15,
+		"target_head_pose": nil, // Don't touch head
+		"target_antennas":  []float64{left, right},
+		"duration":         duration,
 	}
 
 	return r.postMove(payload)
@@ -130,5 +132,6 @@ func (r *HTTPController) postMove(payload map[string]interface{}) error {
 
 	return nil
 }
+
 
 

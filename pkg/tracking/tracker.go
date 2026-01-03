@@ -1012,7 +1012,9 @@ func (t *Tracker) updateBreathing() {
 
 	if antennaCtrl != nil {
 		// Antennas sway in opposite directions (left = +sway, right = -sway)
-		if err := antennaCtrl.SetAntennas(antennaSway, -antennaSway); err != nil {
+		// Use smooth motion with 0.5s duration for fluid wave effect
+		// This creates overlapping interpolations that blend into smooth motion
+		if err := antennaCtrl.SetAntennasSmooth(antennaSway, -antennaSway, 0.5); err != nil {
 			// Don't spam logs for antenna errors
 			debug.Log("⚠️  Antenna sway error: %v\n", err)
 		}
