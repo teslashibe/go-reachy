@@ -719,6 +719,7 @@ func (t *Tracker) updateLockState(hasFace bool) {
 
 // checkBodyAlignment checks if body should rotate to center the head while locked on a target.
 // This gradually rotates the body to bring the head back toward center, freeing up range.
+// Also returns body to center when head is centered but camera still sees persistent offset.
 func (t *Tracker) checkBodyAlignment() {
 	// Skip if disabled
 	if !t.config.BodyAlignmentEnabled {
@@ -728,14 +729,30 @@ func (t *Tracker) checkBodyAlignment() {
 	t.mu.RLock()
 	handler := t.onBodyRotation
 	lastAlignment := t.lastBodyAlignmentAt
+	cameraYawOffset := t.lastYawOffset // Camera-detected offset (self-correcting signal)
+	hasFace := t.hasFaceTarget
+	lockedAt := t.lockedOnFaceAt
 	t.mu.RUnlock()
 
 	if handler == nil {
 		return
 	}
 
-	// Check if locked on target
+	// Check if locked on target (with diagnostic logging)
 	if !t.isLockedOnTarget() {
+		// Log why we're not locked (once per second to avoid spam)
+		if time.Since(t.lastBodyAlignmentAt) > time.Second || t.lastBodyAlignmentAt.IsZero() {
+			if !hasFace {
+				debug.Log("⏳ Body alignment waiting: no face\n")
+			} else if lockedAt.IsZero() {
+				debug.Log("⏳ Body alignment waiting: lock not started\n")
+			} else {
+				remaining := t.config.BodyAlignmentDelay - time.Since(lockedAt)
+				if remaining > 0 {
+					debug.Log("⏳ Body alignment waiting: %.1fs until locked\n", remaining.Seconds())
+				}
+			}
+		}
 		return
 	}
 
@@ -744,35 +761,47 @@ func (t *Tracker) checkBodyAlignment() {
 		return
 	}
 
-	currentYaw := t.controller.GetCurrentYaw()
-	absYaw := math.Abs(currentYaw)
-
-	// Check if head yaw exceeds threshold (worth aligning)
-	if absYaw < t.config.BodyAlignmentThreshold {
-		return
-	}
-
-	// Check if already within dead zone (no alignment needed)
-	if absYaw < t.config.BodyAlignmentDeadZone {
-		return
-	}
+	currentHeadYaw := t.controller.GetCurrentYaw()
+	absHeadYaw := math.Abs(currentHeadYaw)
+	absCameraOffset := math.Abs(cameraYawOffset)
 
 	// Calculate rotation amount for this tick
-	// Use movement interval as dt since this is called from updateMovement
 	dt := t.config.MovementInterval.Seconds()
 	rotationStep := t.config.BodyAlignmentSpeed * dt
 
-	// Determine direction: rotate body toward where head is looking to center head
-	// If head is turned left (positive yaw), rotate body left (positive) so head can return to center
 	var bodyDelta float64
-	if currentYaw > 0 {
-		bodyDelta = rotationStep // Rotate body left
+	var reason string
+
+	// Case 1: Head is turned significantly - rotate body to center head
+	if absHeadYaw >= t.config.BodyAlignmentThreshold {
+		// Rotate body toward where head is looking
+		if currentHeadYaw > 0 {
+			bodyDelta = rotationStep // Rotate body left
+		} else {
+			bodyDelta = -rotationStep // Rotate body right
+		}
+		reason = "centering head"
+	} else if absCameraOffset >= t.config.BodyAlignmentDeadZone {
+		// Case 2: Head is settled but camera sees persistent offset
+		// This is the OBSERVABLE signal - doesn't rely on world model accuracy
+		// If camera says "face is to the left" but head isn't moving, body must be offset right
+		// Rotate body in direction of the offset to align
+		if cameraYawOffset > 0 {
+			bodyDelta = rotationStep // Face on left, rotate body left
+		} else {
+			bodyDelta = -rotationStep // Face on right, rotate body right
+		}
+		reason = "camera offset correction"
+		debug.Log("📷 Camera offset: %.2f rad, head: %.2f rad → body needs correction\n",
+			cameraYawOffset, currentHeadYaw)
 	} else {
-		bodyDelta = -rotationStep // Rotate body right
+		// Head centered AND camera offset small - aligned!
+		return
 	}
 
 	// Log the alignment
-	debug.Log("🎯 Body alignment: head at %.2f rad, rotating body by %.3f rad\n", currentYaw, bodyDelta)
+	debug.Log("🎯 Body alignment (%s): head=%.2f, camOffset=%.2f, delta=%.3f rad\n",
+		reason, currentHeadYaw, cameraYawOffset, bodyDelta)
 
 	// Update state
 	t.mu.Lock()
@@ -783,8 +812,10 @@ func (t *Tracker) checkBodyAlignment() {
 	// Trigger body rotation
 	handler(bodyDelta)
 
-	// Counter-rotate head to maintain gaze
-	t.controller.AdjustForBodyRotation(bodyDelta)
+	// Counter-rotate head to maintain gaze (only when centering head, not when returning body)
+	if reason == "centering head" {
+		t.controller.AdjustForBodyRotation(bodyDelta)
+	}
 }
 
 // checkAudioSwitch determines if we should turn toward a new audio source.

@@ -101,9 +101,20 @@ func (t *Tracker) SetTuningParams(params TuningParams) {
 		t.setDetectionHz(params.DetectionHz)
 	}
 
-	// Body alignment - note: enabled is a bool so we check explicitly
-	// Use a sentinel approach: only apply if the value looks intentional
-	t.config.BodyAlignmentEnabled = params.BodyAlignmentEnabled
+	// Body alignment enabled handling:
+	// - If BodyAlignmentEnabled is true → enable
+	// - If BodyAlignmentEnabled is false AND no other body params → explicit disable request
+	// - If BodyAlignmentEnabled is false AND has other body params → wasn't sent, preserve current
+	hasOtherBodyParams := params.BodyAlignmentDelay > 0 || params.BodyAlignmentSpeed > 0 ||
+		params.BodyAlignmentThreshold > 0 || params.BodyAlignmentDeadZone > 0 ||
+		params.BodyAlignmentCooldown > 0
+	if params.BodyAlignmentEnabled {
+		t.config.BodyAlignmentEnabled = true
+	} else if !hasOtherBodyParams {
+		// Only enabled:false was sent, explicitly disable
+		t.config.BodyAlignmentEnabled = false
+	}
+	// If hasOtherBodyParams && !BodyAlignmentEnabled, preserve current state (do nothing)
 	if params.BodyAlignmentDelay > 0 {
 		t.config.BodyAlignmentDelay = time.Duration(params.BodyAlignmentDelay * float64(time.Second))
 	}

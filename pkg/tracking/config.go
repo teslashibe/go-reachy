@@ -129,12 +129,12 @@ func DefaultConfig() Config {
 		BodyRotationStep:      0.5, // Rotate body by 0.5 rad (~29°) per trigger
 
 		// Body alignment (gradual centering when locked on target)
-		BodyAlignmentEnabled:   true,             // Enable by default
-		BodyAlignmentDelay:     2 * time.Second,  // 2s stable tracking before trigger
-		BodyAlignmentThreshold: 0.20,             // ~11° min head yaw to trigger
-		BodyAlignmentSpeed:     0.02,             // Slow rotation (rad/s)
-		BodyAlignmentDeadZone:  0.10,             // ~6° stop threshold
-		BodyAlignmentCooldown:  2 * time.Second,  // Prevent rapid re-triggering
+		BodyAlignmentEnabled:   true,              // Enable by default
+		BodyAlignmentDelay:     2 * time.Second,   // 2s stable tracking before trigger
+		BodyAlignmentThreshold: 0.10,              // ~6° min head yaw to trigger (lowered for sensitivity)
+		BodyAlignmentSpeed:     0.30,              // Rotation speed (rad/s) - 0.015 rad/tick at 50ms
+		BodyAlignmentDeadZone:  0.05,              // ~3° stop threshold
+		BodyAlignmentCooldown:  500 * time.Millisecond, // Allow frequent small adjustments
 
 		// Pitch tracking (asymmetric range is typical for head mechanics)
 		PitchRangeUp:   0.4,         // +23° up

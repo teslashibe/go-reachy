@@ -593,6 +593,25 @@ func startWebDashboard(ctx context.Context) {
 			if v, ok := params["detection_hz"].(float64); ok {
 				tp.DetectionHz = v
 			}
+			// Body alignment params
+			if v, ok := params["body_alignment_enabled"].(bool); ok {
+				tp.BodyAlignmentEnabled = v
+			}
+			if v, ok := params["body_alignment_delay"].(float64); ok {
+				tp.BodyAlignmentDelay = v
+			}
+			if v, ok := params["body_alignment_threshold"].(float64); ok {
+				tp.BodyAlignmentThreshold = v
+			}
+			if v, ok := params["body_alignment_speed"].(float64); ok {
+				tp.BodyAlignmentSpeed = v
+			}
+			if v, ok := params["body_alignment_dead_zone"].(float64); ok {
+				tp.BodyAlignmentDeadZone = v
+			}
+			if v, ok := params["body_alignment_cooldown"].(float64); ok {
+				tp.BodyAlignmentCooldown = v
+			}
 			headTracker.SetTuningParams(tp)
 			fmt.Printf("🎛️  Tuning params updated: %+v\n", tp)
 		}
@@ -688,6 +707,15 @@ func wakeUpRobot() error {
 	}
 	// Set volume to max
 	robotCtrl.SetVolume(100)
+
+	// Reset body to neutral position at startup
+	// This ensures known initial state and matches Python reachy behavior
+	if err := robotCtrl.SetBodyYaw(0.0); err != nil {
+		debug.Log("⚠️  Failed to reset body to neutral: %v\n", err)
+	} else {
+		debug.Log("🔄 Body reset to neutral (0.0 rad)\n")
+	}
+
 	return nil
 }
 
