@@ -31,4 +31,14 @@ type AudioSource struct {
 	LastSeen   time.Time // When last updated
 }
 
-
+// DetectedObject represents a detected object or animal in the scene
+type DetectedObject struct {
+	ClassName   string    // e.g., "dog", "cat", "cup", "laptop"
+	Confidence  float64   // Detection confidence (0-1)
+	PositionX   float64   // Horizontal position in frame (0-100%)
+	PositionY   float64   // Vertical position in frame (0-100%)
+	Width       float64   // Object width (0-1 normalized)
+	Height      float64   // Object height (0-1 normalized)
+	IsAnimal    bool      // True if this is an animal
+	LastSeen    time.Time // When last detected
+}

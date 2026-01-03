@@ -17,6 +17,9 @@ type WorldModel struct {
 	// Audio source (from go-eva DOA)
 	audioSource *AudioSource
 
+	// Detected objects (non-face detections)
+	objects map[string]*DetectedObject
+
 	// Configuration
 	confidenceDecay float64       // How fast confidence decays per second
 	forgetThreshold float64       // Remove entities below this confidence
@@ -27,6 +30,7 @@ type WorldModel struct {
 func New() *WorldModel {
 	return &WorldModel{
 		entities:        make(map[string]*TrackedEntity),
+		objects:         make(map[string]*DetectedObject),
 		confidenceDecay: 0.3,              // Lose 30% confidence per second
 		forgetThreshold: 0.1,              // Forget below 10% confidence
 		forgetTimeout:   10 * time.Second, // Forget after 10 seconds
@@ -364,4 +368,91 @@ func abs(x float64) float64 {
 	return x
 }
 
+// UpdateObject updates or adds a detected object to the world model
+func (w *WorldModel) UpdateObject(className string, confidence, posX, posY, width, height float64, isAnimal bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
+	w.objects[className] = &DetectedObject{
+		ClassName:  className,
+		Confidence: confidence,
+		PositionX:  posX,
+		PositionY:  posY,
+		Width:      width,
+		Height:     height,
+		IsAnimal:   isAnimal,
+		LastSeen:   time.Now(),
+	}
+}
+
+// UpdateObjects replaces all objects with a new set
+func (w *WorldModel) UpdateObjects(objects []*DetectedObject) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Clear old objects
+	w.objects = make(map[string]*DetectedObject)
+
+	// Add new objects
+	for _, obj := range objects {
+		obj.LastSeen = time.Now()
+		w.objects[obj.ClassName] = obj
+	}
+}
+
+// GetObjects returns all currently detected objects
+func (w *WorldModel) GetObjects() []*DetectedObject {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	result := make([]*DetectedObject, 0, len(w.objects))
+	for _, obj := range w.objects {
+		// Only include recently seen objects (within 2 seconds)
+		if time.Since(obj.LastSeen) < 2*time.Second {
+			copy := *obj
+			result = append(result, &copy)
+		}
+	}
+	return result
+}
+
+// GetAnimals returns all detected animals
+func (w *WorldModel) GetAnimals() []*DetectedObject {
+	objects := w.GetObjects()
+	var animals []*DetectedObject
+	for _, obj := range objects {
+		if obj.IsAnimal {
+			animals = append(animals, obj)
+		}
+	}
+	return animals
+}
+
+// HasObject returns true if the specified object class is currently visible
+func (w *WorldModel) HasObject(className string) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	obj, exists := w.objects[className]
+	if !exists {
+		return false
+	}
+	return time.Since(obj.LastSeen) < 2*time.Second
+}
+
+// GetObjectsSummary returns a human-readable summary of detected objects
+func (w *WorldModel) GetObjectsSummary() string {
+	objects := w.GetObjects()
+	if len(objects) == 0 {
+		return ""
+	}
+
+	summary := ""
+	for i, obj := range objects {
+		if i > 0 {
+			summary += ", "
+		}
+		summary += obj.ClassName
+	}
+	return summary
+}
