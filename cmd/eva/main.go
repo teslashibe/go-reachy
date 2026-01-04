@@ -110,6 +110,7 @@ var (
 	memoryStore      *memory.Memory
 	sparkStore       *spark.JSONStore
 	sparkGemini      *spark.GeminiClient
+	sparkGoogleDocs  *spark.GoogleDocsClient
 	webServer        *web.Server
 	headTracker      *tracking.Tracker
 	ttsProvider      tts.Provider      // HTTP TTS provider
@@ -503,6 +504,27 @@ func initialize() error {
 		fmt.Println("🔥 Spark Gemini integration enabled")
 	}
 
+	// Create Spark Google Docs client for syncing
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	if googleClientID != "" && googleClientSecret != "" {
+		var err error
+		sparkGoogleDocs, err = spark.NewGoogleDocsClient(spark.GoogleDocsConfig{
+			ClientID:     googleClientID,
+			ClientSecret: googleClientSecret,
+			RedirectURL:  "http://localhost:8080/api/spark/callback",
+		})
+		if err != nil {
+			fmt.Printf("⚠️  Spark Google Docs error: %v\n", err)
+		} else {
+			if sparkGoogleDocs.IsAuthenticated() {
+				fmt.Println("🔥 Spark Google Docs connected")
+			} else {
+				fmt.Println("🔥 Spark Google Docs configured (not connected)")
+			}
+		}
+	}
+
 	// Create audio player
 	audioPlayer = audio.NewPlayer(robotIP, sshUser, sshPass)
 	audioPlayer.OnPlaybackStart = func() {
@@ -771,6 +793,22 @@ func startWebDashboard(ctx context.Context) {
 		return nil
 	}
 
+	// Wire up Spark Google Docs API callbacks
+	if sparkGoogleDocs != nil {
+		webServer.OnSparkGetStatus = func() interface{} {
+			return sparkGoogleDocs.GetStatus()
+		}
+		webServer.OnSparkAuthStart = func() string {
+			return sparkGoogleDocs.GetAuthURL()
+		}
+		webServer.OnSparkAuthCallback = func(code string) error {
+			return sparkGoogleDocs.HandleCallback(code)
+		}
+		webServer.OnSparkDisconnect = func() error {
+			return sparkGoogleDocs.Disconnect()
+		}
+	}
+
 	// Connect head tracker to web dashboard for state updates
 	if headTracker != nil {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
@@ -890,16 +928,17 @@ func connectRealtime(apiKey string) error {
 
 	// Register Eva's tools with vision and tracking support
 	toolsCfg := eva.ToolsConfig{
-		Robot:          robotCtrl,
-		Memory:         memoryStore,
-		Vision:         &videoVisionAdapter{videoClient},
-		ObjectDetector: &yoloAdapter{objectDetector},
-		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:    audioPlayer,
-		Tracker:        headTracker, // For body rotation sync
-		Emotions:       emotionRegistry,
-		SparkStore:     sparkStore,  // Idea collection
-		SparkGemini:    sparkGemini, // Gemini for title/tag generation
+		Robot:           robotCtrl,
+		Memory:          memoryStore,
+		Vision:          &videoVisionAdapter{videoClient},
+		ObjectDetector:  &yoloAdapter{objectDetector},
+		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:     audioPlayer,
+		Tracker:         headTracker, // For body rotation sync
+		Emotions:        emotionRegistry,
+		SparkStore:      sparkStore,       // Idea collection
+		SparkGemini:     sparkGemini,      // Gemini for title/tag generation
+		SparkGoogleDocs: sparkGoogleDocs,  // Google Docs for syncing
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {

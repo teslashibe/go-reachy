@@ -76,6 +76,12 @@ type Server struct {
 	// Camera callbacks (for camera configuration)
 	OnGetCameraConfig func() interface{}
 	OnSetCameraConfig func(params map[string]interface{}) error
+
+	// Spark callbacks (for Google Docs integration)
+	OnSparkGetStatus    func() interface{}
+	OnSparkAuthStart    func() string // Returns auth URL
+	OnSparkAuthCallback func(code string) error
+	OnSparkDisconnect   func() error
 }
 
 // NewServer creates a new web dashboard server
@@ -118,6 +124,12 @@ func NewServer(port string) *Server {
 	api.Post("/camera/config", s.handleSetCameraConfig)
 	api.Get("/camera/presets", s.handleGetCameraPresets)
 	api.Get("/camera/capabilities", s.handleGetCameraCapabilities)
+
+	// Spark API routes (Google Docs integration)
+	api.Get("/spark/status", s.handleSparkStatus)
+	api.Get("/spark/auth", s.handleSparkAuthStart)
+	api.Get("/spark/callback", s.handleSparkCallback)
+	api.Post("/spark/disconnect", s.handleSparkDisconnect)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
@@ -352,4 +364,120 @@ func (s *Server) handleGetCameraCapabilities(c *fiber.Ctx) error {
 		"constraint_modes": []string{"normal", "highlight", "shadows"},
 		"af_modes":         []string{"manual", "auto", "continuous"},
 	})
+}
+
+// Spark API handlers
+
+// handleSparkStatus returns the Google Docs connection status
+func (s *Server) handleSparkStatus(c *fiber.Ctx) error {
+	if s.OnSparkGetStatus == nil {
+		return c.JSON(fiber.Map{
+			"connected": false,
+			"error":     "Spark not configured",
+		})
+	}
+	return c.JSON(s.OnSparkGetStatus())
+}
+
+// handleSparkAuthStart redirects to Google OAuth
+func (s *Server) handleSparkAuthStart(c *fiber.Ctx) error {
+	if s.OnSparkAuthStart == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+	authURL := s.OnSparkAuthStart()
+	return c.Redirect(authURL, fiber.StatusTemporaryRedirect)
+}
+
+// handleSparkCallback processes the OAuth callback
+func (s *Server) handleSparkCallback(c *fiber.Ctx) error {
+	if s.OnSparkAuthCallback == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+
+	code := c.Query("code")
+	if code == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Missing authorization code",
+		})
+	}
+
+	if err := s.OnSparkAuthCallback(code); err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head><title>Spark - Error</title></head>
+<body style="font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f44336; color: white;">
+    <div style="text-align: center;">
+        <h1>❌ Connection Failed</h1>
+        <p>%s</p>
+        <p><small>Please close this window and try again.</small></p>
+    </div>
+</body>
+</html>
+`, err.Error()))
+	}
+
+	// Success page
+	return c.SendString(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spark - Connected!</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container { 
+            text-align: center; 
+            padding: 40px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { margin-bottom: 10px; }
+        p { opacity: 0.9; }
+        .emoji { font-size: 48px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="emoji">🔥</div>
+        <h1>Spark Connected!</h1>
+        <p>Your ideas will now sync to Google Docs.</p>
+        <p><small>You can close this window.</small></p>
+    </div>
+    <script>
+        setTimeout(function() { window.close(); }, 3000);
+    </script>
+</body>
+</html>
+`)
+}
+
+// handleSparkDisconnect disconnects from Google
+func (s *Server) handleSparkDisconnect(c *fiber.Ctx) error {
+	if s.OnSparkDisconnect == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+
+	if err := s.OnSparkDisconnect(); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{"success": true})
 }

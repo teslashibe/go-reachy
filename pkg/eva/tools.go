@@ -948,8 +948,9 @@ func Tools(cfg ToolsConfig) []Tool {
 	// Add Spark tools if store is available
 	if cfg.SparkStore != nil {
 		sparkCfg := spark.ToolsConfig{
-			Store:  cfg.SparkStore,
-			Gemini: cfg.SparkGemini, // Gemini for AI title/tag generation
+			Store:      cfg.SparkStore,
+			Gemini:     cfg.SparkGemini,      // Gemini for AI title/tag generation
+			GoogleDocs: cfg.SparkGoogleDocs,  // Google Docs for syncing
 		}
 		sparkTools := spark.Tools(sparkCfg)
 		for _, st := range sparkTools {

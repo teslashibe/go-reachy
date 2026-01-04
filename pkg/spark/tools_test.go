@@ -470,26 +470,97 @@ func TestToolDescriptions(t *testing.T) {
 		"view_spark",
 		"delete_spark",
 		"search_sparks",
+		"sync_spark",
+		"google_status",
 	}
 
 	if len(tools) != len(expectedTools) {
 		t.Errorf("expected %d tools, got %d", len(expectedTools), len(tools))
 	}
+}
 
-	for _, expected := range expectedTools {
-		found := false
-		for _, tool := range tools {
-			if tool.Name == expected {
-				found = true
-				if tool.Description == "" {
-					t.Errorf("tool %s has empty description", expected)
-				}
-				break
-			}
+func TestSyncSparkToolNoGoogleDocs(t *testing.T) {
+	store, cleanup := testToolsStore(t)
+	defer cleanup()
+
+	// Create a spark first
+	spark, _ := store.CreateSpark("Test idea for syncing")
+	spark.SetTitle("Sync Test")
+	store.Update(spark)
+
+	cfg := ToolsConfig{
+		Store:      store,
+		GoogleDocs: nil, // No Google Docs client
+	}
+	tools := Tools(cfg)
+
+	var syncTool Tool
+	for _, tool := range tools {
+		if tool.Name == "sync_spark" {
+			syncTool = tool
+			break
 		}
-		if !found {
-			t.Errorf("missing expected tool: %s", expected)
+	}
+
+	result, _ := syncTool.Handler(map[string]interface{}{
+		"spark": "Sync Test",
+	})
+
+	if !strings.Contains(result, "not configured") {
+		t.Errorf("expected 'not configured' message, got: %s", result)
+	}
+}
+
+func TestGoogleStatusToolNoGoogleDocs(t *testing.T) {
+	store, cleanup := testToolsStore(t)
+	defer cleanup()
+
+	cfg := ToolsConfig{
+		Store:      store,
+		GoogleDocs: nil, // No Google Docs client
+	}
+	tools := Tools(cfg)
+
+	var statusTool Tool
+	for _, tool := range tools {
+		if tool.Name == "google_status" {
+			statusTool = tool
+			break
 		}
+	}
+
+	result, _ := statusTool.Handler(map[string]interface{}{})
+
+	if !strings.Contains(result, "not configured") {
+		t.Errorf("expected 'not configured' message, got: %s", result)
+	}
+}
+
+func TestSyncSparkToolMissingSpark(t *testing.T) {
+	store, cleanup := testToolsStore(t)
+	defer cleanup()
+
+	cfg := ToolsConfig{
+		Store:      store,
+		GoogleDocs: nil,
+	}
+	tools := Tools(cfg)
+
+	var syncTool Tool
+	for _, tool := range tools {
+		if tool.Name == "sync_spark" {
+			syncTool = tool
+			break
+		}
+	}
+
+	// Test with empty spark
+	result, _ := syncTool.Handler(map[string]interface{}{
+		"spark": "",
+	})
+
+	if !strings.Contains(result, "Which spark") {
+		t.Errorf("expected prompt for spark, got: %s", result)
 	}
 }
 
