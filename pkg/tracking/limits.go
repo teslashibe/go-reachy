@@ -22,9 +22,10 @@ const (
 	// Matches Python reachy's move_head tool default.
 	DefaultPitchRangeDown = 30.0 * math.Pi / 180.0 // 0.523 rad = 30°
 
-	// DefaultHeadYawRange is the maximum head yaw in radians (±86°).
-	// This is the head-only range before body rotation kicks in.
-	DefaultHeadYawRange = 1.5 // ±1.5 rad ≈ ±86°
+	// DefaultHeadYawRange is the maximum head yaw in radians (±162°).
+	// Matches Python reachy's 0.9 * π limit (same as body).
+	// This allows Eva to look all the way around when combined with body rotation.
+	DefaultHeadYawRange = 0.9 * math.Pi // ≈ 2.827 rad ≈ 162°
 )
 
 // Degrees converts radians to degrees for logging/display.

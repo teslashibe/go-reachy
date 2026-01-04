@@ -582,15 +582,21 @@ func startWebDashboard(ctx context.Context) {
 		}
 		webServer.OnSetTuningParams = func(params map[string]interface{}) {
 			tp := tracking.TuningParams{}
+
+			// === Smoothing ===
 			if v, ok := params["offset_smoothing_alpha"].(float64); ok {
 				tp.OffsetSmoothingAlpha = v
 			}
 			if v, ok := params["position_smoothing"].(float64); ok {
 				tp.PositionSmoothing = v
 			}
+
+			// === Velocity limiting ===
 			if v, ok := params["max_target_velocity"].(float64); ok {
 				tp.MaxTargetVelocity = v
 			}
+
+			// === PD Controller (yaw) ===
 			if v, ok := params["kp"].(float64); ok {
 				tp.Kp = v
 			}
@@ -606,7 +612,8 @@ func startWebDashboard(ctx context.Context) {
 			if v, ok := params["detection_hz"].(float64); ok {
 				tp.DetectionHz = v
 			}
-			// Body alignment params
+
+			// === Body alignment ===
 			if v, ok := params["body_alignment_enabled"].(bool); ok {
 				tp.BodyAlignmentEnabled = v
 			}
@@ -625,6 +632,74 @@ func startWebDashboard(ctx context.Context) {
 			if v, ok := params["body_alignment_cooldown"].(float64); ok {
 				tp.BodyAlignmentCooldown = v
 			}
+
+			// === Pitch-specific ===
+			if v, ok := params["kp_pitch"].(float64); ok {
+				tp.KpPitch = v
+			}
+			if v, ok := params["kd_pitch"].(float64); ok {
+				tp.KdPitch = v
+			}
+			if v, ok := params["pitch_dead_zone"].(float64); ok {
+				tp.PitchDeadZone = v
+			}
+			if v, ok := params["pitch_range_up"].(float64); ok {
+				tp.PitchRangeUp = v
+			}
+			if v, ok := params["pitch_range_down"].(float64); ok {
+				tp.PitchRangeDown = v
+			}
+
+			// === Audio tracking ===
+			if v, ok := params["audio_switch_enabled"].(bool); ok {
+				tp.AudioSwitchEnabled = v
+			}
+			if v, ok := params["audio_switch_threshold"].(float64); ok {
+				tp.AudioSwitchThreshold = v
+			}
+			if v, ok := params["audio_switch_min_confidence"].(float64); ok {
+				tp.AudioSwitchMinConfidence = v
+			}
+			if v, ok := params["audio_switch_look_duration"].(float64); ok {
+				tp.AudioSwitchLookDuration = v
+			}
+
+			// === Breathing ===
+			if v, ok := params["breathing_enabled"].(bool); ok {
+				tp.BreathingEnabled = v
+			}
+			if v, ok := params["breathing_amplitude"].(float64); ok {
+				tp.BreathingAmplitude = v
+			}
+			if v, ok := params["breathing_frequency"].(float64); ok {
+				tp.BreathingFrequency = v
+			}
+			if v, ok := params["breathing_antenna_amp"].(float64); ok {
+				tp.BreathingAntennaAmp = v
+			}
+
+			// === Range/speed ===
+			if v, ok := params["max_speed"].(float64); ok {
+				tp.MaxSpeed = v
+			}
+			if v, ok := params["yaw_range"].(float64); ok {
+				tp.YawRange = v
+			}
+			if v, ok := params["body_yaw_limit"].(float64); ok {
+				tp.BodyYawLimit = v
+			}
+
+			// === Scan behavior ===
+			if v, ok := params["scan_start_delay"].(float64); ok {
+				tp.ScanStartDelay = v
+			}
+			if v, ok := params["scan_speed"].(float64); ok {
+				tp.ScanSpeed = v
+			}
+			if v, ok := params["scan_range"].(float64); ok {
+				tp.ScanRange = v
+			}
+
 			headTracker.SetTuningParams(tp)
 			fmt.Printf("🎛️  Tuning params updated: %+v\n", tp)
 		}

@@ -139,9 +139,9 @@ func TestLimitsConstants(t *testing.T) {
 		t.Errorf("DefaultPitchRangeDown should be ~30°, got %.1f°", Degrees(DefaultPitchRangeDown))
 	}
 
-	// Head yaw: 1.5 rad ≈ 86°
-	if Degrees(DefaultHeadYawRange) < 85 || Degrees(DefaultHeadYawRange) > 87 {
-		t.Errorf("DefaultHeadYawRange should be ~86°, got %.1f°", Degrees(DefaultHeadYawRange))
+	// Head yaw: 0.9 * π ≈ 2.827 rad ≈ 162° (matches Python reachy)
+	if Degrees(DefaultHeadYawRange) < 161 || Degrees(DefaultHeadYawRange) > 163 {
+		t.Errorf("DefaultHeadYawRange should be ~162°, got %.1f°", Degrees(DefaultHeadYawRange))
 	}
 }
 

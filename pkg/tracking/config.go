@@ -144,10 +144,12 @@ func DefaultConfig() Config {
 		PitchRangeDown: DefaultPitchRangeDown, // -30° down (0.523 rad)
 		VerticalFOV:    math.Pi / 3,           // 60° vertical FOV (narrower than horizontal)
 
-		// Pitch gains (0 = inherit from yaw gains)
-		KpPitch:       0, // Use Kp
-		KdPitch:       0, // Use Kd
-		PitchDeadZone: 0, // Use ControlDeadZone
+		// Pitch gains - separate from yaw to reduce oscillation
+		// Pitch has tighter coupling (face moves opposite to head tilt immediately)
+		// so we use lower Kp and higher Kd to prevent hunting
+		KpPitch:       0.04, // Lower than Kp (0.10) to reduce pitch oscillation
+		KdPitch:       0.15, // Higher damping than Kd to fight oscillation
+		PitchDeadZone: 0.10, // ~6° dead zone for pitch (vs ~3° for yaw)
 
 		// Breathing animation (matches Python reachy for visibility)
 		BreathingEnabled:    true,                // Enable by default
