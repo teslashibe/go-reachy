@@ -15,6 +15,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/camera"
 	"github.com/teslashibe/go-reachy/pkg/debug"
+	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/eva"
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/openai"
@@ -101,18 +102,19 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
-	realtimeClient *openai.Client
-	videoClient    *video.Client
-	audioPlayer    *audio.Player
-	robotCtrl      *robot.HTTPController
-	memoryStore    *memory.Memory
-	webServer      *web.Server
-	headTracker    *tracking.Tracker
-	ttsProvider    tts.Provider      // HTTP TTS provider
-	ttsStreaming   *tts.ElevenLabsWS // WebSocket streaming TTS
-	objectDetector *detection.YOLODetector
-	speechWobbler  *speech.Wobbler   // Speech-synced head movement
-	cameraManager  *camera.Manager   // Camera configuration manager
+	realtimeClient   *openai.Client
+	videoClient      *video.Client
+	audioPlayer      *audio.Player
+	robotCtrl        *robot.HTTPController
+	memoryStore      *memory.Memory
+	webServer        *web.Server
+	headTracker      *tracking.Tracker
+	ttsProvider      tts.Provider      // HTTP TTS provider
+	ttsStreaming     *tts.ElevenLabsWS // WebSocket streaming TTS
+	objectDetector   *detection.YOLODetector
+	speechWobbler    *speech.Wobbler        // Speech-synced head movement
+	cameraManager    *camera.Manager        // Camera configuration manager
+	emotionRegistry  *emotions.Registry     // Pre-recorded emotion animations
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -341,6 +343,25 @@ func main() {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 	} else {
 		fmt.Println("✅")
+	}
+
+	// Initialize emotion system (81 pre-recorded animations)
+	fmt.Print("🎭 Initializing emotions... ")
+	emotionRegistry = emotions.NewRegistry()
+	if err := emotionRegistry.LoadBuiltIn(); err != nil {
+		fmt.Printf("⚠️  %v\n", err)
+	} else {
+		fmt.Printf("✅ (%d emotions loaded)\n", emotionRegistry.Count())
+		// Set up callback to control robot during emotion playback
+		emotionRegistry.SetCallback(func(pose emotions.Pose, elapsed time.Duration) bool {
+			if robotCtrl != nil {
+				// Convert emotion pose to robot commands
+				robotCtrl.SetHeadPose(pose.Head.Roll, pose.Head.Pitch, pose.Head.Yaw)
+				robotCtrl.SetAntennas(pose.Antennas[0], pose.Antennas[1])
+				robotCtrl.SetBodyYaw(pose.BodyYaw)
+			}
+			return true // Continue playback
+		})
 	}
 
 	// Connect audio DOA from go-eva
@@ -855,6 +876,7 @@ func connectRealtime(apiKey string) error {
 		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
 		AudioPlayer:    audioPlayer,
 		Tracker:        headTracker, // For body rotation sync
+		Emotions:       emotionRegistry,
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {
