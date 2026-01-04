@@ -310,6 +310,34 @@ func GetDocURL(docID string) string {
 	return fmt.Sprintf("https://docs.google.com/document/d/%s/edit", docID)
 }
 
+// tokenSource wraps oauth2.TokenSource to save refreshed tokens.
+type tokenSource struct {
+	src    oauth2.TokenSource
+	client *GoogleDocsClient
+}
+
+func (t *tokenSource) Token() (*oauth2.Token, error) {
+	token, err := t.src.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	// If token was refreshed (different from stored), save it
+	t.client.mu.Lock()
+	if t.client.token == nil || token.AccessToken != t.client.token.AccessToken {
+		t.client.token = token
+		// Save in background to not block
+		go func() {
+			if err := t.client.saveToken(); err != nil {
+				fmt.Printf("⚠️  Failed to save refreshed token: %v\n", err)
+			}
+		}()
+	}
+	t.client.mu.Unlock()
+
+	return token, nil
+}
+
 // initService initializes the Google Docs service with the current token.
 func (g *GoogleDocsClient) initService() error {
 	g.mu.Lock()
@@ -320,7 +348,11 @@ func (g *GoogleDocsClient) initService() error {
 	}
 
 	ctx := context.Background()
-	client := g.config.Client(ctx, g.token)
+
+	// Use a custom token source that saves refreshed tokens
+	baseSource := g.config.TokenSource(ctx, g.token)
+	savingSource := &tokenSource{src: baseSource, client: g}
+	client := oauth2.NewClient(ctx, savingSource)
 
 	service, err := docs.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {

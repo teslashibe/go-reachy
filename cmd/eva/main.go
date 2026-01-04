@@ -129,6 +129,9 @@ var (
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
 	evaCurrentResponse string
+
+	// Spark configuration (loaded from config file + env + CLI)
+	sparkConfig spark.Config
 )
 
 // webStateAdapter adapts web.Server to tracking.StateUpdater interface
@@ -157,7 +160,23 @@ func main() {
 	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
 	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
+	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
+	sparkFlagSet := false
 	flag.Parse()
+	// Check if --spark was explicitly set
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "spark" {
+			sparkFlagSet = true
+		}
+	})
+
+	// Load Spark config (file -> env -> CLI precedence)
+	var cliEnabled *bool
+	if sparkFlagSet {
+		cliEnabled = sparkFlag
+	}
+	sparkConfig = spark.LoadConfigWithOverrides(nil, cliEnabled)
+
 	debug.Enabled = *debugFlag
 	if *robotIPFlag != "" {
 		robotIP = *robotIPFlag
@@ -486,9 +505,9 @@ func initialize() error {
 	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
 
-	// Create Spark components (idea collection) - controlled by SPARK_ENABLED env var
-	sparkEnabled := os.Getenv("SPARK_ENABLED") != "false" // Enabled by default
-	if sparkEnabled {
+	// Create Spark components (idea collection)
+	// Priority: CLI flags > env vars > config file (~/.eva/config.json) > defaults
+	if sparkConfig.Enabled {
 		var sparkErr error
 		sparkStore, sparkErr = spark.NewDefaultStore()
 		if sparkErr != nil {
@@ -501,9 +520,10 @@ func initialize() error {
 		if googleAPIKey := os.Getenv("GOOGLE_API_KEY"); googleAPIKey != "" {
 			sparkGemini = spark.NewGeminiClient(spark.GeminiConfig{
 				APIKey:         googleAPIKey,
+				Model:          sparkConfig.GeminiModel,
 				MaxRequestsMin: 10,
 			})
-			fmt.Println("🔥 Spark Gemini integration enabled")
+			fmt.Printf("🔥 Spark Gemini enabled (model: %s)\n", sparkConfig.GeminiModel)
 		}
 
 		// Create Spark Google Docs client for syncing
@@ -526,8 +546,12 @@ func initialize() error {
 				}
 			}
 		}
+
+		// Log config source
+		fmt.Printf("🔥 Spark config: enabled=%v, auto_sync=%v, planning=%v (config: %s)\n",
+			sparkConfig.Enabled, sparkConfig.AutoSync, sparkConfig.PlanningEnabled, spark.ConfigPath())
 	} else {
-		fmt.Println("🔥 Spark disabled (SPARK_ENABLED=false)")
+		fmt.Println("🔥 Spark disabled")
 	}
 
 	// Create audio player

@@ -366,3 +366,4 @@ func (s *JSONStore) UpdateSparkTitle(identifier, newTitle string) (*Spark, error
 	return spark, nil
 }
 
+

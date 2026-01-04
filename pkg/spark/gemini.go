@@ -11,9 +11,13 @@ import (
 	"time"
 )
 
+// DefaultGeminiModel is the default Gemini model to use.
+const DefaultGeminiModel = "gemini-2.0-flash"
+
 // GeminiClient provides AI-powered title and tag generation for sparks.
 type GeminiClient struct {
 	apiKey string
+	model  string // Gemini model name (e.g., "gemini-2.0-flash")
 
 	// Rate limiting
 	rateMu      sync.Mutex
@@ -29,7 +33,8 @@ type GeminiClient struct {
 // GeminiConfig configures the Gemini client.
 type GeminiConfig struct {
 	APIKey         string
-	MaxRequestsMin int // Max requests per minute (default: 10)
+	Model          string // Gemini model name (default: gemini-2.0-flash)
+	MaxRequestsMin int    // Max requests per minute (default: 10)
 }
 
 // NewGeminiClient creates a new Gemini client for spark title/tag generation.
@@ -39,12 +44,23 @@ func NewGeminiClient(cfg GeminiConfig) *GeminiClient {
 		maxReq = 10 // Default: 10 requests per minute
 	}
 
+	model := cfg.Model
+	if model == "" {
+		model = DefaultGeminiModel
+	}
+
 	return &GeminiClient{
 		apiKey:      cfg.APIKey,
+		model:       model,
 		minInterval: time.Minute / time.Duration(maxReq),
 		titleCache:  make(map[string]string),
 		tagsCache:   make(map[string][]string),
 	}
+}
+
+// Model returns the configured Gemini model name.
+func (g *GeminiClient) Model() string {
+	return g.model
 }
 
 // GenerateTitle creates a concise, descriptive title for spark content.
@@ -261,7 +277,8 @@ RESOURCES:
 
 Be specific and actionable. Focus on practical next steps a creator could take today.`, spark.Title, spark.RawContent, contextStr)
 
-	response, err := g.callGemini(prompt)
+	// Plans need more tokens than titles/tags (500 for detailed steps)
+	response, err := g.callGeminiWithTokens(prompt, 500)
 	if err != nil {
 		return nil, err
 	}
@@ -348,8 +365,13 @@ func parseListItem(line string) string {
 	return ""
 }
 
-// callGemini makes a request to the Gemini API.
+// callGemini makes a request to the Gemini API with default max tokens.
 func (g *GeminiClient) callGemini(prompt string) (string, error) {
+	return g.callGeminiWithTokens(prompt, 100)
+}
+
+// callGeminiWithTokens makes a request to the Gemini API with custom max tokens.
+func (g *GeminiClient) callGeminiWithTokens(prompt string, maxTokens int) (string, error) {
 	payload := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
@@ -359,8 +381,8 @@ func (g *GeminiClient) callGemini(prompt string) (string, error) {
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"temperature":     0.3, // Lower temperature for more consistent outputs
-			"maxOutputTokens": 100, // Short responses only
+			"temperature":     0.3,       // Lower temperature for more consistent outputs
+			"maxOutputTokens": maxTokens, // Configurable output size
 		},
 	}
 
@@ -369,7 +391,7 @@ func (g *GeminiClient) callGemini(prompt string) (string, error) {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", g.apiKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", g.model, g.apiKey)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
