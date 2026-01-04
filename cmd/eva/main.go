@@ -486,43 +486,48 @@ func initialize() error {
 	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
 
-	// Create Spark store (idea collection)
-	var sparkErr error
-	sparkStore, sparkErr = spark.NewDefaultStore()
-	if sparkErr != nil {
-		fmt.Printf("⚠️  Spark store error: %v\n", sparkErr)
-	} else {
-		fmt.Printf("🔥 Spark loaded (%d sparks) from %s\n", sparkStore.Count(), sparkStore.Path())
-	}
-
-	// Create Spark Gemini client for AI title/tag generation
-	if googleAPIKey := os.Getenv("GOOGLE_API_KEY"); googleAPIKey != "" {
-		sparkGemini = spark.NewGeminiClient(spark.GeminiConfig{
-			APIKey:         googleAPIKey,
-			MaxRequestsMin: 10,
-		})
-		fmt.Println("🔥 Spark Gemini integration enabled")
-	}
-
-	// Create Spark Google Docs client for syncing
-	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
-	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-	if googleClientID != "" && googleClientSecret != "" {
-		var err error
-		sparkGoogleDocs, err = spark.NewGoogleDocsClient(spark.GoogleDocsConfig{
-			ClientID:     googleClientID,
-			ClientSecret: googleClientSecret,
-			RedirectURL:  "http://localhost:8080/api/spark/callback",
-		})
-		if err != nil {
-			fmt.Printf("⚠️  Spark Google Docs error: %v\n", err)
+	// Create Spark components (idea collection) - controlled by SPARK_ENABLED env var
+	sparkEnabled := os.Getenv("SPARK_ENABLED") != "false" // Enabled by default
+	if sparkEnabled {
+		var sparkErr error
+		sparkStore, sparkErr = spark.NewDefaultStore()
+		if sparkErr != nil {
+			fmt.Printf("⚠️  Spark store error: %v\n", sparkErr)
 		} else {
-			if sparkGoogleDocs.IsAuthenticated() {
-				fmt.Println("🔥 Spark Google Docs connected")
+			fmt.Printf("🔥 Spark loaded (%d sparks) from %s\n", sparkStore.Count(), sparkStore.Path())
+		}
+
+		// Create Spark Gemini client for AI title/tag generation
+		if googleAPIKey := os.Getenv("GOOGLE_API_KEY"); googleAPIKey != "" {
+			sparkGemini = spark.NewGeminiClient(spark.GeminiConfig{
+				APIKey:         googleAPIKey,
+				MaxRequestsMin: 10,
+			})
+			fmt.Println("🔥 Spark Gemini integration enabled")
+		}
+
+		// Create Spark Google Docs client for syncing
+		googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+		googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+		if googleClientID != "" && googleClientSecret != "" {
+			var err error
+			sparkGoogleDocs, err = spark.NewGoogleDocsClient(spark.GoogleDocsConfig{
+				ClientID:     googleClientID,
+				ClientSecret: googleClientSecret,
+				RedirectURL:  "http://localhost:8080/api/spark/callback",
+			})
+			if err != nil {
+				fmt.Printf("⚠️  Spark Google Docs error: %v\n", err)
 			} else {
-				fmt.Println("🔥 Spark Google Docs configured (not connected)")
+				if sparkGoogleDocs.IsAuthenticated() {
+					fmt.Println("🔥 Spark Google Docs connected")
+				} else {
+					fmt.Println("🔥 Spark Google Docs configured (not connected)")
+				}
 			}
 		}
+	} else {
+		fmt.Println("🔥 Spark disabled (SPARK_ENABLED=false)")
 	}
 
 	// Create audio player
