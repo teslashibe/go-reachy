@@ -82,6 +82,13 @@ type Server struct {
 	OnSparkAuthStart    func() string // Returns auth URL
 	OnSparkAuthCallback func(code string) error
 	OnSparkDisconnect   func() error
+
+	// Spark CRUD callbacks
+	OnSparkList     func() interface{}
+	OnSparkGet      func(id string) interface{}
+	OnSparkSync     func(id string) error
+	OnSparkDelete   func(id string) error
+	OnSparkGenPlan  func(id string) error
 }
 
 // NewServer creates a new web dashboard server
@@ -130,6 +137,13 @@ func NewServer(port string) *Server {
 	api.Get("/spark/auth", s.handleSparkAuthStart)
 	api.Get("/spark/callback", s.handleSparkCallback)
 	api.Post("/spark/disconnect", s.handleSparkDisconnect)
+
+	// Spark CRUD routes
+	api.Get("/sparks", s.handleSparkList)
+	api.Get("/sparks/:id", s.handleSparkGetOne)
+	api.Post("/sparks/:id/sync", s.handleSparkSyncOne)
+	api.Post("/sparks/:id/plan", s.handleSparkGenPlan)
+	api.Delete("/sparks/:id", s.handleSparkDeleteOne)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
@@ -479,5 +493,84 @@ func (s *Server) handleSparkDisconnect(c *fiber.Ctx) error {
 		})
 	}
 
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// handleSparkList returns all sparks
+func (s *Server) handleSparkList(c *fiber.Ctx) error {
+	if s.OnSparkList == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+	return c.JSON(s.OnSparkList())
+}
+
+// handleSparkGetOne returns a single spark by ID
+func (s *Server) handleSparkGetOne(c *fiber.Ctx) error {
+	if s.OnSparkGet == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+
+	id := c.Params("id")
+	result := s.OnSparkGet(id)
+	if result == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Spark not found",
+		})
+	}
+	return c.JSON(result)
+}
+
+// handleSparkSyncOne syncs a spark to Google Docs
+func (s *Server) handleSparkSyncOne(c *fiber.Ctx) error {
+	if s.OnSparkSync == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark sync not configured",
+		})
+	}
+
+	id := c.Params("id")
+	if err := s.OnSparkSync(id); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// handleSparkGenPlan generates a plan for a spark
+func (s *Server) handleSparkGenPlan(c *fiber.Ctx) error {
+	if s.OnSparkGenPlan == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Plan generation not configured",
+		})
+	}
+
+	id := c.Params("id")
+	if err := s.OnSparkGenPlan(id); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// handleSparkDeleteOne deletes a spark
+func (s *Server) handleSparkDeleteOne(c *fiber.Ctx) error {
+	if s.OnSparkDelete == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Spark not configured",
+		})
+	}
+
+	id := c.Params("id")
+	if err := s.OnSparkDelete(id); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
 	return c.JSON(fiber.Map{"success": true})
 }

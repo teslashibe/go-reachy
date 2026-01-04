@@ -814,6 +814,55 @@ func startWebDashboard(ctx context.Context) {
 		}
 	}
 
+	// Wire up Spark CRUD callbacks (always if spark is enabled)
+	if sparkStore != nil {
+		webServer.OnSparkList = func() interface{} {
+			sparks, _ := sparkStore.List()
+			return sparks
+		}
+		webServer.OnSparkGet = func(id string) interface{} {
+			spark, err := sparkStore.Get(id)
+			if err != nil {
+				return nil
+			}
+			return spark
+		}
+		webServer.OnSparkDelete = func(id string) error {
+			return sparkStore.Delete(id)
+		}
+		webServer.OnSparkSync = func(id string) error {
+			if sparkGoogleDocs == nil {
+				return fmt.Errorf("Google Docs not configured")
+			}
+			if !sparkGoogleDocs.IsAuthenticated() {
+				return fmt.Errorf("not connected to Google")
+			}
+			s, err := sparkStore.Get(id)
+			if err != nil {
+				return err
+			}
+			if err := sparkGoogleDocs.SyncSpark(s); err != nil {
+				return err
+			}
+			return sparkStore.Update(s)
+		}
+		webServer.OnSparkGenPlan = func(id string) error {
+			if sparkGemini == nil {
+				return fmt.Errorf("Gemini not configured")
+			}
+			s, err := sparkStore.Get(id)
+			if err != nil {
+				return err
+			}
+			plan, err := sparkGemini.GeneratePlan(s)
+			if err != nil {
+				return err
+			}
+			s.SetPlan(plan)
+			return sparkStore.Update(s)
+		}
+	}
+
 	// Connect head tracker to web dashboard for state updates
 	if headTracker != nil {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
