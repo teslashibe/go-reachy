@@ -6,6 +6,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/vision"
 )
 
@@ -44,6 +45,7 @@ type ToolsConfig struct {
 	AudioPlayer    *audio.Player
 	Tracker        BodyYawNotifier
 	Emotions       *emotions.Registry
+	SparkStore     *spark.JSONStore // Spark idea storage
 }
 
 // isAnimal returns true if the class name is an animal.
