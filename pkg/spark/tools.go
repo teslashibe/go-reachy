@@ -15,8 +15,9 @@ type Tool struct {
 
 // ToolsConfig holds dependencies for Spark tools.
 type ToolsConfig struct {
-	Store   *JSONStore
-	Gemini  *GeminiClient // Gemini client for title/tag generation (optional)
+	Store      *JSONStore
+	Gemini     *GeminiClient      // Gemini client for title/tag generation (optional)
+	GoogleDocs *GoogleDocsClient  // Google Docs client for syncing (optional)
 }
 
 // Tools returns all Spark-related tools for Eva.
@@ -367,6 +368,81 @@ func Tools(cfg ToolsConfig) []Tool {
 				}
 
 				return fmt.Sprintf("Found %d sparks matching '%s':\n%s", len(results), query, strings.Join(lines, "\n")), nil
+			},
+		},
+
+		// ============================================================
+		// sync_spark - Sync a spark to Google Docs
+		// ============================================================
+		{
+			Name: "sync_spark",
+			Description: `Sync a spark to Google Docs. Use when someone says "sync [spark] to Google", "save [spark] to docs", or wants to back up an idea to Google Docs.`,
+			Parameters: map[string]interface{}{
+				"spark": map[string]interface{}{
+					"type":        "string",
+					"description": "The spark title or keyword to sync",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				sparkID, _ := args["spark"].(string)
+				if sparkID == "" {
+					return "Which spark do you want to sync to Google Docs?", nil
+				}
+
+				if cfg.Store == nil {
+					return "Spark storage not available", nil
+				}
+
+				if cfg.GoogleDocs == nil {
+					return "Google Docs is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.", nil
+				}
+
+				if !cfg.GoogleDocs.IsAuthenticated() {
+					return "Not connected to Google. Please connect via the web dashboard first.", nil
+				}
+
+				// Find the spark
+				spark, ambiguous, err := findSparkFuzzy(cfg.Store, sparkID)
+				if err != nil {
+					return err.Error(), nil
+				}
+				if ambiguous != "" {
+					return ambiguous, nil
+				}
+
+				// Sync to Google Docs
+				if err := cfg.GoogleDocs.SyncSpark(spark); err != nil {
+					return fmt.Sprintf("Failed to sync: %v", err), nil
+				}
+
+				// Save the updated spark with GoogleDocID
+				if err := cfg.Store.Update(spark); err != nil {
+					fmt.Printf("⚠️  Failed to save spark after sync: %v\n", err)
+				}
+
+				docURL := GetDocURL(spark.GoogleDocID)
+				fmt.Printf("🔥 Synced spark to Google Docs: %s -> %s\n", spark.Title, docURL)
+				return fmt.Sprintf("Synced '%s' to Google Docs! You can view it at: %s", spark.Title, docURL), nil
+			},
+		},
+
+		// ============================================================
+		// google_status - Check Google Docs connection status
+		// ============================================================
+		{
+			Name: "google_status",
+			Description: `Check if Google Docs is connected. Use when someone asks "is Google connected?", "am I connected to Google?", or wants to know the sync status.`,
+			Parameters:  map[string]interface{}{},
+			Handler: func(args map[string]interface{}) (string, error) {
+				if cfg.GoogleDocs == nil {
+					return "Google Docs is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.", nil
+				}
+
+				if cfg.GoogleDocs.IsAuthenticated() {
+					return "Connected to Google Docs! Your sparks can be synced.", nil
+				}
+
+				return "Not connected to Google. You can connect via the web dashboard at /api/spark/auth", nil
 			},
 		},
 	}
