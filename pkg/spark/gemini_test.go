@@ -329,6 +329,93 @@ func TestRateLimiting(t *testing.T) {
 	}
 }
 
+func TestParsePlan(t *testing.T) {
+	response := `SUMMARY: Build an AI-powered plant watering system using Arduino and soil sensors.
+STEPS:
+1. Research soil moisture sensors and Arduino compatibility
+2. Design the circuit diagram for sensor integration
+3. Write Arduino code to read sensor data
+4. Build a prototype with a single plant
+5. Add WiFi connectivity for remote monitoring
+RESOURCES:
+- Arduino Uno or ESP32
+- Capacitive soil moisture sensor
+- Relay module for pump control`
+
+	plan := parsePlan(response)
+
+	if plan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+
+	if plan.Summary == "" {
+		t.Error("expected non-empty summary")
+	}
+
+	if len(plan.Steps) != 5 {
+		t.Errorf("expected 5 steps, got %d", len(plan.Steps))
+	}
+
+	if len(plan.Resources) != 3 {
+		t.Errorf("expected 3 resources, got %d", len(plan.Resources))
+	}
+}
+
+func TestParsePlanEmpty(t *testing.T) {
+	plan := parsePlan("random text without structure")
+
+	if plan != nil {
+		t.Error("expected nil plan for unstructured response")
+	}
+}
+
+func TestParseListItem(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"1. First step", "First step"},
+		{"2) Second step", "Second step"},
+		{"- Bullet item", "Bullet item"},
+		{"• Unicode bullet", "Unicode bullet"},
+		{"* Star bullet", "Star bullet"},
+		{"No prefix", ""},
+		{"   1. With whitespace", "With whitespace"},
+	}
+
+	for _, tt := range tests {
+		result := parseListItem(tt.input)
+		if result != tt.expected {
+			t.Errorf("parseListItem(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestGeneratePlanWithoutAPIKey(t *testing.T) {
+	client := NewGeminiClient(GeminiConfig{
+		APIKey: "", // No API key
+	})
+
+	spark := NewSpark("test-id", "Build a robot")
+	spark.SetTitle("Robot Project")
+
+	_, err := client.GeneratePlan(spark)
+	if err == nil {
+		t.Error("expected error without API key")
+	}
+}
+
+func TestGeneratePlanNilSpark(t *testing.T) {
+	client := NewGeminiClient(GeminiConfig{
+		APIKey: "test-key",
+	})
+
+	_, err := client.GeneratePlan(nil)
+	if err == nil {
+		t.Error("expected error for nil spark")
+	}
+}
+
 func TestGenerateTitleAndTagsCacheHit(t *testing.T) {
 	client := NewGeminiClient(GeminiConfig{
 		APIKey: "", // No API key

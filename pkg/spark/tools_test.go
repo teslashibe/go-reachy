@@ -472,6 +472,7 @@ func TestToolDescriptions(t *testing.T) {
 		"search_sparks",
 		"sync_spark",
 		"google_status",
+		"generate_plan",
 	}
 
 	if len(tools) != len(expectedTools) {
@@ -556,6 +557,66 @@ func TestSyncSparkToolMissingSpark(t *testing.T) {
 
 	// Test with empty spark
 	result, _ := syncTool.Handler(map[string]interface{}{
+		"spark": "",
+	})
+
+	if !strings.Contains(result, "Which spark") {
+		t.Errorf("expected prompt for spark, got: %s", result)
+	}
+}
+
+func TestGeneratePlanToolNoGemini(t *testing.T) {
+	store, cleanup := testToolsStore(t)
+	defer cleanup()
+
+	// Create a spark first
+	spark, _ := store.CreateSpark("Test idea for planning")
+	spark.SetTitle("Plan Test")
+	store.Update(spark)
+
+	cfg := ToolsConfig{
+		Store:  store,
+		Gemini: nil, // No Gemini client
+	}
+	tools := Tools(cfg)
+
+	var planTool Tool
+	for _, tool := range tools {
+		if tool.Name == "generate_plan" {
+			planTool = tool
+			break
+		}
+	}
+
+	result, _ := planTool.Handler(map[string]interface{}{
+		"spark": "Plan Test",
+	})
+
+	if !strings.Contains(result, "not configured") {
+		t.Errorf("expected 'not configured' message, got: %s", result)
+	}
+}
+
+func TestGeneratePlanToolMissingSpark(t *testing.T) {
+	store, cleanup := testToolsStore(t)
+	defer cleanup()
+
+	cfg := ToolsConfig{
+		Store:  store,
+		Gemini: nil,
+	}
+	tools := Tools(cfg)
+
+	var planTool Tool
+	for _, tool := range tools {
+		if tool.Name == "generate_plan" {
+			planTool = tool
+			break
+		}
+	}
+
+	// Test with empty spark
+	result, _ := planTool.Handler(map[string]interface{}{
 		"spark": "",
 	})
 

@@ -215,6 +215,139 @@ TAGS: robotics, gardening, arduino, automation`, content)
 	return title, tags, nil
 }
 
+// GeneratePlan creates an action plan for a spark idea.
+// Returns a Plan with summary, steps, and resources.
+func (g *GeminiClient) GeneratePlan(spark *Spark) (*Plan, error) {
+	if spark == nil {
+		return nil, fmt.Errorf("spark is nil")
+	}
+
+	// Build context from spark
+	var contextStr string
+	if len(spark.Context) > 0 {
+		contextStr = "\n\nAdditional context:\n"
+		for _, ctx := range spark.Context {
+			contextStr += fmt.Sprintf("- %s\n", ctx.Content)
+		}
+	}
+
+	// Rate limit
+	if err := g.waitForRateLimit(); err != nil {
+		return nil, err
+	}
+
+	// If no API key, return error
+	if g.apiKey == "" {
+		return nil, fmt.Errorf("no API key configured")
+	}
+
+	prompt := fmt.Sprintf(`Create an action plan for this idea:
+
+Title: %s
+Idea: %s%s
+
+Respond in exactly this format:
+SUMMARY: [1-2 sentence overview of what this plan achieves]
+STEPS:
+1. [First actionable step]
+2. [Second step]
+3. [Third step]
+4. [Fourth step]
+5. [Fifth step]
+RESOURCES:
+- [Useful tool, library, or resource]
+- [Another resource]
+- [Third resource]
+
+Be specific and actionable. Focus on practical next steps a creator could take today.`, spark.Title, spark.RawContent, contextStr)
+
+	response, err := g.callGemini(prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the plan from response
+	plan := parsePlan(response)
+	if plan == nil {
+		return nil, fmt.Errorf("failed to parse plan from response")
+	}
+
+	return plan, nil
+}
+
+// parsePlan extracts a Plan from a Gemini response.
+func parsePlan(response string) *Plan {
+	lines := strings.Split(response, "\n")
+
+	plan := &Plan{
+		LastUpdated: time.Now(),
+	}
+
+	var currentSection string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		lineLower := strings.ToLower(line)
+
+		if strings.HasPrefix(lineLower, "summary:") {
+			plan.Summary = strings.TrimSpace(line[8:])
+			currentSection = ""
+		} else if strings.HasPrefix(lineLower, "steps:") {
+			currentSection = "steps"
+		} else if strings.HasPrefix(lineLower, "resources:") {
+			currentSection = "resources"
+		} else if currentSection == "steps" && len(line) > 0 {
+			// Parse numbered steps (e.g., "1. Do something")
+			step := parseListItem(line)
+			if step != "" {
+				plan.Steps = append(plan.Steps, step)
+			}
+		} else if currentSection == "resources" && len(line) > 0 {
+			// Parse bullet resources (e.g., "- React Native")
+			resource := parseListItem(line)
+			if resource != "" {
+				plan.Resources = append(plan.Resources, resource)
+			}
+		}
+	}
+
+	// Validate we got something useful
+	if plan.Summary == "" && len(plan.Steps) == 0 {
+		return nil
+	}
+
+	return plan
+}
+
+// parseListItem extracts the content from a list item (numbered or bulleted).
+func parseListItem(line string) string {
+	line = strings.TrimSpace(line)
+
+	// Remove bullet points
+	if strings.HasPrefix(line, "- ") {
+		return strings.TrimSpace(line[2:])
+	}
+	if strings.HasPrefix(line, "• ") {
+		return strings.TrimSpace(line[3:]) // "•" is 3 bytes in UTF-8
+	}
+	if strings.HasPrefix(line, "* ") {
+		return strings.TrimSpace(line[2:])
+	}
+
+	// Remove numbered prefixes (1. 2. etc)
+	for i := 1; i <= 20; i++ {
+		prefix := fmt.Sprintf("%d. ", i)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):])
+		}
+		prefix = fmt.Sprintf("%d) ", i)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):])
+		}
+	}
+
+	return ""
+}
+
 // callGemini makes a request to the Gemini API.
 func (g *GeminiClient) callGemini(prompt string) (string, error) {
 	payload := map[string]interface{}{
