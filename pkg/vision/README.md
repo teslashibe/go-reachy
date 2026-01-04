@@ -49,3 +49,4 @@ Vision capabilities are exposed to Eva as tools:
 - `look` - Describe what Eva sees
 - `search_web` - Search the internet for information
 
+

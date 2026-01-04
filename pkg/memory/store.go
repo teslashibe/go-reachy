@@ -75,3 +75,4 @@ func (s *JSONStore) Close() error {
 // Ensure JSONStore implements Store
 var _ Store = (*JSONStore)(nil)
 
+

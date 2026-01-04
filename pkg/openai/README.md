@@ -74,3 +74,4 @@ client.SendAudio(pcmData)
 | `OnError` | Error occurred |
 | `OnInterruption` | User interrupted AI |
 
+

@@ -237,3 +237,4 @@ func (m *Mock) Reset() {
 // Ensure Mock implements Provider
 var _ Provider = (*Mock)(nil)
 
+
