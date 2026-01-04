@@ -34,7 +34,8 @@ type OffsetHandler func(offset robot.Offset)
 // BodyRotationHandler is called when the head reaches its mechanical limits
 // and the body should rotate to bring the target back into range.
 // direction: positive = rotate body left, negative = rotate body right (radians)
-type BodyRotationHandler func(direction float64)
+// Returns: the actual delta applied (may be 0 if at limit, used for head counter-rotation)
+type BodyRotationHandler func(direction float64) float64
 
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
@@ -733,6 +734,7 @@ func (t *Tracker) updateLockState(hasFace bool) {
 
 // checkBodyAlignment rotates body to stay under the head.
 // Simple rule: If head is turned, body slowly rotates to center it.
+// Fix for issue #79: Only counter-rotate head if body ACTUALLY moved.
 func (t *Tracker) checkBodyAlignment() {
 	if !t.config.BodyAlignmentEnabled {
 		return
@@ -777,9 +779,6 @@ func (t *Tracker) checkBodyAlignment() {
 		return
 	}
 
-	debug.Log("🌍 Body: body=%.2f, head=%.2f, error=%.2f (%s)\n",
-		currentBodyYaw, currentHeadYaw, bodyError, reason)
-
 	// Calculate rotation step - PROPORTIONAL to error
 	dt := t.config.MovementInterval.Seconds()
 	maxStep := t.config.BodyAlignmentSpeed * dt
@@ -805,6 +804,12 @@ func (t *Tracker) checkBodyAlignment() {
 		bodyDelta = -rotationStep // Need to rotate right
 	}
 
+	// PRE-CHECK: Can body actually move in this direction? (Issue #79 fix)
+	if !t.world.CanBodyRotate(bodyDelta) {
+		debug.Log("🚫 Body at limit (%.2f rad), skipping alignment\n", currentBodyYaw)
+		return // Body at limit, let head track alone
+	}
+
 	// Log movement
 	debug.Log("🎯 Body alignment: head=%.2f, body=%.2f, delta=%.3f → newBody=%.2f\n",
 		currentHeadYaw, currentBodyYaw, bodyDelta, currentBodyYaw+bodyDelta)
@@ -815,12 +820,13 @@ func (t *Tracker) checkBodyAlignment() {
 	t.isBodyAligning = true
 	t.mu.Unlock()
 
-	// Trigger body rotation
-	handler(bodyDelta)
+	// Trigger body rotation and get ACTUAL delta (may be less if clamped)
+	actualDelta := handler(bodyDelta)
 
-	// Counter-rotate head to maintain gaze (only when centering head, not when returning body)
-	if reason == "centering head" {
-		t.controller.AdjustForBodyRotation(bodyDelta)
+	// Counter-rotate head to maintain gaze ONLY if body ACTUALLY moved (Issue #79 fix)
+	// Use the actual delta, not the intended delta
+	if reason == "centering head" && math.Abs(actualDelta) > 0.001 {
+		t.controller.AdjustForBodyRotation(actualDelta)
 	}
 }
 

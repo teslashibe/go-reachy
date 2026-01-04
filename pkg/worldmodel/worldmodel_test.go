@@ -156,5 +156,102 @@ func TestWorldModel_VelocityPrediction_WithBodyYaw(t *testing.T) {
 	}
 }
 
+// Issue #79: Tests for body yaw limit functionality
 
+func TestWorldModel_BodyYawLimit_Default(t *testing.T) {
+	w := New()
+
+	// Default limit should match Python reachy's 0.9*π ≈ 2.827 rad
+	limit := w.GetBodyYawLimit()
+	expectedLimit := 0.9 * math.Pi
+
+	if math.Abs(limit-expectedLimit) > 0.001 {
+		t.Errorf("Default BodyYawLimit: got %v, want ~%v (0.9*π)", limit, expectedLimit)
+	}
+}
+
+func TestWorldModel_SetBodyYawLimit(t *testing.T) {
+	w := New()
+
+	// Set custom limit
+	w.SetBodyYawLimit(1.5)
+	if w.GetBodyYawLimit() != 1.5 {
+		t.Errorf("After SetBodyYawLimit(1.5): got %v, want 1.5", w.GetBodyYawLimit())
+	}
+
+	// Zero and negative values should be ignored
+	w.SetBodyYawLimit(0)
+	if w.GetBodyYawLimit() != 1.5 {
+		t.Errorf("SetBodyYawLimit(0) should be ignored: got %v, want 1.5", w.GetBodyYawLimit())
+	}
+
+	w.SetBodyYawLimit(-1.0)
+	if w.GetBodyYawLimit() != 1.5 {
+		t.Errorf("SetBodyYawLimit(-1.0) should be ignored: got %v, want 1.5", w.GetBodyYawLimit())
+	}
+}
+
+func TestWorldModel_IsBodyAtLimit(t *testing.T) {
+	w := New()
+	w.SetBodyYawLimit(1.0) // Set smaller limit for easier testing
+
+	tests := []struct {
+		name      string
+		bodyYaw   float64
+		direction float64
+		atLimit   bool
+	}{
+		{"center, move left", 0.0, 0.1, false},
+		{"center, move right", 0.0, -0.1, false},
+		{"at positive limit, move left", 1.0, 0.1, true},
+		{"at positive limit, move right", 1.0, -0.1, false},
+		{"at negative limit, move right", -1.0, -0.1, true},
+		{"at negative limit, move left", -1.0, 0.1, false},
+		{"near positive limit, move left", 0.99, 0.1, false},
+		{"beyond positive limit, move left", 1.1, 0.1, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w.SetBodyYaw(tc.bodyYaw)
+			result := w.IsBodyAtLimit(tc.direction)
+			if result != tc.atLimit {
+				t.Errorf("IsBodyAtLimit(%v) with body at %v: got %v, want %v",
+					tc.direction, tc.bodyYaw, result, tc.atLimit)
+			}
+		})
+	}
+}
+
+func TestWorldModel_CanBodyRotate(t *testing.T) {
+	w := New()
+	w.SetBodyYawLimit(1.0)
+
+	// CanBodyRotate is the inverse of IsBodyAtLimit
+	w.SetBodyYaw(1.0) // At positive limit
+	if w.CanBodyRotate(0.1) {
+		t.Error("Should not be able to rotate left when at positive limit")
+	}
+	if !w.CanBodyRotate(-0.1) {
+		t.Error("Should be able to rotate right when at positive limit")
+	}
+
+	w.SetBodyYaw(0.0) // At center
+	if !w.CanBodyRotate(0.1) {
+		t.Error("Should be able to rotate left when at center")
+	}
+	if !w.CanBodyRotate(-0.1) {
+		t.Error("Should be able to rotate right when at center")
+	}
+}
+
+func TestWorldModel_IsBodyAtLimit_ZeroDirection(t *testing.T) {
+	w := New()
+	w.SetBodyYaw(1.0)
+
+	// Zero direction should return false (no movement = not at limit)
+	if w.IsBodyAtLimit(0) {
+		t.Error("IsBodyAtLimit(0) should return false")
+	}
+}
 
