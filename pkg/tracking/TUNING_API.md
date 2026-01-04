@@ -249,3 +249,4 @@ Response:
 | `perception.go` | Face position processing |
 | `tracker.go` | Main tracking orchestration |
 
+

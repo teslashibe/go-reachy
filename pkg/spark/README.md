@@ -102,9 +102,9 @@ Supported models (configure via `GEMINI_MODEL`):
 ## Google Docs Setup
 
 1. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
-2. Open Eva dashboard at `http://localhost:8080`
+2. Open Eva dashboard at `http://localhost:8181`
 3. Click "Connect Google" and authorize
 4. Token is saved to `~/.eva/google_token.json`
 
-OAuth2 callback URL: `http://localhost:8080/api/spark/callback`
+OAuth2 callback URL: `http://localhost:8181/api/spark/callback`
 

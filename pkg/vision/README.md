@@ -50,3 +50,4 @@ Vision capabilities are exposed to Eva as tools:
 - `search_web` - Search the internet for information
 
 
+

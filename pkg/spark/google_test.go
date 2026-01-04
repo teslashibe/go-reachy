@@ -128,7 +128,7 @@ func TestRedirectURLDefault(t *testing.T) {
 	}
 
 	// Config should have default redirect URL
-	if client.config.RedirectURL != "http://localhost:8080/api/spark/callback" {
+	if client.config.RedirectURL != "http://localhost:8181/api/spark/callback" {
 		t.Errorf("expected default redirect URL, got %s", client.config.RedirectURL)
 	}
 }

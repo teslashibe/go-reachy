@@ -103,22 +103,22 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
-	realtimeClient   *openai.Client
-	videoClient      *video.Client
-	audioPlayer      *audio.Player
-	robotCtrl        *robot.HTTPController
-	memoryStore      *memory.Memory
-	sparkStore       *spark.JSONStore
-	sparkGemini      *spark.GeminiClient
-	sparkGoogleDocs  *spark.GoogleDocsClient
-	webServer        *web.Server
-	headTracker      *tracking.Tracker
-	ttsProvider      tts.Provider      // HTTP TTS provider
-	ttsStreaming     *tts.ElevenLabsWS // WebSocket streaming TTS
-	objectDetector   *detection.YOLODetector
-	speechWobbler    *speech.Wobbler        // Speech-synced head movement
-	cameraManager    *camera.Manager        // Camera configuration manager
-	emotionRegistry  *emotions.Registry     // Pre-recorded emotion animations
+	realtimeClient  *openai.Client
+	videoClient     *video.Client
+	audioPlayer     *audio.Player
+	robotCtrl       *robot.HTTPController
+	memoryStore     *memory.Memory
+	sparkStore      *spark.JSONStore
+	sparkGemini     *spark.GeminiClient
+	sparkGoogleDocs *spark.GoogleDocsClient
+	webServer       *web.Server
+	headTracker     *tracking.Tracker
+	ttsProvider     tts.Provider      // HTTP TTS provider
+	ttsStreaming    *tts.ElevenLabsWS // WebSocket streaming TTS
+	objectDetector  *detection.YOLODetector
+	speechWobbler   *speech.Wobbler    // Speech-synced head movement
+	cameraManager   *camera.Manager    // Camera configuration manager
+	emotionRegistry *emotions.Registry // Pre-recorded emotion animations
 
 	speaking   bool
 	speakingMu sync.Mutex
@@ -161,6 +161,7 @@ func main() {
 	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
+	noBodyFlag := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
 	sparkFlagSet := false
 	flag.Parse()
 	// Check if --spark was explicitly set
@@ -398,32 +399,36 @@ func main() {
 			fmt.Println("✅")
 		}
 
-		// Set up automatic body rotation when head reaches limits
-		// Returns actual delta for head counter-rotation (Issue #79 fix)
-		headTracker.SetBodyRotationHandler(func(direction float64) float64 {
-			currentBody := headTracker.GetBodyYaw()
-			newBody := currentBody + direction
+		// Set up automatic body rotation when head reaches limits (unless --no-body flag)
+		if *noBodyFlag {
+			fmt.Println("🚫 Body rotation DISABLED (--no-body flag)")
+		} else {
+			// Returns actual delta for head counter-rotation (Issue #79 fix)
+			headTracker.SetBodyRotationHandler(func(direction float64) float64 {
+				currentBody := headTracker.GetBodyYaw()
+				newBody := currentBody + direction
 
-			// Use world model's limit (matches Python reachy: 0.9*π ≈ ±162°)
-			limit := headTracker.GetWorld().GetBodyYawLimit()
-			if newBody > limit {
-				newBody = limit
-			} else if newBody < -limit {
-				newBody = -limit
-			}
+				// Use world model's limit (matches Python reachy: 0.9*π ≈ ±162°)
+				limit := headTracker.GetWorld().GetBodyYawLimit()
+				if newBody > limit {
+					newBody = limit
+				} else if newBody < -limit {
+					newBody = -limit
+				}
 
-			// Calculate actual delta after clamping
-			actualDelta := newBody - currentBody
+				// Calculate actual delta after clamping
+				actualDelta := newBody - currentBody
 
-			debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
-				currentBody, newBody, actualDelta, limit)
+				debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
+					currentBody, newBody, actualDelta, limit)
 
-			robotCtrl.SetBodyYaw(newBody)
-			headTracker.SetBodyYaw(newBody) // Sync world model
+				robotCtrl.SetBodyYaw(newBody)
+				headTracker.SetBodyYaw(newBody) // Sync world model
 
-			return actualDelta // Return actual movement for head counter-rotation
-		})
-		fmt.Println("🔄 Auto body rotation enabled")
+				return actualDelta // Return actual movement for head counter-rotation
+			})
+			fmt.Println("🔄 Auto body rotation enabled")
+		}
 
 		// Enable antenna breathing animation (matches Python reachy)
 		headTracker.SetAntennaController(robotCtrl)
@@ -534,7 +539,7 @@ func initialize() error {
 			sparkGoogleDocs, err = spark.NewGoogleDocsClient(spark.GoogleDocsConfig{
 				ClientID:     googleClientID,
 				ClientSecret: googleClientSecret,
-				RedirectURL:  "http://localhost:8080/api/spark/callback",
+				RedirectURL:  "http://localhost:8181/api/spark/callback",
 			})
 			if err != nil {
 				fmt.Printf("⚠️  Spark Google Docs error: %v\n", err)
@@ -927,7 +932,7 @@ func streamCameraToWeb(ctx context.Context) {
 	fmt.Println("📷 Camera streaming to dashboard started")
 
 	// Stream at 10 FPS to dashboard - much smoother than trying to hit 30 FPS
-	// The H264 decoder can't keep up with 30 FPS anyway, and 10 FPS is 
+	// The H264 decoder can't keep up with 30 FPS anyway, and 10 FPS is
 	// plenty smooth for monitoring purposes while saving ~70% CPU
 	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS
 	defer ticker.Stop()
@@ -1014,9 +1019,9 @@ func connectRealtime(apiKey string) error {
 		AudioPlayer:     audioPlayer,
 		Tracker:         headTracker, // For body rotation sync
 		Emotions:        emotionRegistry,
-		SparkStore:      sparkStore,       // Idea collection
-		SparkGemini:     sparkGemini,      // Gemini for title/tag generation
-		SparkGoogleDocs: sparkGoogleDocs,  // Google Docs for syncing
+		SparkStore:      sparkStore,      // Idea collection
+		SparkGemini:     sparkGemini,     // Gemini for title/tag generation
+		SparkGoogleDocs: sparkGoogleDocs, // Google Docs for syncing
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {

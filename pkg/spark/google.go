@@ -45,7 +45,7 @@ func NewGoogleDocsClient(cfg GoogleDocsConfig) (*GoogleDocsClient, error) {
 	}
 
 	if cfg.RedirectURL == "" {
-		cfg.RedirectURL = "http://localhost:8080/api/spark/callback"
+		cfg.RedirectURL = "http://localhost:8181/api/spark/callback"
 	}
 
 	if cfg.TokenPath == "" {
