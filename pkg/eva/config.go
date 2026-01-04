@@ -3,6 +3,7 @@ package eva
 
 import (
 	"github.com/teslashibe/go-reachy/pkg/audio"
+	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/vision"
@@ -42,6 +43,7 @@ type ToolsConfig struct {
 	GoogleAPIKey   string
 	AudioPlayer    *audio.Player
 	Tracker        BodyYawNotifier
+	Emotions       *emotions.Registry
 }
 
 // isAnimal returns true if the class name is an animal.

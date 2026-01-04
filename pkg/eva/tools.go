@@ -1,6 +1,7 @@
 package eva
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -47,52 +48,75 @@ func Tools(cfg ToolsConfig) []Tool {
 			},
 		},
 		{
-			Name:        "express_emotion",
-			Description: "Express an emotion through antenna movements and head gestures. Use this to show how you feel.",
+			Name:        "play_emotion",
+			Description: `Play a pre-recorded emotion animation. Available emotions include: yes1, no1, sad1, sad2, surprised1, surprised2, happy (cheerful1), laughing1, laughing2, dance1, dance2, dance3, tired1, confused1, scared1, fear1, angry (rage1, furious1, irritated1), curious1, boredom1, boredom2, welcoming1, welcoming2, proud1, proud2, proud3, grateful1, helpful1, helpful2, loving1, shy1, and 70+ more. Use emotions that match the context of the conversation.`,
 			Parameters: map[string]interface{}{
 				"emotion": map[string]interface{}{
 					"type":        "string",
-					"enum":        []string{"happy", "curious", "excited", "confused", "sad", "surprised"},
-					"description": "The emotion to express",
+					"description": "Name of the emotion to play (e.g., 'yes1', 'surprised1', 'dance1', 'laughing1')",
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
-				emotion, _ := args["emotion"].(string)
-
-				if robot != nil {
-					switch emotion {
-					case "happy":
-						for i := 0; i < 3; i++ {
-							robot.SetAntennas(0.3, -0.3)
-							time.Sleep(100 * time.Millisecond)
-							robot.SetAntennas(-0.3, 0.3)
-							time.Sleep(100 * time.Millisecond)
-						}
-						robot.SetAntennas(0, 0)
-					case "curious":
-						robot.SetHeadPose(0, 0.1, 0.2)
-						robot.SetAntennas(0.3, 0)
-					case "excited":
-						for i := 0; i < 5; i++ {
-							robot.SetAntennas(0.5, -0.5)
-							time.Sleep(80 * time.Millisecond)
-							robot.SetAntennas(-0.5, 0.5)
-							time.Sleep(80 * time.Millisecond)
-						}
-						robot.SetAntennas(0, 0)
-					case "confused":
-						robot.SetHeadPose(0.2, 0, 0)
-						robot.SetAntennas(-0.2, -0.2)
-					case "sad":
-						robot.SetHeadPose(0, -0.2, 0)
-						robot.SetAntennas(-0.4, -0.4)
-					case "surprised":
-						robot.SetHeadPose(0, 0.15, 0)
-						robot.SetAntennas(0.5, 0.5)
-					}
+				emotionName, _ := args["emotion"].(string)
+				if emotionName == "" {
+					return "Please specify an emotion name", nil
 				}
 
-				return fmt.Sprintf("Expressing %s", emotion), nil
+				if cfg.Emotions == nil {
+					return "Emotion system not available", nil
+				}
+
+				// Check if emotion exists
+				emotion, err := cfg.Emotions.Get(emotionName)
+				if err != nil {
+					// Try to find a close match
+					matches := cfg.Emotions.Search(emotionName)
+					if len(matches) > 0 {
+						return fmt.Sprintf("Emotion '%s' not found. Did you mean: %s?", emotionName, strings.Join(matches[:min(5, len(matches))], ", ")), nil
+					}
+					return fmt.Sprintf("Emotion '%s' not found", emotionName), nil
+				}
+
+				fmt.Printf("🎭 Playing emotion: %s (%.1fs)\n", emotionName, emotion.Duration.Seconds())
+
+				// Play asynchronously - callback handles robot movement
+				go func() {
+					ctx := context.Background()
+					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
+						fmt.Printf("🎭 Emotion playback error: %v\n", err)
+					}
+				}()
+
+				return fmt.Sprintf("Playing emotion: %s - %s", emotionName, emotion.Description), nil
+			},
+		},
+		{
+			Name:        "stop_emotion",
+			Description: "Stop the currently playing emotion animation.",
+			Parameters:  map[string]interface{}{},
+			Handler: func(args map[string]interface{}) (string, error) {
+				if cfg.Emotions != nil {
+					cfg.Emotions.Stop()
+					return "Stopped emotion playback", nil
+				}
+				return "Emotion system not available", nil
+			},
+		},
+		{
+			Name:        "list_emotions",
+			Description: "List available emotion categories. Use this to see what emotions you can play.",
+			Parameters:  map[string]interface{}{},
+			Handler: func(args map[string]interface{}) (string, error) {
+				if cfg.Emotions == nil {
+					return "Emotion system not available", nil
+				}
+
+				cats := cfg.Emotions.Categories()
+				var parts []string
+				for cat, items := range cats {
+					parts = append(parts, fmt.Sprintf("%s (%d)", cat, len(items)))
+				}
+				return fmt.Sprintf("Emotion categories: %s. Total: %d emotions available.", strings.Join(parts, ", "), cfg.Emotions.Count()), nil
 			},
 		},
 		{
