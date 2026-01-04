@@ -20,6 +20,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/openai"
 	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/speech"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
@@ -107,6 +108,7 @@ var (
 	audioPlayer      *audio.Player
 	robotCtrl        *robot.HTTPController
 	memoryStore      *memory.Memory
+	sparkStore       *spark.JSONStore
 	webServer        *web.Server
 	headTracker      *tracking.Tracker
 	ttsProvider      tts.Provider      // HTTP TTS provider
@@ -481,6 +483,15 @@ func initialize() error {
 	memoryPath := homeDir + "/.eva/memory.json"
 	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
+
+	// Create Spark store (idea collection)
+	var sparkErr error
+	sparkStore, sparkErr = spark.NewDefaultStore()
+	if sparkErr != nil {
+		fmt.Printf("⚠️  Spark store error: %v\n", sparkErr)
+	} else {
+		fmt.Printf("🔥 Spark loaded (%d sparks) from %s\n", sparkStore.Count(), sparkStore.Path())
+	}
 
 	// Create audio player
 	audioPlayer = audio.NewPlayer(robotIP, sshUser, sshPass)
@@ -877,6 +888,7 @@ func connectRealtime(apiKey string) error {
 		AudioPlayer:    audioPlayer,
 		Tracker:        headTracker, // For body rotation sync
 		Emotions:       emotionRegistry,
+		SparkStore:     sparkStore, // Idea collection
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {
