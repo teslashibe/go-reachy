@@ -445,6 +445,77 @@ func Tools(cfg ToolsConfig) []Tool {
 				return "Not connected to Google. You can connect via the web dashboard at /api/spark/auth", nil
 			},
 		},
+
+		// ============================================================
+		// generate_plan - Generate an action plan for a spark
+		// ============================================================
+		{
+			Name: "generate_plan",
+			Description: `Generate an action plan for an idea. Use when someone says "make a plan for [spark]", "how do I build [spark]", "create a plan", or wants actionable steps for their idea.`,
+			Parameters: map[string]interface{}{
+				"spark": map[string]interface{}{
+					"type":        "string",
+					"description": "The spark title or keyword to generate a plan for",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				sparkID, _ := args["spark"].(string)
+				if sparkID == "" {
+					return "Which spark do you want me to create a plan for?", nil
+				}
+
+				if cfg.Store == nil {
+					return "Spark storage not available", nil
+				}
+
+				if cfg.Gemini == nil {
+					return "Gemini is not configured. Please set GOOGLE_API_KEY to generate plans.", nil
+				}
+
+				// Find the spark
+				spark, ambiguous, err := findSparkFuzzy(cfg.Store, sparkID)
+				if err != nil {
+					return err.Error(), nil
+				}
+				if ambiguous != "" {
+					return ambiguous, nil
+				}
+
+				// Generate the plan
+				plan, err := cfg.Gemini.GeneratePlan(spark)
+				if err != nil {
+					return fmt.Sprintf("Failed to generate plan: %v", err), nil
+				}
+
+				// Save the plan to the spark
+				spark.SetPlan(plan)
+				if err := cfg.Store.Update(spark); err != nil {
+					fmt.Printf("⚠️  Failed to save plan: %v\n", err)
+				}
+
+				// Format response
+				var response strings.Builder
+				response.WriteString(fmt.Sprintf("Here's a plan for '%s':\n\n", spark.Title))
+				response.WriteString(fmt.Sprintf("📋 %s\n\n", plan.Summary))
+
+				if len(plan.Steps) > 0 {
+					response.WriteString("Steps:\n")
+					for i, step := range plan.Steps {
+						response.WriteString(fmt.Sprintf("%d. %s\n", i+1, step))
+					}
+				}
+
+				if len(plan.Resources) > 0 {
+					response.WriteString("\nResources:\n")
+					for _, resource := range plan.Resources {
+						response.WriteString(fmt.Sprintf("• %s\n", resource))
+					}
+				}
+
+				fmt.Printf("🔥 Generated plan for: %s\n", spark.Title)
+				return response.String(), nil
+			},
+		},
 	}
 }
 
