@@ -15,9 +15,8 @@ type Tool struct {
 
 // ToolsConfig holds dependencies for Spark tools.
 type ToolsConfig struct {
-	Store          *JSONStore
-	TitleGenerator func(content string) (string, error) // Gemini title generation (optional)
-	TagGenerator   func(content string) ([]string, error) // Gemini tag generation (optional)
+	Store   *JSONStore
+	Gemini  *GeminiClient // Gemini client for title/tag generation (optional)
 }
 
 // Tools returns all Spark-related tools for Eva.
@@ -51,20 +50,26 @@ func Tools(cfg ToolsConfig) []Tool {
 					return fmt.Sprintf("Failed to save spark: %v", err), nil
 				}
 
-				// Generate title if generator available
-				title := generateDefaultTitle(content)
-				if cfg.TitleGenerator != nil {
-					if generated, err := cfg.TitleGenerator(content); err == nil && generated != "" {
-						title = generated
+				// Generate title and tags with Gemini (if available)
+				var title string
+				var tags []string
+
+				if cfg.Gemini != nil {
+					// Use combined call for efficiency
+					title, tags, err = cfg.Gemini.GenerateTitleAndTags(content)
+					if err != nil {
+						fmt.Printf("⚠️  Gemini title/tag generation failed: %v\n", err)
 					}
 				}
-				spark.SetTitle(title)
 
-				// Generate tags if generator available
-				if cfg.TagGenerator != nil {
-					if tags, err := cfg.TagGenerator(content); err == nil && len(tags) > 0 {
-						spark.SetTags(tags)
-					}
+				// Fallback to default title if not generated
+				if title == "" {
+					title = generateDefaultTitle(content)
+				}
+
+				spark.SetTitle(title)
+				if len(tags) > 0 {
+					spark.SetTags(tags)
 				}
 
 				// Save with title and tags

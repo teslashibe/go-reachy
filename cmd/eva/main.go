@@ -109,6 +109,7 @@ var (
 	robotCtrl        *robot.HTTPController
 	memoryStore      *memory.Memory
 	sparkStore       *spark.JSONStore
+	sparkGemini      *spark.GeminiClient
 	webServer        *web.Server
 	headTracker      *tracking.Tracker
 	ttsProvider      tts.Provider      // HTTP TTS provider
@@ -491,6 +492,15 @@ func initialize() error {
 		fmt.Printf("⚠️  Spark store error: %v\n", sparkErr)
 	} else {
 		fmt.Printf("🔥 Spark loaded (%d sparks) from %s\n", sparkStore.Count(), sparkStore.Path())
+	}
+
+	// Create Spark Gemini client for AI title/tag generation
+	if googleAPIKey := os.Getenv("GOOGLE_API_KEY"); googleAPIKey != "" {
+		sparkGemini = spark.NewGeminiClient(spark.GeminiConfig{
+			APIKey:         googleAPIKey,
+			MaxRequestsMin: 10,
+		})
+		fmt.Println("🔥 Spark Gemini integration enabled")
 	}
 
 	// Create audio player
@@ -888,7 +898,8 @@ func connectRealtime(apiKey string) error {
 		AudioPlayer:    audioPlayer,
 		Tracker:        headTracker, // For body rotation sync
 		Emotions:       emotionRegistry,
-		SparkStore:     sparkStore, // Idea collection
+		SparkStore:     sparkStore,  // Idea collection
+		SparkGemini:    sparkGemini, // Gemini for title/tag generation
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {

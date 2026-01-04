@@ -72,18 +72,26 @@ func TestSaveSparkTool(t *testing.T) {
 	}
 }
 
-func TestSaveSparkWithTitleGenerator(t *testing.T) {
+func TestSaveSparkWithGeminiClient(t *testing.T) {
 	store, cleanup := testToolsStore(t)
 	defer cleanup()
 
+	// Create a mock-like Gemini client (no API key = fallback behavior)
+	gemini := NewGeminiClient(GeminiConfig{
+		APIKey: "", // No API key - uses fallback
+	})
+
+	// Pre-populate cache to simulate Gemini response
+	content := "Build a robot"
+	cacheKey := hashContent(content)
+	gemini.cacheMu.Lock()
+	gemini.titleCache[cacheKey] = "AI Generated Title"
+	gemini.tagsCache[cacheKey] = []string{"robotics", "gardening"}
+	gemini.cacheMu.Unlock()
+
 	cfg := ToolsConfig{
-		Store: store,
-		TitleGenerator: func(content string) (string, error) {
-			return "AI Generated Title", nil
-		},
-		TagGenerator: func(content string) ([]string, error) {
-			return []string{"robotics", "gardening"}, nil
-		},
+		Store:  store,
+		Gemini: gemini,
 	}
 	tools := Tools(cfg)
 
@@ -96,7 +104,7 @@ func TestSaveSparkWithTitleGenerator(t *testing.T) {
 	}
 
 	result, _ := saveTool.Handler(map[string]interface{}{
-		"content": "Build a robot",
+		"content": content,
 	})
 
 	if !strings.Contains(result, "AI Generated Title") {

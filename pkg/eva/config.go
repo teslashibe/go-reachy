@@ -45,7 +45,8 @@ type ToolsConfig struct {
 	AudioPlayer    *audio.Player
 	Tracker        BodyYawNotifier
 	Emotions       *emotions.Registry
-	SparkStore     *spark.JSONStore // Spark idea storage
+	SparkStore     *spark.JSONStore    // Spark idea storage
+	SparkGemini    *spark.GeminiClient // Spark Gemini for title/tag generation
 }
 
 // isAnimal returns true if the class name is an animal.
