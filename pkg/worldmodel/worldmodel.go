@@ -12,7 +12,8 @@ type WorldModel struct {
 	mu          sync.RWMutex
 
 	// Body orientation in room coordinates (radians)
-	bodyYaw float64
+	bodyYaw      float64
+	bodyYawLimit float64 // Maximum body rotation (±limit), default 0.9*π matching Python reachy
 
 	// Audio source (from go-eva DOA)
 	audioSource *AudioSource
@@ -26,14 +27,18 @@ type WorldModel struct {
 	forgetTimeout   time.Duration // Remove entities not seen for this long
 }
 
+// DefaultBodyYawLimit matches Python reachy's 0.9 * π ≈ 2.827 rad ≈ 162°
+const DefaultBodyYawLimit = 2.827433388230814 // 0.9 * math.Pi
+
 // New creates a new world model
 func New() *WorldModel {
 	return &WorldModel{
 		entities:        make(map[string]*TrackedEntity),
 		objects:         make(map[string]*DetectedObject),
-		confidenceDecay: 0.3,              // Lose 30% confidence per second
-		forgetThreshold: 0.1,              // Forget below 10% confidence
-		forgetTimeout:   10 * time.Second, // Forget after 10 seconds
+		bodyYawLimit:    DefaultBodyYawLimit, // ±162° matching Python reachy
+		confidenceDecay: 0.3,                 // Lose 30% confidence per second
+		forgetThreshold: 0.1,                 // Forget below 10% confidence
+		forgetTimeout:   10 * time.Second,    // Forget after 10 seconds
 	}
 }
 
@@ -235,6 +240,45 @@ func (w *WorldModel) GetBodyYaw() float64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.bodyYaw
+}
+
+// SetBodyYawLimit sets the maximum body rotation limit (radians).
+// Default is 0.9*π ≈ 2.83 rad (162°) matching Python reachy.
+func (w *WorldModel) SetBodyYawLimit(limit float64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if limit > 0 {
+		w.bodyYawLimit = limit
+	}
+}
+
+// GetBodyYawLimit returns the current body rotation limit.
+func (w *WorldModel) GetBodyYawLimit() float64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.bodyYawLimit
+}
+
+// IsBodyAtLimit returns true if body is at or beyond its rotation limit
+// in the given direction (positive = left, negative = right).
+func (w *WorldModel) IsBodyAtLimit(direction float64) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	if direction > 0 {
+		// Trying to rotate left - check if at positive limit
+		return w.bodyYaw >= w.bodyYawLimit
+	} else if direction < 0 {
+		// Trying to rotate right - check if at negative limit
+		return w.bodyYaw <= -w.bodyYawLimit
+	}
+	return false
+}
+
+// CanBodyRotate returns true if body has room to rotate in the given direction.
+// This is the inverse of IsBodyAtLimit.
+func (w *WorldModel) CanBodyRotate(direction float64) bool {
+	return !w.IsBodyAtLimit(direction)
 }
 
 // UpdateAudioSource updates the audio direction from go-eva

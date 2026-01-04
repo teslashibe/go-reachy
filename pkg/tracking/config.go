@@ -16,7 +16,8 @@ type Config struct {
 	MaxSpeed float64 // Maximum movement speed per tick
 
 	// Range
-	YawRange float64 // Maximum yaw in radians (symmetric: ±YawRange)
+	YawRange     float64 // Maximum head yaw in radians (symmetric: ±YawRange)
+	BodyYawLimit float64 // Maximum body yaw in radians (symmetric: ±BodyYawLimit, matches Python reachy)
 
 	// PD Controller
 	Kp                float64 // Proportional gain
@@ -96,8 +97,9 @@ func DefaultConfig() Config {
 		// Movement speed
 		MaxSpeed: 0.15, // Max radians per tick
 
-		// Range - almost full 180° rotation
-		YawRange: 1.5, // ±1.5 rad = ±86° = 172° total
+		// Range - matches Python reachy limits
+		YawRange:     DefaultHeadYawRange,  // ±1.5 rad = ±86° head rotation
+		BodyYawLimit: DefaultBodyYawLimit,  // ±2.83 rad = ±162° body rotation (0.9 * π)
 
 		// PD Controller - tuned for smooth tracking at 20Hz
 		Kp:                0.10, // Proportional: respond to error
@@ -137,10 +139,10 @@ func DefaultConfig() Config {
 		BodyAlignmentDeadZone:  0.05,                   // ~3° stop threshold
 		BodyAlignmentCooldown:  150 * time.Millisecond, // Smooth continuous movement
 
-		// Pitch tracking (asymmetric range is typical for head mechanics)
-		PitchRangeUp:   0.4,         // +23° up
-		PitchRangeDown: 0.3,         // -17° down (less mechanical range)
-		VerticalFOV:    math.Pi / 3, // 60° vertical FOV (narrower than horizontal)
+		// Pitch tracking - matches Python reachy (symmetric ±30°)
+		PitchRangeUp:   DefaultPitchRangeUp,   // +30° up (0.523 rad)
+		PitchRangeDown: DefaultPitchRangeDown, // -30° down (0.523 rad)
+		VerticalFOV:    math.Pi / 3,           // 60° vertical FOV (narrower than horizontal)
 
 		// Pitch gains (0 = inherit from yaw gains)
 		KpPitch:       0, // Use Kp

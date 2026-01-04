@@ -355,18 +355,29 @@ func main() {
 		}
 
 		// Set up automatic body rotation when head reaches limits
-		headTracker.SetBodyRotationHandler(func(direction float64) {
+		// Returns actual delta for head counter-rotation (Issue #79 fix)
+		headTracker.SetBodyRotationHandler(func(direction float64) float64 {
 			currentBody := headTracker.GetBodyYaw()
 			newBody := currentBody + direction
-			// Clamp to reasonable body rotation range (±1.0 rad ≈ ±57°)
-			if newBody > 1.0 {
-				newBody = 1.0
-			} else if newBody < -1.0 {
-				newBody = -1.0
+
+			// Use world model's limit (matches Python reachy: 0.9*π ≈ ±162°)
+			limit := headTracker.GetWorld().GetBodyYawLimit()
+			if newBody > limit {
+				newBody = limit
+			} else if newBody < -limit {
+				newBody = -limit
 			}
-			debug.Log("🔄 Body rotation: %.2f → %.2f rad\n", currentBody, newBody)
+
+			// Calculate actual delta after clamping
+			actualDelta := newBody - currentBody
+
+			debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
+				currentBody, newBody, actualDelta, limit)
+
 			robotCtrl.SetBodyYaw(newBody)
 			headTracker.SetBodyYaw(newBody) // Sync world model
+
+			return actualDelta // Return actual movement for head counter-rotation
 		})
 		fmt.Println("🔄 Auto body rotation enabled")
 
