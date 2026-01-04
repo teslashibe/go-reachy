@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spark - Ideas Dashboard (Demo)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Space Grotesk', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        spark: {
+                            orange: '#f97316',
+                            amber: '#f59e0b',
+                            dark: '#18181b',
+                            darker: '#09090b',
+                            card: '#27272a',
+                            border: '#3f3f46',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(145deg, #09090b 0%, #18181b 50%, #27272a 100%);
+        }
+        .glass {
+            background: rgba(39, 39, 42, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(249, 115, 22, 0.2);
+        }
+        .spark-glow {
+            box-shadow: 0 0 20px rgba(249, 115, 22, 0.15);
+        }
+        .spark-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(249, 115, 22, 0.2);
+        }
+        .spark-card {
+            transition: all 0.2s ease;
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .scrollbar-thin::-webkit-scrollbar {
+            width: 6px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-track {
+            background: #27272a;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+            background: #f97316;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-zinc-100 font-sans">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Demo Banner -->
+        <div class="bg-spark-amber/20 border border-spark-amber/50 rounded-lg px-4 py-2 mb-4 text-center text-spark-amber text-sm">
+            🎭 Demo Mode - Using sample data
+        </div>
+
+        <!-- Header -->
+        <header class="flex items-center justify-between mb-8">
+            <div class="flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-spark-orange to-spark-amber flex items-center justify-center spark-glow">
+                    <span class="text-2xl">🔥</span>
+                </div>
+                <div>
+                    <h1 class="text-3xl font-bold bg-gradient-to-r from-spark-orange to-spark-amber bg-clip-text text-transparent">Spark</h1>
+                    <p class="text-sm text-zinc-400">Your ideas, organized</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="/" class="px-4 py-2 text-sm text-zinc-400 hover:text-white transition">← Eva Dashboard</a>
+                <div class="flex items-center gap-2 px-4 py-2 glass rounded-full">
+                    <div class="w-2.5 h-2.5 rounded-full bg-emerald-400"></div>
+                    <span class="text-sm text-emerald-400">Google Connected</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Stats Bar -->
+        <div class="grid grid-cols-4 gap-4 mb-8">
+            <div class="glass rounded-xl p-4">
+                <div class="text-3xl font-bold text-white">3</div>
+                <div class="text-sm text-zinc-400">Total Sparks</div>
+            </div>
+            <div class="glass rounded-xl p-4">
+                <div class="text-3xl font-bold text-spark-orange">2</div>
+                <div class="text-sm text-zinc-400">Synced to Docs</div>
+            </div>
+            <div class="glass rounded-xl p-4">
+                <div class="text-3xl font-bold text-spark-amber">1</div>
+                <div class="text-sm text-zinc-400">With Plans</div>
+            </div>
+            <div class="glass rounded-xl p-4">
+                <div class="text-3xl font-bold text-emerald-400">5</div>
+                <div class="text-sm text-zinc-400">Context Items</div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-3 gap-6">
+            <!-- Spark List -->
+            <div class="col-span-1">
+                <div class="glass rounded-xl p-4 h-[600px] flex flex-col">
+                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <span>💡</span> Your Sparks
+                    </h2>
+                    <div class="flex-1 overflow-y-auto scrollbar-thin space-y-2">
+                        <div class="spark-card p-3 rounded-lg cursor-pointer bg-spark-orange/20 border border-spark-orange/50" onclick="selectSpark(0)">
+                            <div class="font-medium text-white truncate">AI-Powered Idea Organizer</div>
+                            <div class="text-xs text-zinc-400 mt-1 flex items-center gap-2">
+                                <span class="text-emerald-400">✓ Synced</span>
+                                <span class="text-spark-amber">📋 Plan</span>
+                                <span>3 notes</span>
+                            </div>
+                        </div>
+                        <div class="spark-card p-3 rounded-lg cursor-pointer bg-zinc-800/50 hover:bg-zinc-700/50" onclick="selectSpark(1)">
+                            <div class="font-medium text-white truncate">Smart Plant Watering Robot</div>
+                            <div class="text-xs text-zinc-400 mt-1 flex items-center gap-2">
+                                <span class="text-emerald-400">✓ Synced</span>
+                                <span>2 notes</span>
+                            </div>
+                        </div>
+                        <div class="spark-card p-3 rounded-lg cursor-pointer bg-zinc-800/50 hover:bg-zinc-700/50" onclick="selectSpark(2)">
+                            <div class="font-medium text-white truncate">Voice-Controlled Home Automation</div>
+                            <div class="text-xs text-zinc-400 mt-1 flex items-center gap-2">
+                                <span>0 notes</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Spark Detail -->
+            <div class="col-span-2">
+                <div id="spark-detail" class="glass rounded-xl p-6 h-[600px] overflow-y-auto scrollbar-thin">
+                    <div class="fade-in">
+                        <div class="flex items-start justify-between mb-4">
+                            <div>
+                                <h2 class="text-2xl font-bold text-white">AI-Powered Idea Organizer</h2>
+                                <div class="text-sm text-zinc-400 mt-1">Created January 4, 2026</div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button class="px-3 py-1.5 bg-spark-amber/20 text-spark-amber rounded-lg text-sm hover:bg-spark-amber/30 transition">
+                                    📋 Generate Plan
+                                </button>
+                                <button class="px-3 py-1.5 bg-spark-orange/20 text-spark-orange rounded-lg text-sm hover:bg-spark-orange/30 transition">
+                                    ☁️ Sync to Docs
+                                </button>
+                                <button class="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg text-sm hover:bg-red-500/30 transition">
+                                    🗑️
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="mb-4 flex gap-2">
+                            <span class="px-2 py-1 bg-zinc-700 rounded text-xs">productivity</span>
+                            <span class="px-2 py-1 bg-zinc-700 rounded text-xs">ai</span>
+                            <span class="px-2 py-1 bg-zinc-700 rounded text-xs">organization</span>
+                            <span class="px-2 py-1 bg-zinc-700 rounded text-xs">automation</span>
+                        </div>
+
+                        <div class="p-4 bg-zinc-800/50 rounded-xl mb-4">
+                            <h3 class="text-sm font-medium text-zinc-400 mb-2">💡 Original Idea</h3>
+                            <p class="text-zinc-200">An app that collects ideas over time and uses AI to organize them automatically. It should support voice input primarily and sync to Google Docs for easy sharing.</p>
+                        </div>
+
+                        <div class="mb-4">
+                            <h3 class="text-sm font-medium text-zinc-400 mb-2">📝 Context & Notes</h3>
+                            <div class="space-y-2">
+                                <div class="p-3 bg-zinc-800/50 rounded-lg">
+                                    <div class="text-sm text-zinc-300">Could use Gemini for automatic categorization and title generation</div>
+                                    <div class="text-xs text-zinc-500 mt-1">Jan 4 via voice</div>
+                                </div>
+                                <div class="p-3 bg-zinc-800/50 rounded-lg">
+                                    <div class="text-sm text-zinc-300">Target audience: busy product managers and creators</div>
+                                    <div class="text-xs text-zinc-500 mt-1">Jan 4 via voice</div>
+                                </div>
+                                <div class="p-3 bg-zinc-800/50 rounded-lg">
+                                    <div class="text-sm text-zinc-300">Should evolve plans as more context is added over time</div>
+                                    <div class="text-xs text-zinc-500 mt-1">Jan 4 via voice</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 p-4 bg-spark-amber/10 border border-spark-amber/30 rounded-xl">
+                            <h3 class="font-semibold text-spark-amber mb-2">📋 Action Plan</h3>
+                            <p class="text-sm text-zinc-300 mb-3">Build a voice-first idea collection app with AI-powered organization and Google Docs sync.</p>
+                            <h4 class="text-sm font-medium text-zinc-400 mb-1">Steps:</h4>
+                            <ol class="list-decimal list-inside text-sm text-zinc-300 space-y-1 mb-3">
+                                <li>Set up voice transcription with Whisper or similar</li>
+                                <li>Build local storage with automatic sync</li>
+                                <li>Integrate Gemini for title/tag generation</li>
+                                <li>Add Google Docs OAuth and sync</li>
+                                <li>Create simple dashboard for viewing ideas</li>
+                            </ol>
+                            <h4 class="text-sm font-medium text-zinc-400 mb-1">Resources:</h4>
+                            <ul class="list-disc list-inside text-sm text-zinc-300 space-y-1">
+                                <li>OpenAI Whisper API</li>
+                                <li>Google Docs API</li>
+                                <li>Gemini Flash 2.0</li>
+                            </ul>
+                        </div>
+
+                        <div class="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-between">
+                            <span class="text-emerald-400 text-sm">✓ Synced to Google Docs</span>
+                            <a href="#" class="text-sm text-emerald-400 hover:underline">Open in Docs →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function selectSpark(index) {
+            // In demo mode, just show a visual feedback
+            const cards = document.querySelectorAll('.spark-card');
+            cards.forEach((card, i) => {
+                if (i === index) {
+                    card.className = 'spark-card p-3 rounded-lg cursor-pointer bg-spark-orange/20 border border-spark-orange/50';
+                } else {
+                    card.className = 'spark-card p-3 rounded-lg cursor-pointer bg-zinc-800/50 hover:bg-zinc-700/50';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+
