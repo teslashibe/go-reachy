@@ -501,10 +501,47 @@ func TestSparkMethods(t *testing.T) {
 		t.Error("expected NeedsSync to be true after adding context")
 	}
 
+	// Test MarkSyncError
+	spark.MarkSyncError()
+	if spark.SyncStatus != SyncError {
+		t.Error("expected SyncStatus to be SyncError")
+	}
+
 	// Test Summary
 	summary := spark.Summary()
 	if summary == "" {
 		t.Error("expected non-empty summary")
 	}
 }
+
+func TestPluralize(t *testing.T) {
+	// Test singular
+	result := pluralize(1, "item", "items")
+	if result != "1 item" {
+		t.Errorf("expected '1 item', got '%s'", result)
+	}
+
+	// Test plural
+	result = pluralize(5, "item", "items")
+	if result != "5 items" {
+		t.Errorf("expected '5 items', got '%s'", result)
+	}
+
+	// Test zero
+	result = pluralize(0, "item", "items")
+	if result != "0 items" {
+		t.Errorf("expected '0 items', got '%s'", result)
+	}
+}
+
+func TestUpdateSparkTitleNotFound(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	_, err := store.UpdateSparkTitle("nonexistent", "New Title")
+	if err == nil {
+		t.Error("expected error for non-existent spark")
+	}
+}
+
 
