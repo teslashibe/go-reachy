@@ -1,5 +1,5 @@
 // Eva 2.0 - Low-latency conversational robot agent with tool use
-// Uses OpenAI Realtime API for speech-to-speech conversation
+// Supports multiple voice backends: OpenAI Realtime, ElevenLabs, Gemini Live
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/eva"
 	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/tts"
+	"github.com/teslashibe/go-reachy/pkg/voice"
 )
 
 func main() {
@@ -42,8 +43,14 @@ func parseFlags() eva.Config {
 
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	robotIP := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
+	
+	// Voice pipeline (new unified interface)
+	voiceProvider := flag.String("voice", "", "Voice pipeline: openai (default), elevenlabs, gemini")
+	
+	// Legacy TTS mode (still supported for backward compatibility)
 	ttsMode := flag.String("tts", cfg.TTSMode, "TTS provider: realtime, elevenlabs, elevenlabs-streaming, openai-tts")
-	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs")
+	ttsVoice := flag.String("tts-voice", "", "Voice ID for TTS")
+	
 	sparkEnabled := flag.Bool("spark", true, "Enable Spark idea collection")
 	noBody := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
 
@@ -52,6 +59,20 @@ func parseFlags() eva.Config {
 	flag.Visit(func(f *flag.Flag) { sparkFlagSet = sparkFlagSet || f.Name == "spark" })
 
 	cfg.Debug, cfg.TTSMode, cfg.NoBody = *debug, *ttsMode, *noBody
+	
+	// Set voice provider
+	switch *voiceProvider {
+	case "openai":
+		cfg.VoiceProvider = voice.ProviderOpenAI
+	case "elevenlabs":
+		cfg.VoiceProvider = voice.ProviderElevenLabs
+	case "gemini":
+		cfg.VoiceProvider = voice.ProviderGemini
+	default:
+		// Keep default (OpenAI) unless using legacy TTS mode
+		cfg.VoiceProvider = voice.ProviderOpenAI
+	}
+	
 	if *robotIP != "" {
 		cfg.RobotIP = *robotIP
 	}
@@ -75,10 +96,16 @@ func parseFlags() eva.Config {
 	cfg.GoogleAPIKey = os.Getenv("GOOGLE_API_KEY")
 	cfg.GoogleClientID = os.Getenv("GOOGLE_CLIENT_ID")
 	cfg.GoogleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+	
+	// ElevenLabs voice ID from env or flag
 	if *ttsVoice == "" {
-		if voice := os.Getenv("ELEVENLABS_VOICE_ID"); voice != "" {
-			cfg.TTSVoice = voice
+		if voiceID := os.Getenv("ELEVENLABS_VOICE_ID"); voiceID != "" {
+			cfg.TTSVoice = voiceID
+			cfg.ElevenLabsVoiceID = voiceID
 		}
+	} else {
+		cfg.ElevenLabsVoiceID = *ttsVoice
 	}
+	
 	return cfg
 }

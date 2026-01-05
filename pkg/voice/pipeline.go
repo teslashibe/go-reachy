@@ -1,0 +1,178 @@
+package voice
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// Common errors returned by pipelines.
+var (
+	ErrNotConnected    = errors.New("voice: pipeline not connected")
+	ErrAlreadyStarted  = errors.New("voice: pipeline already started")
+	ErrInvalidProvider = errors.New("voice: invalid provider")
+	ErrMissingAPIKey   = errors.New("voice: missing API key")
+)
+
+// Pipeline is the unified interface for voice conversation providers.
+// All bundled providers (OpenAI, ElevenLabs, Gemini) implement this interface,
+// enabling easy switching between providers.
+type Pipeline interface {
+	// Lifecycle
+
+	// Start establishes the connection and begins processing.
+	// Call this after registering tools and setting up callbacks.
+	Start(ctx context.Context) error
+
+	// Stop gracefully shuts down the pipeline.
+	Stop() error
+
+	// IsConnected returns true if the pipeline is connected and ready.
+	IsConnected() bool
+
+	// Audio I/O
+
+	// SendAudio sends PCM16 audio data to the pipeline.
+	// The audio should match the configured InputSampleRate.
+	SendAudio(pcm16 []byte) error
+
+	// OnAudioOut sets the callback for receiving audio output.
+	// Audio is PCM16 at the configured OutputSampleRate.
+	OnAudioOut(fn func(pcm16 []byte))
+
+	// Events
+
+	// OnSpeechStart is called when the user starts speaking.
+	OnSpeechStart(fn func())
+
+	// OnSpeechEnd is called when the user stops speaking.
+	OnSpeechEnd(fn func())
+
+	// OnTranscript is called with the user's transcribed speech.
+	// isFinal indicates whether this is the final transcript.
+	OnTranscript(fn func(text string, isFinal bool))
+
+	// OnResponse is called with the AI's text response.
+	// isFinal indicates whether this is the final response.
+	OnResponse(fn func(text string, isFinal bool))
+
+	// OnError is called when an error occurs.
+	OnError(fn func(err error))
+
+	// Tools
+
+	// RegisterTool adds a tool that the AI can invoke.
+	// Must be called before Start().
+	RegisterTool(tool Tool)
+
+	// OnToolCall sets the callback for tool invocations.
+	// The callback receives the call ID, tool name, and parsed arguments.
+	// Call SubmitToolResult with the call ID to return the result.
+	OnToolCall(fn func(call ToolCall))
+
+	// SubmitToolResult returns a tool call result to the AI.
+	SubmitToolResult(callID string, result string) error
+
+	// Control
+
+	// Interrupt stops the current AI response (for barge-in).
+	Interrupt() error
+
+	// Metrics & Config
+
+	// Metrics returns current latency metrics.
+	Metrics() Metrics
+
+	// Config returns the current configuration.
+	Config() Config
+
+	// UpdateConfig applies new configuration settings.
+	// Some settings may require a reconnect to take effect.
+	UpdateConfig(cfg Config) error
+}
+
+// PipelineFactory is a function that creates a Pipeline.
+type PipelineFactory func(cfg Config) (Pipeline, error)
+
+// Registry of pipeline factories by provider.
+var pipelineRegistry = make(map[Provider]PipelineFactory)
+
+// Register adds a pipeline factory for a provider.
+// This is called by bundled implementations in their init() functions.
+func Register(provider Provider, factory PipelineFactory) {
+	pipelineRegistry[provider] = factory
+}
+
+// New creates a new Pipeline for the specified provider.
+// Returns an error if the provider is not registered or config is invalid.
+func New(provider Provider, cfg Config) (Pipeline, error) {
+	cfg.Provider = provider
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	factory, ok := pipelineRegistry[provider]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s (available: %v)", ErrInvalidProvider, provider, availableProviders())
+	}
+
+	return factory(cfg)
+}
+
+// NewFromConfig creates a Pipeline using the provider specified in the config.
+func NewFromConfig(cfg Config) (Pipeline, error) {
+	return New(cfg.Provider, cfg)
+}
+
+// availableProviders returns a list of registered provider names.
+func availableProviders() []Provider {
+	providers := make([]Provider, 0, len(pipelineRegistry))
+	for p := range pipelineRegistry {
+		providers = append(providers, p)
+	}
+	return providers
+}
+
+// AvailableProviders returns a list of registered provider names.
+func AvailableProviders() []Provider {
+	return availableProviders()
+}
+
+// Callbacks groups all pipeline callbacks for convenience.
+// This can be used to set up all callbacks at once.
+type Callbacks struct {
+	OnAudioOut    func(pcm16 []byte)
+	OnSpeechStart func()
+	OnSpeechEnd   func()
+	OnTranscript  func(text string, isFinal bool)
+	OnResponse    func(text string, isFinal bool)
+	OnToolCall    func(call ToolCall)
+	OnError       func(err error)
+}
+
+// Apply sets all callbacks on a pipeline.
+func (c *Callbacks) Apply(p Pipeline) {
+	if c.OnAudioOut != nil {
+		p.OnAudioOut(c.OnAudioOut)
+	}
+	if c.OnSpeechStart != nil {
+		p.OnSpeechStart(c.OnSpeechStart)
+	}
+	if c.OnSpeechEnd != nil {
+		p.OnSpeechEnd(c.OnSpeechEnd)
+	}
+	if c.OnTranscript != nil {
+		p.OnTranscript(c.OnTranscript)
+	}
+	if c.OnResponse != nil {
+		p.OnResponse(c.OnResponse)
+	}
+	if c.OnToolCall != nil {
+		p.OnToolCall(c.OnToolCall)
+	}
+	if c.OnError != nil {
+		p.OnError(c.OnError)
+	}
+}
+
