@@ -85,25 +85,33 @@ func (e *ElevenLabs) Start(ctx context.Context) error {
 	
 	// Wire callbacks
 	e.provider.OnAudio(func(audio []byte) {
-		e.metrics.MarkFirstAudio()
+		// Stage 3: Pipeline timing - first audio received
+		e.metrics.MarkPipelineEnd()
 		e.metrics.IncrementAudioOut()
 		if e.onAudioOut != nil {
 			e.onAudioOut(audio)
 		}
 	})
-	
+
 	e.provider.OnAudioDone(func() {
+		// Stage 4: Receive timing - end
+		e.metrics.MarkReceiveEnd()
 		e.metrics.MarkResponseDone()
 		if e.config.ProfileLatency {
 			m := e.metrics.Current()
 			fmt.Printf("⏱️  %s\n", m.FormatLatency())
 		}
+		// Reset metrics for next turn
+		e.metrics.Reset()
 	})
 	
 	e.provider.OnTranscript(func(role, text string, isFinal bool) {
 		if role == "user" {
 			if isFinal {
-				e.metrics.MarkSpeechEnd()
+				// Stage 4: Receive timing - start (first data from pipeline)
+				e.metrics.MarkReceiveStart()
+				// Stage 3: Pipeline timing - VAD detected speech end
+				e.metrics.MarkPipelineStart()
 				e.metrics.MarkTranscript()
 				if e.onSpeechEnd != nil {
 					e.onSpeechEnd()
@@ -195,8 +203,17 @@ func (e *ElevenLabs) SendAudio(pcm16 []byte) error {
 	if e.provider == nil {
 		return voice.ErrNotConnected
 	}
+
+	// Stage 2: Send timing - start
+	e.metrics.MarkSendStart()
+
 	e.metrics.IncrementAudioIn()
-	return e.provider.SendAudio(pcm16)
+	err := e.provider.SendAudio(pcm16)
+
+	// Stage 2: Send timing - end (also marks pipeline start)
+	e.metrics.MarkSendEnd()
+
+	return err
 }
 
 // OnAudioOut sets the callback for audio output.
@@ -280,6 +297,28 @@ func (e *ElevenLabs) UpdateConfig(cfg voice.Config) error {
 	// ElevenLabs doesn't support runtime config updates
 	// Would need to reconnect to apply changes
 	return nil
+}
+
+// App-side timing markers
+
+// MarkCaptureStart records when WebRTC delivered audio to Eva.
+func (e *ElevenLabs) MarkCaptureStart() {
+	e.metrics.MarkCaptureStart()
+}
+
+// MarkCaptureEnd records when audio is buffered and ready to send.
+func (e *ElevenLabs) MarkCaptureEnd() {
+	e.metrics.MarkCaptureEnd()
+}
+
+// MarkPlaybackStart records when audio was sent to GStreamer.
+func (e *ElevenLabs) MarkPlaybackStart() {
+	e.metrics.MarkPlaybackStart()
+}
+
+// MarkPlaybackEnd records when audio playback completed.
+func (e *ElevenLabs) MarkPlaybackEnd() {
+	e.metrics.MarkPlaybackEnd()
 }
 
 // Ensure ElevenLabs implements voice.Pipeline at compile time.

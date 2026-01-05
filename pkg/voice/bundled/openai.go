@@ -172,16 +172,24 @@ func (o *OpenAI) SendAudio(pcm16 []byte) error {
 		return voice.ErrNotConnected
 	}
 	o.mu.RUnlock()
-	
+
+	// Stage 2: Send timing - start
+	o.metrics.MarkSendStart()
+
 	o.metrics.IncrementAudioIn()
-	
+
 	encoded := base64.StdEncoding.EncodeToString(pcm16)
 	msg := map[string]any{
 		"type":  "input_audio_buffer.append",
 		"audio": encoded,
 	}
-	
-	return o.sendJSON(msg)
+
+	err := o.sendJSON(msg)
+
+	// Stage 2: Send timing - end (also marks pipeline start)
+	o.metrics.MarkSendEnd()
+
+	return err
 }
 
 // OnAudioOut sets the callback for audio output.
@@ -389,10 +397,13 @@ func (o *OpenAI) handleMessages() {
 			}
 			
 		case "input_audio_buffer.speech_stopped":
+			// Stage 4: Receive timing - start
+			o.metrics.MarkReceiveStart()
 			if o.config.Debug {
 				debug.Logln("🎤 VAD: Speech stopped")
 			}
-			o.metrics.MarkSpeechEnd()
+			// Stage 3: Pipeline timing - VAD detected speech end
+			o.metrics.MarkPipelineStart()
 			if o.onSpeechEnd != nil {
 				o.onSpeechEnd()
 			}
@@ -404,7 +415,8 @@ func (o *OpenAI) handleMessages() {
 			}
 			
 		case "response.audio.delta":
-			o.metrics.MarkFirstAudio()
+			// Stage 3: Pipeline timing - first audio received
+			o.metrics.MarkPipelineEnd()
 			o.metrics.IncrementAudioOut()
 			if delta, ok := msg["delta"].(string); ok && o.onAudioOut != nil {
 				audioData, err := base64.StdEncoding.DecodeString(delta)
@@ -414,11 +426,15 @@ func (o *OpenAI) handleMessages() {
 			}
 			
 		case "response.audio.done":
+			// Stage 4: Receive timing - end
+			o.metrics.MarkReceiveEnd()
 			o.metrics.MarkResponseDone()
 			if o.config.ProfileLatency {
 				m := o.metrics.Current()
 				fmt.Printf("⏱️  %s\n", m.FormatLatency())
 			}
+			// Reset metrics for next turn
+			o.metrics.Reset()
 			
 		case "response.audio_transcript.delta":
 			o.metrics.MarkFirstToken()
@@ -600,6 +616,28 @@ func (o *OpenAI) sendJSON(v any) error {
 	}
 	
 	return o.ws.WriteJSON(v)
+}
+
+// App-side timing markers
+
+// MarkCaptureStart records when WebRTC delivered audio to Eva.
+func (o *OpenAI) MarkCaptureStart() {
+	o.metrics.MarkCaptureStart()
+}
+
+// MarkCaptureEnd records when audio is buffered and ready to send.
+func (o *OpenAI) MarkCaptureEnd() {
+	o.metrics.MarkCaptureEnd()
+}
+
+// MarkPlaybackStart records when audio was sent to GStreamer.
+func (o *OpenAI) MarkPlaybackStart() {
+	o.metrics.MarkPlaybackStart()
+}
+
+// MarkPlaybackEnd records when audio playback completed.
+func (o *OpenAI) MarkPlaybackEnd() {
+	o.metrics.MarkPlaybackEnd()
 }
 
 // Ensure OpenAI implements voice.Pipeline at compile time.

@@ -545,9 +545,9 @@ func (t *Tracker) updateMovement() {
 			t.breathingPhase = 0
 		}
 		if source == "face" {
-			debug.Logln("👁️  Found face, stopping idle behavior")
+			debug.TrackLogln("👁️  Found face, stopping idle behavior")
 		} else if source == "audio" || source == "audio-switch" {
-			debug.Logln("🎤 Heard voice, turning toward sound")
+			debug.TrackLogln("🎤 Heard voice, turning toward sound")
 		}
 	}
 	t.isInterpolating = false
@@ -591,7 +591,7 @@ func (t *Tracker) updateMovement() {
 		// Only log occasionally to avoid spam
 		if hasFace {
 			headYaw := t.controller.GetCurrentYaw()
-			debug.Log("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
+			debug.TrackLog("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
 				headYaw, t.controller.GetError(), t.config.ControlDeadZone,
 				math.Abs(headYaw) > t.config.YawRange*0.95)
 		}
@@ -638,10 +638,10 @@ func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 		} else {
 			t.lastRobotError = time.Time{} // Clear error state on success
 			// Log significant movements
-			if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
-				debug.Log("🔄 Head: yaw=%.2f pitch=%.2f (target=%.2f, error=%.2f)\n",
-					finalYaw, finalPitch, targetAngle, t.controller.GetError())
-				t.lastLoggedYaw = yaw
+		if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
+			debug.TrackLog("🔄 Head: yaw=%.2f pitch=%.2f (target=%.2f, error=%.2f)\n",
+				finalYaw, finalPitch, targetAngle, t.controller.GetError())
+			t.lastLoggedYaw = yaw
 			}
 		}
 	}
@@ -811,7 +811,7 @@ func (t *Tracker) checkBodyAlignment() {
 	}
 
 	// Log movement
-	debug.Log("🎯 Body alignment: head=%.2f, body=%.2f, delta=%.3f → newBody=%.2f\n",
+	debug.TrackLog("🎯 Body alignment: head=%.2f, body=%.2f, delta=%.3f → newBody=%.2f\n",
 		currentHeadYaw, currentBodyYaw, bodyDelta, currentBodyYaw+bodyDelta)
 
 	// Update state
@@ -969,7 +969,7 @@ func (t *Tracker) updateNoTarget() {
 			t.isInterpolating = true
 			t.interpStartedAt = time.Now()
 			t.controller.InterpolateToNeutral(1 * time.Second)
-			debug.Logln("👁️  Grace period expired, returning to neutral")
+			debug.TrackLogln("👁️  Grace period expired, returning to neutral")
 		}
 		// During grace period: hold current position (do nothing)
 		return
@@ -1087,10 +1087,10 @@ func (t *Tracker) detectAndUpdate() {
 		dist = entity.Distance
 	}
 	if dist > 0 {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad, dist %.1fm\n",
+		debug.TrackLog("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad, dist %.1fm\n",
 			frameX, frameY, yawOffset, pitchOffset, dist)
 	} else {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad\n",
+		debug.TrackLog("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad\n",
 			frameX, frameY, yawOffset, pitchOffset)
 	}
 
@@ -1116,7 +1116,7 @@ func (t *Tracker) updateScanning() {
 	if newYaw > t.config.ScanRange {
 		newYaw = t.config.ScanRange
 		t.scanDirection = -1.0
-		debug.Logln("👀 Scan: reversing to left")
+		debug.TrackLogln("👀 Scan: reversing to left")
 	} else if newYaw < -t.config.ScanRange {
 		newYaw = -t.config.ScanRange
 		t.scanDirection = 1.0

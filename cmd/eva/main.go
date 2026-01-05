@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/eva"
 	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/tts"
@@ -41,7 +42,8 @@ func main() {
 func parseFlags() eva.Config {
 	cfg := eva.DefaultConfig()
 
-	debug := flag.Bool("debug", false, "Enable verbose debug logging")
+	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	debugTracking := flag.Bool("debug-tracking", false, "Enable very verbose tracking logs (face, body, audio DOA)")
 	robotIP := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
 	
 	// Voice pipeline (new unified interface)
@@ -58,7 +60,8 @@ func parseFlags() eva.Config {
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) { sparkFlagSet = sparkFlagSet || f.Name == "spark" })
 
-	cfg.Debug, cfg.TTSMode, cfg.NoBody = *debug, *ttsMode, *noBody
+	cfg.Debug, cfg.TTSMode, cfg.NoBody = *debugFlag, *ttsMode, *noBody
+	debug.Tracking = *debugTracking
 	
 	// Set voice provider
 	switch *voiceProvider {

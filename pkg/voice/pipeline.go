@@ -89,6 +89,20 @@ type Pipeline interface {
 	// UpdateConfig applies new configuration settings.
 	// Some settings may require a reconnect to take effect.
 	UpdateConfig(cfg Config) error
+
+	// App-side timing markers (called by Eva, not the pipeline)
+
+	// MarkCaptureStart records when WebRTC delivered audio to Eva.
+	MarkCaptureStart()
+
+	// MarkCaptureEnd records when audio is buffered and ready to send.
+	MarkCaptureEnd()
+
+	// MarkPlaybackStart records when audio was sent to GStreamer.
+	MarkPlaybackStart()
+
+	// MarkPlaybackEnd records when audio playback completed (estimated).
+	MarkPlaybackEnd()
 }
 
 // PipelineFactory is a function that creates a Pipeline.

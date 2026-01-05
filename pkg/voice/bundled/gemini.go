@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,9 +18,10 @@ import (
 const (
 	// Gemini Live API WebSocket endpoint
 	geminiLiveURL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
-	
+
 	// Default model for Gemini Live
-	geminiDefaultModel = "models/gemini-2.0-flash-exp"
+	// gemini-2.5-flash-native-audio-preview is optimized for low-latency audio
+	geminiDefaultModel = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 )
 
 // Gemini implements voice.Pipeline using Google's Gemini Live API.
@@ -27,25 +29,30 @@ const (
 // Gemini 2.0 Flash handling VAD, ASR, LLM, and TTS in a single stream.
 type Gemini struct {
 	config voice.Config
-	
+
 	// WebSocket connection
-	ws     *websocket.Conn
-	wsMu   sync.Mutex
-	
+	ws   *websocket.Conn
+	wsMu sync.Mutex
+
 	// Tools
 	tools    []voice.Tool
 	toolsMap map[string]voice.Tool
-	
+
 	// Session state
 	mu        sync.RWMutex
 	connected bool
 	closed    bool
 	ctx       context.Context
 	cancel    context.CancelFunc
-	
+
 	// Metrics
 	metrics *voice.MetricsCollector
-	
+
+	// Latency tracking
+	lastAudioSentTime  time.Time
+	firstAudioReceived bool
+	latencyMu          sync.Mutex
+
 	// Callbacks
 	onAudioOut    func(pcm16 []byte)
 	onSpeechStart func()
@@ -61,7 +68,7 @@ func NewGemini(cfg voice.Config) (*Gemini, error) {
 	if cfg.GoogleAPIKey == "" {
 		return nil, voice.ErrMissingAPIKey
 	}
-	
+
 	return &Gemini{
 		config:   cfg,
 		tools:    []voice.Tool{},
@@ -78,81 +85,91 @@ func (g *Gemini) Start(ctx context.Context) error {
 		return voice.ErrAlreadyStarted
 	}
 	g.mu.Unlock()
-	
+
 	g.ctx, g.cancel = context.WithCancel(ctx)
-	
+
 	// Build WebSocket URL with API key
 	model := g.config.LLMModel
 	if model == "" {
 		model = geminiDefaultModel
 	}
-	
+
 	url := fmt.Sprintf("%s?key=%s", geminiLiveURL, g.config.GoogleAPIKey)
-	
+
 	header := make(http.Header)
 	header.Set("Content-Type", "application/json")
-	
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
-	
+
 	var err error
 	g.ws, _, err = dialer.Dial(url, header)
 	if err != nil {
 		return fmt.Errorf("voice/gemini: failed to connect: %w", err)
 	}
-	
+
 	g.mu.Lock()
 	g.connected = true
 	g.closed = false
 	g.mu.Unlock()
-	
+
 	// Send setup message
 	if err := g.sendSetup(model); err != nil {
 		g.Stop()
 		return fmt.Errorf("voice/gemini: failed to configure session: %w", err)
 	}
-	
+
 	go g.handleMessages()
-	
+
 	if g.config.Debug {
 		debug.Logln("🌟 Gemini Live connected")
 	}
-	
+
 	return nil
 }
 
 // sendSetup sends the initial configuration to Gemini Live.
 func (g *Gemini) sendSetup(model string) error {
-	// Build tools for Gemini format
+	// Build tools for Gemini format (convert to proper JSON Schema)
 	var toolDeclarations []map[string]any
 	for _, tool := range g.tools {
+		// Eva tools have Parameters as map[string]any where keys are param names
+		// Gemini expects JSON Schema: { type: "object", properties: {...}, required: [...] }
+		params := convertToJSONSchema(tool.Parameters)
 		toolDeclarations = append(toolDeclarations, map[string]any{
 			"name":        tool.Name,
 			"description": tool.Description,
-			"parameters":  tool.Parameters,
+			"parameters":  params,
 		})
 	}
-	
+
 	// Voice selection (Gemini voices: Puck, Charon, Kore, Fenrir, Aoede)
 	voiceName := g.config.TTSVoice
 	if voiceName == "" {
 		voiceName = "Puck" // Default voice
 	}
-	
-	setup := map[string]any{
-		"setup": map[string]any{
-			"model": model,
-			"generation_config": map[string]any{
-				"response_modalities": []string{"AUDIO"},
-				"speech_config": map[string]any{
-					"voice_config": map[string]any{
-						"prebuilt_voice_config": map[string]any{
-							"voice_name": voiceName,
-						},
-					},
+
+	// Native audio models may not support voice_config, so we conditionally include it
+	generationConfig := map[string]any{
+		"response_modalities": []string{"AUDIO"},
+	}
+
+	// Only add speech_config for non-native-audio models
+	if !strings.Contains(model, "native-audio") {
+		generationConfig["speech_config"] = map[string]any{
+			"voice_config": map[string]any{
+				"prebuilt_voice_config": map[string]any{
+					"voice_name": voiceName,
 				},
 			},
+		}
+	}
+
+	setup := map[string]any{
+		"setup": map[string]any{
+			"model":             model,
+			"generation_config": generationConfig,
 			"system_instruction": map[string]any{
 				"parts": []map[string]any{
 					{"text": g.config.SystemPrompt},
@@ -160,7 +177,7 @@ func (g *Gemini) sendSetup(model string) error {
 			},
 		},
 	}
-	
+
 	// Add tools if any
 	if len(toolDeclarations) > 0 {
 		setup["setup"].(map[string]any)["tools"] = []map[string]any{
@@ -169,7 +186,7 @@ func (g *Gemini) sendSetup(model string) error {
 			},
 		}
 	}
-	
+
 	return g.sendJSON(setup)
 }
 
@@ -179,11 +196,11 @@ func (g *Gemini) Stop() error {
 	g.closed = true
 	g.connected = false
 	g.mu.Unlock()
-	
+
 	if g.cancel != nil {
 		g.cancel()
 	}
-	
+
 	if g.ws != nil {
 		return g.ws.Close()
 	}
@@ -206,24 +223,44 @@ func (g *Gemini) SendAudio(pcm16 []byte) error {
 		return voice.ErrNotConnected
 	}
 	g.mu.RUnlock()
-	
+
+	// Stage 2: Send timing - start
+	g.metrics.MarkSendStart()
+
 	g.metrics.IncrementAudioIn()
-	
+	count := g.metrics.AudioInChunks()
+
+	// Track last audio sent time for latency measurement
+	g.latencyMu.Lock()
+	g.lastAudioSentTime = time.Now()
+	g.latencyMu.Unlock()
+
+	// Log every 50th chunk to show audio is flowing
+	if count == 1 || count%50 == 0 {
+		debug.Log("🌟 Gemini audio chunk #%d (%d bytes)\n", count, len(pcm16))
+	}
+
 	// Encode audio as base64
 	encoded := base64.StdEncoding.EncodeToString(pcm16)
-	
+
+	// Gemini Live expects audio/pcm with sample rate specified
 	msg := map[string]any{
 		"realtime_input": map[string]any{
 			"media_chunks": []map[string]any{
 				{
 					"data":      encoded,
-					"mime_type": "audio/pcm",
+					"mime_type": "audio/pcm;rate=16000",
 				},
 			},
 		},
 	}
-	
-	return g.sendJSON(msg)
+
+	err := g.sendJSON(msg)
+
+	// Stage 2: Send timing - end (also marks pipeline start)
+	g.metrics.MarkSendEnd()
+
+	return err
 }
 
 // OnAudioOut sets the callback for audio output.
@@ -279,7 +316,7 @@ func (g *Gemini) SubmitToolResult(callID string, result string) error {
 			},
 		},
 	}
-	
+
 	return g.sendJSON(msg)
 }
 
@@ -313,23 +350,23 @@ func (g *Gemini) handleMessages() {
 		g.mu.RLock()
 		closed := g.closed
 		g.mu.RUnlock()
-		
+
 		if closed {
 			return
 		}
-		
+
 		_, message, err := g.ws.ReadMessage()
 		if err != nil {
 			g.mu.RLock()
 			closed := g.closed
 			g.mu.RUnlock()
-			
+
 			if !closed && g.onError != nil {
 				g.onError(err)
 			}
 			return
 		}
-		
+
 		var msg map[string]any
 		if err := json.Unmarshal(message, &msg); err != nil {
 			if g.config.Debug {
@@ -337,33 +374,34 @@ func (g *Gemini) handleMessages() {
 			}
 			continue
 		}
-		
+
 		g.handleMessage(msg)
 	}
 }
 
 // handleMessage processes a single Gemini Live message.
 func (g *Gemini) handleMessage(msg map[string]any) {
+	// Log all incoming messages for debugging
+	debug.Log("🌟 Gemini RAW: %v\n", msg)
+
 	// Handle setup complete
 	if _, ok := msg["setupComplete"]; ok {
-		if g.config.Debug {
-			debug.Logln("🌟 Gemini Live session ready")
-		}
+		debug.Logln("🌟 Gemini Live session ready")
 		return
 	}
-	
+
 	// Handle server content (audio/text responses)
 	if serverContent, ok := msg["serverContent"].(map[string]any); ok {
 		g.handleServerContent(serverContent)
 		return
 	}
-	
+
 	// Handle tool calls
 	if toolCall, ok := msg["toolCall"].(map[string]any); ok {
 		g.handleToolCall(toolCall)
 		return
 	}
-	
+
 	// Handle tool call cancellation
 	if _, ok := msg["toolCallCancellation"]; ok {
 		if g.config.Debug {
@@ -371,7 +409,7 @@ func (g *Gemini) handleMessage(msg map[string]any) {
 		}
 		return
 	}
-	
+
 	// Handle interruption (user started speaking during AI response)
 	if _, ok := msg["interrupted"]; ok {
 		g.metrics.MarkSpeechEnd()
@@ -380,24 +418,34 @@ func (g *Gemini) handleMessage(msg map[string]any) {
 		}
 		return
 	}
-	
-	if g.config.Debug {
-		debug.Log("🌟 Gemini message: %v\n", msg)
-	}
+
+	// Always log unknown messages for debugging
+	debug.Log("🌟 Gemini unknown message: %v\n", msg)
 }
 
 // handleServerContent processes audio/text from Gemini.
 func (g *Gemini) handleServerContent(content map[string]any) {
+	// Stage 4: Receive timing - start (first data from WebSocket)
+	g.metrics.MarkReceiveStart()
+
 	// Check if this is a turn complete message
 	if turnComplete, ok := content["turnComplete"].(bool); ok && turnComplete {
+		// Stage 4: Receive timing - end
+		g.metrics.MarkReceiveEnd()
 		g.metrics.MarkResponseDone()
 		if g.config.ProfileLatency {
 			m := g.metrics.Current()
 			fmt.Printf("⏱️  %s\n", m.FormatLatency())
 		}
+		// Reset latency tracking for next turn
+		g.latencyMu.Lock()
+		g.firstAudioReceived = false
+		g.latencyMu.Unlock()
+		// Reset metrics for next turn
+		g.metrics.Reset()
 		return
 	}
-	
+
 	// Check if interrupted
 	if interrupted, ok := content["interrupted"].(bool); ok && interrupted {
 		if g.onSpeechStart != nil {
@@ -405,7 +453,7 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 		}
 		return
 	}
-	
+
 	// Handle model turn (AI response)
 	if modelTurn, ok := content["modelTurn"].(map[string]any); ok {
 		if parts, ok := modelTurn["parts"].([]any); ok {
@@ -414,7 +462,7 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 				if !ok {
 					continue
 				}
-				
+
 				// Handle inline audio data
 				if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
 					if mimeType, ok := inlineData["mimeType"].(string); ok {
@@ -422,7 +470,28 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 							if data, ok := inlineData["data"].(string); ok {
 								audioData, err := base64.StdEncoding.DecodeString(data)
 								if err == nil && len(audioData) > 0 {
-									g.metrics.MarkFirstAudio()
+									// Measure latency from last audio sent to first audio received
+									g.latencyMu.Lock()
+									if !g.firstAudioReceived && !g.lastAudioSentTime.IsZero() {
+										latency := time.Since(g.lastAudioSentTime)
+										g.firstAudioReceived = true
+										g.latencyMu.Unlock()
+
+										if g.config.ProfileLatency {
+											fmt.Printf("⏱️  GEMINI LATENCY: %dms (last audio → first response)\n", latency.Milliseconds())
+										}
+
+										// Stage 3: Pipeline timing - mark first audio received
+										g.metrics.MarkPipelineEnd()
+
+										// Trigger speech end callback
+										if g.onSpeechEnd != nil {
+											g.onSpeechEnd()
+										}
+									} else {
+										g.latencyMu.Unlock()
+									}
+
 									g.metrics.IncrementAudioOut()
 									if g.onAudioOut != nil {
 										g.onAudioOut(audioData)
@@ -432,7 +501,7 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 						}
 					}
 				}
-				
+
 				// Handle text response
 				if text, ok := partMap["text"].(string); ok {
 					g.metrics.MarkFirstToken()
@@ -440,15 +509,19 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 						g.onResponse(text, false)
 					}
 				}
+
+				// Handle executable code (Gemini's code execution mode for tools)
+				if execCode, ok := partMap["executableCode"].(map[string]any); ok {
+					g.handleExecutableCode(execCode)
+				}
 			}
 		}
 	}
-	
+
 	// Handle input transcription (what user said)
 	if inputTranscript, ok := content["inputTranscription"].(map[string]any); ok {
 		if text, ok := inputTranscript["text"].(string); ok {
-			// Mark speech end when we get transcript
-			g.metrics.MarkSpeechEnd()
+			// Transcript received - pipeline processing is starting
 			g.metrics.MarkTranscript()
 			if g.onSpeechEnd != nil {
 				g.onSpeechEnd()
@@ -458,7 +531,7 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 			}
 		}
 	}
-	
+
 	// Handle output transcription (what AI said as text)
 	if outputTranscript, ok := content["outputTranscription"].(map[string]any); ok {
 		if text, ok := outputTranscript["text"].(string); ok {
@@ -469,27 +542,151 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 	}
 }
 
+// handleExecutableCode parses Python-style code from Gemini and executes the corresponding tool.
+// Format: "default_api.function_name(param='value')" or "function_name(param='value')"
+func (g *Gemini) handleExecutableCode(execCode map[string]any) {
+	code, ok := execCode["code"].(string)
+	if !ok || code == "" {
+		return
+	}
+
+	if g.config.Debug {
+		fmt.Printf("🔧 Gemini executableCode: %s\n", code)
+	}
+
+	// Parse the Python function call
+	// Examples:
+	// - default_api.play_emotion(emotion='curious1')
+	// - play_emotion(emotion='happy')
+	name, args := parsePythonCall(code)
+	if name == "" {
+		if g.config.Debug {
+			debug.Log("⚠️  Failed to parse executableCode: %s\n", code)
+		}
+		return
+	}
+
+	// Generate a unique ID for this call
+	callID := fmt.Sprintf("exec_%d", time.Now().UnixNano())
+
+	if g.onToolCall != nil {
+		g.onToolCall(voice.ToolCall{
+			ID:        callID,
+			Name:      name,
+			Arguments: args,
+		})
+	} else {
+		// Execute internally if no external handler
+		if handler, ok := g.toolsMap[name]; ok && handler.Handler != nil {
+			result, err := handler.Handler(args)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+			}
+			// For code execution, we need to send the result back differently
+			if submitErr := g.sendCodeExecutionResult(callID, result); submitErr != nil {
+				if g.onError != nil {
+					g.onError(submitErr)
+				}
+			}
+		} else {
+			if g.config.Debug {
+				debug.Log("⚠️  Tool not found: %s\n", name)
+			}
+		}
+	}
+}
+
+// parsePythonCall extracts function name and arguments from a Python-style call.
+// Input: "default_api.play_emotion(emotion='curious1')"
+// Output: "play_emotion", {"emotion": "curious1"}
+func parsePythonCall(code string) (string, map[string]any) {
+	code = strings.TrimSpace(code)
+
+	// Find the opening parenthesis
+	parenIdx := strings.Index(code, "(")
+	if parenIdx == -1 {
+		return "", nil
+	}
+
+	// Extract function name (may have "default_api." prefix)
+	funcPart := code[:parenIdx]
+	if dotIdx := strings.LastIndex(funcPart, "."); dotIdx != -1 {
+		funcPart = funcPart[dotIdx+1:]
+	}
+
+	// Extract arguments part (between parentheses)
+	closeIdx := strings.LastIndex(code, ")")
+	if closeIdx == -1 || closeIdx <= parenIdx {
+		return funcPart, make(map[string]any)
+	}
+
+	argsStr := code[parenIdx+1 : closeIdx]
+	args := make(map[string]any)
+
+	if argsStr == "" {
+		return funcPart, args
+	}
+
+	// Parse keyword arguments: key='value', key="value", key=123
+	// Simple parser - doesn't handle nested structures
+	for _, arg := range strings.Split(argsStr, ",") {
+		arg = strings.TrimSpace(arg)
+		eqIdx := strings.Index(arg, "=")
+		if eqIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(arg[:eqIdx])
+		val := strings.TrimSpace(arg[eqIdx+1:])
+
+		// Remove quotes from string values
+		if (strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) ||
+			(strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) {
+			val = val[1 : len(val)-1]
+		}
+
+		args[key] = val
+	}
+
+	return funcPart, args
+}
+
+// sendCodeExecutionResult sends the result of code execution back to Gemini.
+func (g *Gemini) sendCodeExecutionResult(id string, result string) error {
+	msg := map[string]any{
+		"tool_response": map[string]any{
+			"function_responses": []map[string]any{
+				{
+					"id":       id,
+					"response": map[string]any{"result": result},
+				},
+			},
+		},
+	}
+	return g.sendJSON(msg)
+}
+
 // handleToolCall processes a function call from Gemini.
 func (g *Gemini) handleToolCall(toolCall map[string]any) {
 	functionCalls, ok := toolCall["functionCalls"].([]any)
 	if !ok {
 		return
 	}
-	
+
 	for _, fc := range functionCalls {
 		fcMap, ok := fc.(map[string]any)
 		if !ok {
 			continue
 		}
-		
+
 		name, _ := fcMap["name"].(string)
 		id, _ := fcMap["id"].(string)
 		args, _ := fcMap["args"].(map[string]any)
-		
+
 		if g.config.Debug {
 			fmt.Printf("🔧 Gemini tool call: %s\n", name)
 		}
-		
+
 		if g.onToolCall != nil {
 			g.onToolCall(voice.ToolCall{
 				ID:        id,
@@ -523,12 +720,74 @@ func (g *Gemini) handleToolCall(toolCall map[string]any) {
 func (g *Gemini) sendJSON(v any) error {
 	g.wsMu.Lock()
 	defer g.wsMu.Unlock()
-	
+
 	if g.ws == nil {
 		return voice.ErrNotConnected
 	}
-	
+
 	return g.ws.WriteJSON(v)
+}
+
+// convertToJSONSchema converts Eva's simplified tool parameters to proper JSON Schema.
+// Eva tools use: map[string]any{"paramName": {"type": "string", "description": "..."}}
+// Gemini expects: {"type": "object", "properties": {...}, "required": [...]}
+func convertToJSONSchema(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+	}
+
+	// Check if it's already in JSON Schema format (has "type": "object")
+	if typeVal, ok := params["type"].(string); ok && typeVal == "object" {
+		return params
+	}
+
+	// Convert from Eva's format to JSON Schema
+	properties := make(map[string]any)
+	required := make([]string, 0)
+
+	for paramName, paramDef := range params {
+		if paramMap, ok := paramDef.(map[string]any); ok {
+			// Copy the parameter definition as-is (it already has type, description, etc.)
+			properties[paramName] = paramMap
+			// All parameters are considered required by default
+			required = append(required, paramName)
+		}
+	}
+
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+
+	return schema
+}
+
+// App-side timing markers
+
+// MarkCaptureStart records when WebRTC delivered audio to Eva.
+func (g *Gemini) MarkCaptureStart() {
+	g.metrics.MarkCaptureStart()
+}
+
+// MarkCaptureEnd records when audio is buffered and ready to send.
+func (g *Gemini) MarkCaptureEnd() {
+	g.metrics.MarkCaptureEnd()
+}
+
+// MarkPlaybackStart records when audio was sent to GStreamer.
+func (g *Gemini) MarkPlaybackStart() {
+	g.metrics.MarkPlaybackStart()
+}
+
+// MarkPlaybackEnd records when audio playback completed.
+func (g *Gemini) MarkPlaybackEnd() {
+	g.metrics.MarkPlaybackEnd()
 }
 
 // Ensure Gemini implements voice.Pipeline at compile time.
@@ -540,4 +799,3 @@ func init() {
 		return NewGemini(cfg)
 	})
 }
-

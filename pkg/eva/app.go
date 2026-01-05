@@ -82,7 +82,14 @@ BEHAVIOR:
 IMPORTANT:
 - Never mention that you're an AI or language model
 - You ARE Eva the robot - own your robot identity
-- When you can't see or hear something, use your tools to actually look`
+- When you can't see or hear something, use your tools to actually look
+
+TOOL EXECUTION - CRITICAL:
+- Execute tools SILENTLY - never say what tool you're calling
+- DON'T narrate actions like "wiggles antennas" or "looking around"
+- Just call the tool and continue the conversation naturally
+- When waving, just call wave_hello and say "Hi!" - don't describe the wave
+- When emoting, just call express_emotion - don't describe the emotion`
 
 // App is the main Eva application orchestrator.
 // It manages all components and their lifecycle.
@@ -878,7 +885,7 @@ func (a *App) connectVoicePipeline(ctx context.Context) error {
 	
 	// Wire up callbacks
 	a.voicePipeline.OnAudioOut(func(pcm16 []byte) {
-		// Latency tracking
+		// Latency tracking (legacy)
 		a.latencyMeasurement.Lock()
 		if a.firstAudioOutTime.IsZero() && !a.speechEndTime.IsZero() {
 			a.firstAudioOutTime = time.Now()
@@ -886,12 +893,18 @@ func (a *App) connectVoicePipeline(ctx context.Context) error {
 			fmt.Printf("⏱️  LATENCY: %dms (speech end → first audio out)\n", latency.Milliseconds())
 		}
 		a.latencyMeasurement.Unlock()
-		
+
+		// Stage 5: Playback timing - start (sending to GStreamer)
+		a.voicePipeline.MarkPlaybackStart()
+
 		// Send to audio player
 		if err := a.audioPlayer.AppendPCMChunk(pcm16); err != nil {
 			fmt.Printf("⚠️  Audio append error: %v\n", err)
 		}
-		
+
+		// Stage 5: Playback timing - end (audio queued to GStreamer)
+		a.voicePipeline.MarkPlaybackEnd()
+
 		// Update speech wobble
 		if a.speechWobble != nil && len(pcm16) > 0 {
 			samples := make([]int16, len(pcm16)/2)
@@ -1098,6 +1111,9 @@ func (a *App) streamAudioToVoicePipeline(ctx context.Context) {
 			continue
 		}
 
+		// Stage 1: Capture timing - start (WebRTC delivers audio)
+		a.voicePipeline.MarkCaptureStart()
+
 		a.videoClient.StartRecording()
 		time.Sleep(100 * time.Millisecond)
 		pcmData := a.videoClient.StopRecording()
@@ -1118,6 +1134,9 @@ func (a *App) streamAudioToVoicePipeline(ctx context.Context) {
 		// Resample from 48kHz (WebRTC) to provider's sample rate
 		resampled := audio.Resample(pcmData, 48000, inputRate)
 		audioBuffer = append(audioBuffer, resampled...)
+
+		// Stage 1: Capture timing - end (audio buffered and ready)
+		a.voicePipeline.MarkCaptureEnd()
 
 		if len(audioBuffer) >= chunkSize {
 			pcm16Bytes := audio.ConvertInt16ToPCM16(audioBuffer[:chunkSize])

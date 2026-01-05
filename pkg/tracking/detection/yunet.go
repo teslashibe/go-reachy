@@ -95,7 +95,7 @@ func (d *YuNetDetector) Detect(jpeg []byte) ([]Detection, error) {
 	}
 
 	if len(detections) > 0 {
-		debug.Log("👁️  YuNet found %d face(s)\n", len(detections))
+		debug.TrackLog("👁️  YuNet found %d face(s)\n", len(detections))
 	}
 
 	return detections, nil
