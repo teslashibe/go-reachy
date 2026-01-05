@@ -65,14 +65,14 @@ func (e *ElevenLabs) Start(ctx context.Context) error {
 	// TTS model (default to fastest)
 	ttsModel := e.config.TTSModel
 	if ttsModel == "" {
-		ttsModel = voice.ElevenLabsTTSFlash // eleven_flash_v2_5 (~75ms)
+		ttsModel = voice.TTSFlash // eleven_flash_v2 (~75ms, English agents)
 	}
 	opts = append(opts, conversation.WithTTSModel(ttsModel))
 	
 	// STT model (default to fastest)
 	sttModel := e.config.STTModel
 	if sttModel == "" {
-		sttModel = voice.ElevenLabsSTTRealtime // scribe_v2_realtime (~150ms)
+		sttModel = voice.STTRealtime // scribe_v2_realtime (~150ms)
 	}
 	opts = append(opts, conversation.WithSTTModel(sttModel))
 	
@@ -339,9 +339,9 @@ func (e *ElevenLabs) MarkPlaybackEnd() {
 // Ensure ElevenLabs implements voice.Pipeline at compile time.
 var _ voice.Pipeline = (*ElevenLabs)(nil)
 
-// Register ElevenLabs provider in voice package.
+// Register ElevenLabs pipeline in voice package.
 func init() {
-	voice.Register(voice.ProviderElevenLabs, func(cfg voice.Config) (voice.Pipeline, error) {
+	voice.Register(func(cfg voice.Config) (voice.Pipeline, error) {
 		return NewElevenLabs(cfg)
 	})
 }

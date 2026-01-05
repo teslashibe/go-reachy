@@ -3,15 +3,15 @@ package eva
 
 import (
 	"os"
+	"time"
 
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/spark"
-	"github.com/teslashibe/go-reachy/pkg/tts"
-	"github.com/teslashibe/go-reachy/pkg/vision"
 	"github.com/teslashibe/go-reachy/pkg/voice"
+	"github.com/teslashibe/go-reachy/pkg/vision"
 )
 
 // Default configuration values.
@@ -34,26 +34,26 @@ type Config struct {
 	SSHUser string
 	SSHPass string
 
-	// Voice pipeline provider: "openai", "elevenlabs", "gemini"
-	VoiceProvider voice.Provider
+	// Voice pipeline configuration (ElevenLabs)
+	VoiceLLM        string        // LLM model (default: gpt-5-mini)
+	VoiceTTS        string        // TTS model (default: eleven_flash_v2)
+	VoiceSTT        string        // STT model (default: scribe_v2_realtime)
+	VoiceChunk      time.Duration // Audio chunk duration (default: 50ms)
+	VoiceVADMode    string        // VAD mode (default: server_vad)
+	VoiceVADSilence time.Duration // VAD silence duration (default: 500ms)
 
-	// TTS configuration (legacy, used when VoiceProvider is not set).
-	TTSMode  string // "realtime", "elevenlabs", "elevenlabs-streaming", "openai-tts"
-	TTSVoice string // Voice ID or preset name
-
-	// ElevenLabs voice ID (for elevenlabs provider)
+	// ElevenLabs credentials
 	ElevenLabsVoiceID string
 
 	// Feature flags.
 	SparkEnabled bool // Enable Spark idea collection
 	NoBody       bool // Disable body rotation (head-only tracking)
 
-	// API Keys (typically from environment variables).
-	OpenAIKey     string
+	// API Keys (from environment variables).
 	ElevenLabsKey string
-	GoogleAPIKey  string
 
 	// Google OAuth (for Spark Google Docs integration).
+	GoogleAPIKey       string
 	GoogleClientID     string
 	GoogleClientSecret string
 }
@@ -61,13 +61,16 @@ type Config struct {
 // DefaultConfig returns sensible defaults for Eva configuration.
 func DefaultConfig() Config {
 	return Config{
-		RobotIP:       DefaultRobotIP,
-		SSHUser:       DefaultSSHUser,
-		SSHPass:       DefaultSSHPass,
-		VoiceProvider: voice.ProviderOpenAI, // Default to OpenAI Realtime
-		TTSMode:       "realtime",
-		TTSVoice:      tts.DefaultElevenLabsVoice,
-		SparkEnabled:  true,
+		RobotIP:         DefaultRobotIP,
+		SSHUser:         DefaultSSHUser,
+		SSHPass:         DefaultSSHPass,
+		VoiceLLM:        voice.LLMGpt5Mini,
+		VoiceTTS:        voice.TTSFlash,
+		VoiceSTT:        voice.STTRealtime,
+		VoiceChunk:      50 * time.Millisecond,
+		VoiceVADMode:    "server_vad",
+		VoiceVADSilence: 500 * time.Millisecond,
+		SparkEnabled:    true,
 	}
 }
 
@@ -77,51 +80,41 @@ func (c *Config) LoadEnvConfig() {
 	if ip := os.Getenv("ROBOT_IP"); ip != "" {
 		c.RobotIP = ip
 	}
-	c.OpenAIKey = os.Getenv("OPENAI_API_KEY")
 	c.ElevenLabsKey = os.Getenv("ELEVENLABS_API_KEY")
 	c.GoogleAPIKey = os.Getenv("GOOGLE_API_KEY")
 	c.GoogleClientID = os.Getenv("GOOGLE_CLIENT_ID")
 	c.GoogleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 
-	// Voice can come from env if not set by flag
-	if c.TTSVoice == "" || c.TTSVoice == tts.DefaultElevenLabsVoice {
-		if voice := os.Getenv("ELEVENLABS_VOICE_ID"); voice != "" {
-			c.TTSVoice = voice
-		}
+	// Voice ID from env if not set by flag
+	if c.ElevenLabsVoiceID == "" {
+		c.ElevenLabsVoiceID = os.Getenv("ELEVENLABS_VOICE_ID")
 	}
 }
 
 // Validate checks that required configuration is present.
 func (c *Config) Validate() error {
-	// Validate based on voice provider
-	switch c.VoiceProvider {
-	case voice.ProviderOpenAI, "": // Empty defaults to OpenAI
-		if c.OpenAIKey == "" {
-			return &ConfigError{Field: "OpenAIKey", Message: "OPENAI_API_KEY environment variable is required"}
-		}
-	case voice.ProviderElevenLabs:
-		if c.ElevenLabsKey == "" {
-			return &ConfigError{Field: "ElevenLabsKey", Message: "ELEVENLABS_API_KEY environment variable is required for ElevenLabs"}
-		}
-		if c.ElevenLabsVoiceID == "" && c.TTSVoice == "" {
-			return &ConfigError{Field: "ElevenLabsVoiceID", Message: "ELEVENLABS_VOICE_ID is required for ElevenLabs provider"}
-		}
-	case voice.ProviderGemini:
-		if c.GoogleAPIKey == "" {
-			return &ConfigError{Field: "GoogleAPIKey", Message: "GOOGLE_API_KEY environment variable is required for Gemini"}
-		}
+	if c.ElevenLabsKey == "" {
+		return &ConfigError{Field: "ElevenLabsKey", Message: "ELEVENLABS_API_KEY environment variable is required"}
 	}
-
-	// Legacy TTS mode validation (for backward compatibility)
-	if c.VoiceProvider == "" || c.VoiceProvider == voice.ProviderOpenAI {
-		if c.OpenAIKey == "" {
-			return &ConfigError{Field: "OpenAIKey", Message: "OPENAI_API_KEY environment variable is required"}
-		}
-		if (c.TTSMode == "elevenlabs" || c.TTSMode == "elevenlabs-streaming") && c.ElevenLabsKey == "" {
-			return &ConfigError{Field: "ElevenLabsKey", Message: "ELEVENLABS_API_KEY environment variable is required for ElevenLabs TTS"}
-		}
+	if c.ElevenLabsVoiceID == "" {
+		return &ConfigError{Field: "ElevenLabsVoiceID", Message: "ELEVENLABS_VOICE_ID is required"}
 	}
 	return nil
+}
+
+// ToVoiceConfig converts Eva config to voice pipeline config.
+func (c *Config) ToVoiceConfig() voice.Config {
+	return voice.Config{
+		ElevenLabsKey:      c.ElevenLabsKey,
+		ElevenLabsVoiceID:  c.ElevenLabsVoiceID,
+		LLMModel:           c.VoiceLLM,
+		TTSModel:           c.VoiceTTS,
+		STTModel:           c.VoiceSTT,
+		ChunkDuration:      c.VoiceChunk,
+		VADMode:            c.VoiceVADMode,
+		VADSilenceDuration: c.VoiceVADSilence,
+		Debug:              c.Debug,
+	}
 }
 
 // ConfigError represents a configuration validation error.

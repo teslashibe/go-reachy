@@ -12,13 +12,11 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/debug"
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
-	"github.com/teslashibe/go-reachy/pkg/openai"
 	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/speech"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
-	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
 	"github.com/teslashibe/go-reachy/pkg/voice"
 	_ "github.com/teslashibe/go-reachy/pkg/voice/bundled" // Register voice providers
@@ -96,14 +94,9 @@ TOOL EXECUTION - CRITICAL:
 type App struct {
 	config Config
 
-	// Core components - Voice Pipeline (new unified interface)
-	voicePipeline voice.Pipeline      // Unified voice pipeline (OpenAI/ElevenLabs/Gemini)
-	
-	// Legacy components (used when VoiceProvider is not set or for hybrid modes)
-	backend      *openai.Client      // Backend for conversation (legacy, use voicePipeline instead)
-	ttsSync      tts.Provider        // HTTP TTS (elevenlabs, openai-tts)
-	ttsStream    *tts.ElevenLabsWS   // WebSocket TTS (elevenlabs-streaming)
-	audioPlayer  *audio.Player
+	// Core components - Voice Pipeline (ElevenLabs)
+	voicePipeline voice.Pipeline
+	audioPlayer   *audio.Player
 
 	// Robot control
 	robotCtrl    *robot.HTTPController
@@ -200,47 +193,19 @@ func (a *App) Init() error {
 		fmt.Printf("⚠️  Tracking: %v\n", err)
 	}
 
-	// Connect to voice backend
-	// Use new voice pipeline for non-legacy providers or when explicitly set
-	useVoicePipeline := a.config.VoiceProvider == voice.ProviderElevenLabs || 
-		a.config.VoiceProvider == voice.ProviderGemini
+	// Connect to ElevenLabs voice pipeline
+	fmt.Print("🧠 Connecting to ElevenLabs voice pipeline... ")
+	if err := a.connectVoicePipeline(context.Background()); err != nil {
+		return fmt.Errorf("voice pipeline: %w", err)
+	}
+	fmt.Println("✅")
 	
-	if useVoicePipeline {
-		fmt.Printf("🧠 Connecting to %s voice pipeline... ", a.config.VoiceProvider)
-		if err := a.connectVoicePipeline(context.Background()); err != nil {
-			return fmt.Errorf("voice pipeline: %w", err)
+	// Wait for pipeline ready
+	for i := 0; i < 50; i++ {
+		if a.voicePipeline.IsConnected() {
+			break
 		}
-		fmt.Println("✅")
-		
-		// Wait for pipeline ready
-		for i := 0; i < 50; i++ {
-			if a.voicePipeline.IsConnected() {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	} else {
-		// Legacy OpenAI backend with TTS mode options
-		fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
-		if err := a.connectBackend(); err != nil {
-			return fmt.Errorf("backend: %w", err)
-		}
-		fmt.Println("✅")
-
-		// Configure session
-		fmt.Print("⚙️  Configuring Eva's personality... ")
-		if err := a.backend.ConfigureSession(EvaInstructions, "shimmer"); err != nil {
-			return fmt.Errorf("configure session: %w", err)
-		}
-		fmt.Println("✅")
-
-		// Wait for session ready
-		for i := 0; i < 50; i++ {
-			if a.backend.IsReady() {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return nil
@@ -253,13 +218,7 @@ func (a *App) Run(ctx context.Context) error {
 	fmt.Println("   (Ctrl+C to exit)")
 
 	// Start background tasks
-	if a.voicePipeline != nil {
-		// Use voice pipeline audio streaming
-		go a.streamAudioToVoicePipeline(ctx)
-	} else {
-		// Legacy backend audio streaming
-		go a.streamAudioToBackend(ctx)
-	}
+	go a.streamAudioToVoicePipeline(ctx)
 	if a.tracker != nil {
 		go a.tracker.Run(ctx)
 	}
@@ -272,8 +231,7 @@ func (a *App) Run(ctx context.Context) error {
 		if a.webServer != nil {
 			a.webServer.UpdateState(func(s *web.EvaState) {
 				s.RobotConnected = true
-				s.OpenAIConnected = (a.backend != nil && a.backend.IsConnected()) || 
-					(a.voicePipeline != nil && a.voicePipeline.IsConnected())
+				s.OpenAIConnected = a.voicePipeline != nil && a.voicePipeline.IsConnected()
 				s.WebRTCConnected = a.videoClient != nil
 				s.Listening = true
 			})
@@ -290,89 +248,20 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) Shutdown() {
 	fmt.Println("\n👋 Goodbye!")
 
-	if a.backend != nil {
-		a.backend.Close()
+	if a.voicePipeline != nil {
+		a.voicePipeline.Stop()
 	}
 	if a.videoClient != nil {
 		a.videoClient.Close()
-	}
-	if a.ttsSync != nil {
-		a.ttsSync.Close()
-	}
-	if a.ttsStream != nil {
-		a.ttsStream.Close()
 	}
 	if a.webServer != nil {
 		a.webServer.Shutdown()
 	}
 }
 
-// initTTS initializes the TTS provider based on config.
+// initTTS is a no-op - TTS is handled by the voice pipeline.
 func (a *App) initTTS() error {
-	switch a.config.TTSMode {
-	case "realtime":
-		fmt.Println("🎙️  TTS: OpenAI Realtime (streaming audio)")
-
-	case "elevenlabs":
-		voiceName := a.config.TTSVoice
-		if tts.IsElevenLabsPreset(voiceName) {
-			fmt.Printf("   Voice preset: %s\n", voiceName)
-		}
-		voiceID := tts.ResolveElevenLabsVoice(voiceName)
-
-		var err error
-		a.ttsSync, err = tts.NewElevenLabs(
-			tts.WithAPIKey(a.config.ElevenLabsKey),
-			tts.WithVoice(voiceID),
-			tts.WithModel(tts.ModelFlashV2_5),
-			tts.WithOutputFormat(tts.EncodingPCM24),
-		)
-		if err != nil {
-			return fmt.Errorf("ElevenLabs init: %w", err)
-		}
-		fmt.Printf("🎙️  TTS: ElevenLabs (voice: %s)\n", voiceID)
-
-	case "elevenlabs-streaming":
-		voiceName := a.config.TTSVoice
-		if tts.IsElevenLabsPreset(voiceName) {
-			fmt.Printf("   Voice preset: %s\n", voiceName)
-		}
-		voiceID := tts.ResolveElevenLabsVoice(voiceName)
-
-		var err error
-		a.ttsStream, err = tts.NewElevenLabsWS(
-			tts.WithAPIKey(a.config.ElevenLabsKey),
-			tts.WithVoice(voiceID),
-			tts.WithModel(tts.ModelFlashV2_5),
-			tts.WithOutputFormat(tts.EncodingPCM24),
-		)
-		if err != nil {
-			return fmt.Errorf("ElevenLabs streaming init: %w", err)
-		}
-		fmt.Printf("🎙️  TTS: ElevenLabs WebSocket Streaming (voice: %s)\n", voiceID)
-		fmt.Println("   Pre-warming WebSocket connection...")
-		if err := a.ttsStream.Connect(context.Background()); err != nil {
-			fmt.Printf("⚠️  WebSocket pre-warm failed (will retry): %v\n", err)
-		} else {
-			fmt.Println("   WebSocket connected ✓")
-		}
-
-	case "openai-tts":
-		var err error
-		a.ttsSync, err = tts.NewOpenAI(
-			tts.WithAPIKey(a.config.OpenAIKey),
-			tts.WithVoice("shimmer"),
-			tts.WithOutputFormat(tts.EncodingPCM24),
-		)
-		if err != nil {
-			return fmt.Errorf("OpenAI TTS init: %w", err)
-		}
-		fmt.Println("🎙️  TTS: OpenAI TTS API")
-
-	default:
-		return fmt.Errorf("unknown TTS provider: %s (use: realtime, elevenlabs, elevenlabs-streaming, openai-tts)", a.config.TTSMode)
-	}
-
+	fmt.Printf("🎙️  TTS: ElevenLabs via voice pipeline (model: %s)\n", a.config.VoiceTTS)
 	return nil
 }
 
@@ -461,54 +350,6 @@ func (a *App) initCore() error {
 		a.speakingMu.Unlock()
 	}
 
-	// Wire up streaming TTS callbacks
-	if a.ttsStream != nil {
-		a.ttsStream.OnAudio = func(pcmData []byte) {
-			if err := a.audioPlayer.AppendPCMChunk(pcmData); err != nil {
-				debug.Log("⚠️  Streaming audio chunk error: %v\n", err)
-			}
-
-			// Feed audio to speech wobbler
-			if a.speechWobble != nil && len(pcmData) > 0 {
-				samples := make([]int16, len(pcmData)/2)
-				for i := 0; i < len(samples); i++ {
-					samples[i] = int16(pcmData[i*2]) | int16(pcmData[i*2+1])<<8
-				}
-				a.speechWobble.Feed(samples, 24000)
-			}
-		}
-		a.ttsStream.OnConnected = func() {
-			debug.Log("🔌 ElevenLabs WebSocket connected\n")
-		}
-		a.ttsStream.OnDisconnect = func() {
-			debug.Log("🔌 ElevenLabs WebSocket disconnected\n")
-		}
-		a.ttsStream.OnError = func(err error) {
-			fmt.Printf("⚠️  Streaming TTS error: %v\n", err)
-		}
-		a.ttsStream.OnStreamComplete = func() {
-			fmt.Println("🗣️  [streaming audio complete, flushing...]")
-			if err := a.audioPlayer.FlushAndPlay(); err != nil {
-				fmt.Printf("⚠️  Audio flush error: %v\n", err)
-			}
-			fmt.Println("🗣️  [done]")
-
-			if a.speechWobble != nil {
-				a.speechWobble.Reset()
-			}
-			if a.tracker != nil {
-				a.tracker.ClearSpeechOffsets()
-			}
-
-			if a.webServer != nil {
-				a.webServer.UpdateState(func(s *web.EvaState) {
-					s.Speaking = false
-					s.Listening = true
-				})
-				a.webServer.AddLog("speech", "Streaming audio done")
-			}
-		}
-	}
 
 	// Emotion system
 	fmt.Print("🎭 Initializing emotions... ")
@@ -629,225 +470,15 @@ func (a *App) initTracking() error {
 	return nil
 }
 
-// connectBackend connects to the OpenAI Realtime API.
-func (a *App) connectBackend() error {
-	a.backend = openai.NewClient(a.config.OpenAIKey)
-	a.audioPlayer.SetOpenAIKey(a.config.OpenAIKey)
-
-	// Register tools
-	toolsCfg := ToolsConfig{
-		Robot:           a.robotCtrl,
-		Memory:          a.memory,
-		Vision:          &videoVisionAdapter{a.videoClient},
-		ObjectDetector:  &yoloAdapter{a.objectDetector},
-		GoogleAPIKey:    a.config.GoogleAPIKey,
-		AudioPlayer:     a.audioPlayer,
-		Tracker:         a.tracker,
-		Emotions:        a.emotions,
-		SparkStore:      a.sparkStore,
-		SparkGemini:     a.sparkGemini,
-		SparkGoogleDocs: a.sparkGoogleDocs,
-	}
-	tools := Tools(toolsCfg)
-	for _, tool := range tools {
-		a.backend.RegisterTool(openai.Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  tool.Parameters,
-			Handler:     tool.Handler,
-		})
-	}
-
-	// Set up callbacks
-	a.backend.OnTranscript = func(text string, isFinal bool) {
-		if isFinal && text != "" {
-			fmt.Printf("👤 User: %s\n", text)
-			a.evaResponseStarted = false
-			if a.webServer != nil {
-				a.webServer.UpdateState(func(s *web.EvaState) {
-					s.LastUserMessage = text
-					s.Listening = true
-					s.Speaking = false
-				})
-				a.webServer.AddConversation("user", text)
-			}
-		} else if !isFinal && text != "" {
-			if !a.evaResponseStarted {
-				fmt.Print("🤖 Eva: ")
-				a.evaResponseStarted = true
-				a.evaCurrentResponse = ""
-			}
-			fmt.Print(text)
-			a.evaCurrentResponse += text
-
-			if a.config.TTSMode == "elevenlabs-streaming" && a.ttsStream != nil {
-				if err := a.ttsStream.SendText(text); err != nil {
-					debug.Log("⚠️  Streaming TTS send error: %v\n", err)
-				}
-			}
-		}
-	}
-
-	a.backend.OnAudioDelta = func(audioBase64 string) {
-		if a.config.TTSMode == "realtime" {
-			if err := a.audioPlayer.AppendAudio(audioBase64); err != nil {
-				fmt.Printf("⚠️  Audio append error: %v\n", err)
-			}
-		}
-	}
-
-	a.backend.OnAudioDone = func() {
-		if a.config.TTSMode != "realtime" {
-			return
-		}
-		if a.evaResponseStarted {
-			fmt.Println()
-			a.evaResponseStarted = false
-		}
-		if a.webServer != nil && a.evaCurrentResponse != "" {
-			a.webServer.UpdateState(func(s *web.EvaState) {
-				s.Speaking = true
-				s.Listening = false
-				s.LastEvaMessage = a.evaCurrentResponse
-			})
-			a.webServer.AddConversation("eva", a.evaCurrentResponse)
-			a.webServer.AddLog("speech", "Playing audio...")
-		}
-		fmt.Println("🗣️  [playing audio...]")
-		if err := a.audioPlayer.FlushAndPlay(); err != nil {
-			fmt.Printf("⚠️  Audio error: %v\n", err)
-		}
-		fmt.Println("🗣️  [done]")
-		if a.webServer != nil {
-			a.webServer.UpdateState(func(s *web.EvaState) {
-				s.Speaking = false
-				s.Listening = true
-			})
-			a.webServer.AddLog("speech", "Audio done")
-		}
-		a.evaCurrentResponse = ""
-	}
-
-	a.backend.OnTranscriptDone = func() {
-		if a.config.TTSMode == "realtime" {
-			return
-		}
-		if a.evaResponseStarted {
-			fmt.Println()
-			a.evaResponseStarted = false
-		}
-		if a.evaCurrentResponse == "" {
-			return
-		}
-		if a.webServer != nil {
-			a.webServer.UpdateState(func(s *web.EvaState) {
-				s.Speaking = true
-				s.Listening = false
-				s.LastEvaMessage = a.evaCurrentResponse
-			})
-			a.webServer.AddConversation("eva", a.evaCurrentResponse)
-			a.webServer.AddLog("speech", "Synthesizing with "+a.config.TTSMode+"...")
-		}
-
-		if a.config.TTSMode == "elevenlabs-streaming" && a.ttsStream != nil {
-			debug.Log("🗣️  Flushing streaming TTS...\n")
-			if err := a.ttsStream.Flush(); err != nil {
-				fmt.Printf("⚠️  Streaming TTS flush error: %v\n", err)
-			}
-			a.evaCurrentResponse = ""
-			return
-		}
-
-		if a.ttsSync != nil {
-			fmt.Printf("🗣️  [synthesizing with %s...]\n", a.config.TTSMode)
-			go func(text string) {
-				result, err := a.ttsSync.Synthesize(context.Background(), text)
-				if err != nil {
-					fmt.Printf("⚠️  TTS error: %v\n", err)
-					return
-				}
-				fmt.Printf("🗣️  TTS: %d bytes, %d latency\n", len(result.Audio), result.LatencyMs)
-				if err := a.audioPlayer.PlayPCM(result.Audio); err != nil {
-					fmt.Printf("⚠️  Audio playback error: %v\n", err)
-				}
-				fmt.Println("🗣️  [done]")
-				if a.webServer != nil {
-					a.webServer.UpdateState(func(s *web.EvaState) {
-						s.Speaking = false
-						s.Listening = true
-					})
-					a.webServer.AddLog("speech", "Audio done")
-				}
-			}(a.evaCurrentResponse)
-		}
-		a.evaCurrentResponse = ""
-	}
-
-	a.backend.OnError = func(err error) {
-		fmt.Printf("⚠️  Error: %v\n", err)
-		if a.webServer != nil {
-			a.webServer.AddLog("error", err.Error())
-		}
-	}
-
-	a.backend.OnSessionCreated = func() {
-		fmt.Println("   Session created!")
-	}
-
-	a.backend.OnSpeechStarted = func() {
-		if a.audioPlayer != nil && a.audioPlayer.IsSpeaking() {
-			fmt.Println("🛑 [interrupted]")
-			a.audioPlayer.Cancel()
-			a.backend.CancelResponse()
-		}
-	}
-
-	a.backend.OnSpeechStopped = func() {
-		a.latencyMeasurement.Lock()
-		a.speechEndTime = time.Now()
-		a.firstAudioOutTime = time.Time{}
-		a.latencyMeasurement.Unlock()
-		debug.Log("⏱️  Speech ended at %v\n", a.speechEndTime)
-	}
-
-	return a.backend.Connect()
-}
-
-// connectVoicePipeline connects using the new unified voice pipeline.
-// This replaces connectBackend when VoiceProvider is explicitly set.
+// connectVoicePipeline connects using the ElevenLabs voice pipeline.
 func (a *App) connectVoicePipeline(ctx context.Context) error {
-	// Build voice config
-	voiceCfg := voice.DefaultConfig()
-	voiceCfg.Provider = a.config.VoiceProvider
-	voiceCfg.OpenAIKey = a.config.OpenAIKey
-	voiceCfg.ElevenLabsKey = a.config.ElevenLabsKey
-	voiceCfg.GoogleAPIKey = a.config.GoogleAPIKey
+	// Build voice config from Eva config
+	voiceCfg := a.config.ToVoiceConfig()
 	voiceCfg.SystemPrompt = EvaInstructions
-	voiceCfg.Debug = a.config.Debug
 	voiceCfg.ProfileLatency = true
 	
-	// Provider-specific config
-	switch a.config.VoiceProvider {
-	case voice.ProviderElevenLabs:
-		voiceCfg.ElevenLabsVoiceID = a.config.ElevenLabsVoiceID
-		if voiceCfg.ElevenLabsVoiceID == "" {
-			voiceCfg.ElevenLabsVoiceID = a.config.TTSVoice
-		}
-		voiceCfg.LLMModel = "gemini-2.0-flash"
-		voiceCfg.InputSampleRate = 16000
-		voiceCfg.OutputSampleRate = 16000
-	case voice.ProviderGemini:
-		voiceCfg.TTSVoice = "Puck"
-		voiceCfg.InputSampleRate = 16000
-		voiceCfg.OutputSampleRate = 24000
-	default: // OpenAI
-		voiceCfg.TTSVoice = "shimmer"
-		voiceCfg.InputSampleRate = 24000
-		voiceCfg.OutputSampleRate = 24000
-	}
-	
 	// Create pipeline
-	pipeline, err := voice.New(voiceCfg.Provider, voiceCfg)
+	pipeline, err := voice.New(voiceCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create voice pipeline: %w", err)
 	}
@@ -984,89 +615,7 @@ func (a *App) connectVoicePipeline(ctx context.Context) error {
 	return a.voicePipeline.Start(ctx)
 }
 
-// streamAudioToBackend streams audio from WebRTC to the backend.
-func (a *App) streamAudioToBackend(ctx context.Context) {
-	var audioBuffer []int16
-	const chunkSize = 1200 // 50ms at 24kHz
-
-	var loopCount, emptyCount, sentCount int
-	lastLogTime := time.Now()
-
-	debug.Logln("🎵 Audio streaming goroutine started")
-
-	for {
-		select {
-		case <-ctx.Done():
-			debug.Logln("🎵 Audio streaming stopped (context cancelled)")
-			return
-		default:
-		}
-
-		loopCount++
-
-		a.speakingMu.Lock()
-		isSpeaking := a.speaking
-		a.speakingMu.Unlock()
-
-		if isSpeaking {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-
-		if a.videoClient == nil {
-			if loopCount == 1 {
-				debug.Logln("🎵 videoClient is nil!")
-			}
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-
-		a.videoClient.StartRecording()
-		time.Sleep(100 * time.Millisecond)
-		pcmData := a.videoClient.StopRecording()
-
-		if len(pcmData) == 0 {
-			emptyCount++
-			if time.Since(lastLogTime) > 5*time.Second {
-				debug.Log("🎵 Audio stats: loops=%d, empty=%d, sent=%d (empty audio!)\n", loopCount, emptyCount, sentCount)
-				lastLogTime = time.Now()
-			}
-			continue
-		}
-
-		if sentCount == 0 && emptyCount == 0 {
-			debug.Log("🎵 First audio chunk: %d samples\n", len(pcmData))
-		}
-
-		resampled := audio.Resample(pcmData, 48000, 24000)
-		audioBuffer = append(audioBuffer, resampled...)
-
-		if len(audioBuffer) >= chunkSize {
-			pcm16Bytes := audio.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
-			audioBuffer = audioBuffer[chunkSize:]
-
-			if a.backend == nil {
-				debug.Logln("🎵 backend is nil!")
-			} else if !a.backend.IsConnected() {
-				debug.Logln("🎵 backend not connected!")
-			} else {
-				if err := a.backend.SendAudio(pcm16Bytes); err != nil {
-					debug.Log("🎵 SendAudio error: %v\n", err)
-				} else {
-					sentCount++
-					if sentCount == 1 {
-						debug.Log("🎵 First audio sent to OpenAI! (%d bytes)\n", len(pcm16Bytes))
-					} else if sentCount%50 == 0 {
-						debug.Log("🎵 Audio stats: sent=%d chunks to OpenAI\n", sentCount)
-					}
-				}
-			}
-		}
-	}
-}
-
 // streamAudioToVoicePipeline streams audio from WebRTC to the voice pipeline.
-// This is the new version that works with any voice provider (OpenAI/ElevenLabs/Gemini).
 func (a *App) streamAudioToVoicePipeline(ctx context.Context) {
 	var audioBuffer []int16
 	

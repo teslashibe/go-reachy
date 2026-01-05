@@ -3,20 +3,16 @@ package voice
 import (
 	"context"
 	"errors"
-	"fmt"
 )
 
 // Common errors returned by pipelines.
 var (
-	ErrNotConnected    = errors.New("voice: pipeline not connected")
-	ErrAlreadyStarted  = errors.New("voice: pipeline already started")
-	ErrInvalidProvider = errors.New("voice: invalid provider")
-	ErrMissingAPIKey   = errors.New("voice: missing API key")
+	ErrNotConnected   = errors.New("voice: pipeline not connected")
+	ErrAlreadyStarted = errors.New("voice: pipeline already started")
+	ErrMissingAPIKey  = errors.New("voice: missing API key")
 )
 
-// Pipeline is the unified interface for voice conversation providers.
-// All bundled providers (OpenAI, ElevenLabs, Gemini) implement this interface,
-// enabling easy switching between providers.
+// Pipeline is the interface for the ElevenLabs voice conversation pipeline.
 type Pipeline interface {
 	// Lifecycle
 
@@ -33,11 +29,11 @@ type Pipeline interface {
 	// Audio I/O
 
 	// SendAudio sends PCM16 audio data to the pipeline.
-	// The audio should match the configured InputSampleRate.
+	// Audio should be 16kHz mono PCM16.
 	SendAudio(pcm16 []byte) error
 
 	// OnAudioOut sets the callback for receiving audio output.
-	// Audio is PCM16 at the configured OutputSampleRate.
+	// Audio is PCM16 at 16kHz.
 	OnAudioOut(fn func(pcm16 []byte))
 
 	// Events
@@ -108,49 +104,27 @@ type Pipeline interface {
 // PipelineFactory is a function that creates a Pipeline.
 type PipelineFactory func(cfg Config) (Pipeline, error)
 
-// Registry of pipeline factories by provider.
-var pipelineRegistry = make(map[Provider]PipelineFactory)
+// factory holds the registered ElevenLabs pipeline factory.
+var factory PipelineFactory
 
-// Register adds a pipeline factory for a provider.
-// This is called by bundled implementations in their init() functions.
-func Register(provider Provider, factory PipelineFactory) {
-	pipelineRegistry[provider] = factory
+// Register sets the pipeline factory.
+// This is called by the bundled ElevenLabs implementation in init().
+func Register(f PipelineFactory) {
+	factory = f
 }
 
-// New creates a new Pipeline for the specified provider.
-// Returns an error if the provider is not registered or config is invalid.
-func New(provider Provider, cfg Config) (Pipeline, error) {
-	cfg.Provider = provider
-
+// New creates a new Pipeline with the given configuration.
+// Returns an error if the config is invalid or no factory is registered.
+func New(cfg Config) (Pipeline, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	factory, ok := pipelineRegistry[provider]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s (available: %v)", ErrInvalidProvider, provider, availableProviders())
+	if factory == nil {
+		return nil, errors.New("voice: no pipeline implementation registered")
 	}
 
 	return factory(cfg)
-}
-
-// NewFromConfig creates a Pipeline using the provider specified in the config.
-func NewFromConfig(cfg Config) (Pipeline, error) {
-	return New(cfg.Provider, cfg)
-}
-
-// availableProviders returns a list of registered provider names.
-func availableProviders() []Provider {
-	providers := make([]Provider, 0, len(pipelineRegistry))
-	for p := range pipelineRegistry {
-		providers = append(providers, p)
-	}
-	return providers
-}
-
-// AvailableProviders returns a list of registered provider names.
-func AvailableProviders() []Provider {
-	return availableProviders()
 }
 
 // Callbacks groups all pipeline callbacks for convenience.
@@ -189,4 +163,3 @@ func (c *Callbacks) Apply(p Pipeline) {
 		p.OnError(c.OnError)
 	}
 }
-
