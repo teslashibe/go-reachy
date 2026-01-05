@@ -70,6 +70,7 @@ func main() {
 	vadEagerness := flag.String("vad-eagerness", "medium", "Semantic VAD eagerness: low, medium, high (OpenAI)")
 	vadSilence := flag.Duration("vad-silence", 500*time.Millisecond, "VAD silence duration to detect end of speech")
 	vadThreshold := flag.Float64("vad-threshold", 0.5, "VAD threshold 0.0-1.0 (OpenAI server_vad)")
+	llmModel := flag.String("llm", "", "LLM model for ElevenLabs: gemini-2.0-flash, gpt-4o, claude-3-5-sonnet")
 	benchmark := flag.Bool("benchmark", false, "Run comprehensive benchmark across all settings")
 	flag.Parse()
 
@@ -109,6 +110,14 @@ func main() {
 	}
 
 	// Base config (will be cloned per provider)
+	llm := *llmModel
+	if llm == "" {
+		llm = os.Getenv("ELEVENLABS_LLM")
+	}
+	if llm == "" {
+		llm = "gemini-2.0-flash" // default
+	}
+	
 	baseConfig := voice.Config{
 		OpenAIKey:         os.Getenv("OPENAI_API_KEY"),
 		GoogleAPIKey:      os.Getenv("GOOGLE_API_KEY"),
@@ -119,6 +128,7 @@ func main() {
 		Debug:             *debug,
 		InputSampleRate:   16000,
 		OutputSampleRate:  24000,
+		LLMModel:          llm,
 		// VAD tuning parameters
 		ChunkDuration:      *chunkDuration,
 		VADMode:            *vadMode,
@@ -1152,17 +1162,23 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 		}
 	}
 
-	// ElevenLabs configurations
+	// ElevenLabs configurations - test all LLM backends!
 	if baseConfig.ElevenLabsKey != "" && baseConfig.ElevenLabsVoiceID != "" {
+		elevenLabsLLMs := []string{"gemini-2.0-flash", "gpt-4o", "claude-3-5-sonnet"}
+		
 		for _, chunk := range chunkDurations {
-			testConfig := baseConfig
-			testConfig.Provider = voice.ProviderElevenLabs
-			testConfig.ChunkDuration = chunk
-
-			jobs = append(jobs, BenchmarkJob{
-				Config:        testConfig,
-				ChunkDuration: chunk,
-			})
+			for _, llm := range elevenLabsLLMs {
+				testConfig := baseConfig
+				testConfig.Provider = voice.ProviderElevenLabs
+				testConfig.ChunkDuration = chunk
+				testConfig.LLMModel = llm
+				
+				jobs = append(jobs, BenchmarkJob{
+					Config:        testConfig,
+					ChunkDuration: chunk,
+					VADMode:       llm, // Reuse VADMode field to store LLM name for display
+				})
+			}
 		}
 	}
 
@@ -1188,7 +1204,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 				defer func() { <-semaphore }() // Release semaphore
 			}
 
-			result := runSingleBenchmark(ctx, j.Config, speechSamples, 1) // 1 loop for speed
+			result := runSingleBenchmark(ctx, j.Config, speechSamples, 3) // 3 loops for stats
 			result.ChunkDuration = j.ChunkDuration
 			result.VADMode = j.VADMode
 			result.VADEagerness = j.VADEagerness
