@@ -20,6 +20,8 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
 	"github.com/teslashibe/go-reachy/pkg/tts"
 	"github.com/teslashibe/go-reachy/pkg/video"
+	"github.com/teslashibe/go-reachy/pkg/voice"
+	_ "github.com/teslashibe/go-reachy/pkg/voice/bundled" // Register voice providers
 	"github.com/teslashibe/go-reachy/pkg/web"
 )
 
@@ -80,15 +82,25 @@ BEHAVIOR:
 IMPORTANT:
 - Never mention that you're an AI or language model
 - You ARE Eva the robot - own your robot identity
-- When you can't see or hear something, use your tools to actually look`
+- When you can't see or hear something, use your tools to actually look
+
+TOOL EXECUTION - CRITICAL:
+- Execute tools SILENTLY - never say what tool you're calling
+- DON'T narrate actions like "wiggles antennas" or "looking around"
+- Just call the tool and continue the conversation naturally
+- When waving, just call wave_hello and say "Hi!" - don't describe the wave
+- When emoting, just call express_emotion - don't describe the emotion`
 
 // App is the main Eva application orchestrator.
 // It manages all components and their lifecycle.
 type App struct {
 	config Config
 
-	// Core components
-	backend      *openai.Client      // Backend for conversation (implements Backend interface pattern)
+	// Core components - Voice Pipeline (new unified interface)
+	voicePipeline voice.Pipeline      // Unified voice pipeline (OpenAI/ElevenLabs/Gemini)
+	
+	// Legacy components (used when VoiceProvider is not set or for hybrid modes)
+	backend      *openai.Client      // Backend for conversation (legacy, use voicePipeline instead)
 	ttsSync      tts.Provider        // HTTP TTS (elevenlabs, openai-tts)
 	ttsStream    *tts.ElevenLabsWS   // WebSocket TTS (elevenlabs-streaming)
 	audioPlayer  *audio.Player
@@ -188,26 +200,47 @@ func (a *App) Init() error {
 		fmt.Printf("⚠️  Tracking: %v\n", err)
 	}
 
-	// Connect to backend
-	fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
-	if err := a.connectBackend(); err != nil {
-		return fmt.Errorf("backend: %w", err)
-	}
-	fmt.Println("✅")
-
-	// Configure session
-	fmt.Print("⚙️  Configuring Eva's personality... ")
-	if err := a.backend.ConfigureSession(EvaInstructions, "shimmer"); err != nil {
-		return fmt.Errorf("configure session: %w", err)
-	}
-	fmt.Println("✅")
-
-	// Wait for session ready
-	for i := 0; i < 50; i++ {
-		if a.backend.IsReady() {
-			break
+	// Connect to voice backend
+	// Use new voice pipeline for non-legacy providers or when explicitly set
+	useVoicePipeline := a.config.VoiceProvider == voice.ProviderElevenLabs || 
+		a.config.VoiceProvider == voice.ProviderGemini
+	
+	if useVoicePipeline {
+		fmt.Printf("🧠 Connecting to %s voice pipeline... ", a.config.VoiceProvider)
+		if err := a.connectVoicePipeline(context.Background()); err != nil {
+			return fmt.Errorf("voice pipeline: %w", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		fmt.Println("✅")
+		
+		// Wait for pipeline ready
+		for i := 0; i < 50; i++ {
+			if a.voicePipeline.IsConnected() {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	} else {
+		// Legacy OpenAI backend with TTS mode options
+		fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
+		if err := a.connectBackend(); err != nil {
+			return fmt.Errorf("backend: %w", err)
+		}
+		fmt.Println("✅")
+
+		// Configure session
+		fmt.Print("⚙️  Configuring Eva's personality... ")
+		if err := a.backend.ConfigureSession(EvaInstructions, "shimmer"); err != nil {
+			return fmt.Errorf("configure session: %w", err)
+		}
+		fmt.Println("✅")
+
+		// Wait for session ready
+		for i := 0; i < 50; i++ {
+			if a.backend.IsReady() {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	return nil
@@ -220,7 +253,13 @@ func (a *App) Run(ctx context.Context) error {
 	fmt.Println("   (Ctrl+C to exit)")
 
 	// Start background tasks
-	go a.streamAudioToBackend(ctx)
+	if a.voicePipeline != nil {
+		// Use voice pipeline audio streaming
+		go a.streamAudioToVoicePipeline(ctx)
+	} else {
+		// Legacy backend audio streaming
+		go a.streamAudioToBackend(ctx)
+	}
 	if a.tracker != nil {
 		go a.tracker.Run(ctx)
 	}
@@ -233,7 +272,8 @@ func (a *App) Run(ctx context.Context) error {
 		if a.webServer != nil {
 			a.webServer.UpdateState(func(s *web.EvaState) {
 				s.RobotConnected = true
-				s.OpenAIConnected = a.backend != nil && a.backend.IsConnected()
+				s.OpenAIConnected = (a.backend != nil && a.backend.IsConnected()) || 
+					(a.voicePipeline != nil && a.voicePipeline.IsConnected())
 				s.WebRTCConnected = a.videoClient != nil
 				s.Listening = true
 			})
@@ -773,6 +813,177 @@ func (a *App) connectBackend() error {
 	return a.backend.Connect()
 }
 
+// connectVoicePipeline connects using the new unified voice pipeline.
+// This replaces connectBackend when VoiceProvider is explicitly set.
+func (a *App) connectVoicePipeline(ctx context.Context) error {
+	// Build voice config
+	voiceCfg := voice.DefaultConfig()
+	voiceCfg.Provider = a.config.VoiceProvider
+	voiceCfg.OpenAIKey = a.config.OpenAIKey
+	voiceCfg.ElevenLabsKey = a.config.ElevenLabsKey
+	voiceCfg.GoogleAPIKey = a.config.GoogleAPIKey
+	voiceCfg.SystemPrompt = EvaInstructions
+	voiceCfg.Debug = a.config.Debug
+	voiceCfg.ProfileLatency = true
+	
+	// Provider-specific config
+	switch a.config.VoiceProvider {
+	case voice.ProviderElevenLabs:
+		voiceCfg.ElevenLabsVoiceID = a.config.ElevenLabsVoiceID
+		if voiceCfg.ElevenLabsVoiceID == "" {
+			voiceCfg.ElevenLabsVoiceID = a.config.TTSVoice
+		}
+		voiceCfg.LLMModel = "gemini-2.0-flash"
+		voiceCfg.InputSampleRate = 16000
+		voiceCfg.OutputSampleRate = 16000
+	case voice.ProviderGemini:
+		voiceCfg.TTSVoice = "Puck"
+		voiceCfg.InputSampleRate = 16000
+		voiceCfg.OutputSampleRate = 24000
+	default: // OpenAI
+		voiceCfg.TTSVoice = "shimmer"
+		voiceCfg.InputSampleRate = 24000
+		voiceCfg.OutputSampleRate = 24000
+	}
+	
+	// Create pipeline
+	pipeline, err := voice.New(voiceCfg.Provider, voiceCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create voice pipeline: %w", err)
+	}
+	a.voicePipeline = pipeline
+	
+	// Register tools
+	toolsCfg := ToolsConfig{
+		Robot:           a.robotCtrl,
+		Memory:          a.memory,
+		Vision:          &videoVisionAdapter{a.videoClient},
+		ObjectDetector:  &yoloAdapter{a.objectDetector},
+		GoogleAPIKey:    a.config.GoogleAPIKey,
+		AudioPlayer:     a.audioPlayer,
+		Tracker:         a.tracker,
+		Emotions:        a.emotions,
+		SparkStore:      a.sparkStore,
+		SparkGemini:     a.sparkGemini,
+		SparkGoogleDocs: a.sparkGoogleDocs,
+	}
+	tools := Tools(toolsCfg)
+	for _, tool := range tools {
+		a.voicePipeline.RegisterTool(voice.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			Handler:     tool.Handler,
+		})
+	}
+	
+	// Capture sample rate for callback
+	outputSampleRate := voiceCfg.OutputSampleRate
+	if outputSampleRate == 0 {
+		outputSampleRate = 24000
+	}
+	
+	// Wire up callbacks
+	a.voicePipeline.OnAudioOut(func(pcm16 []byte) {
+		// Latency tracking (legacy)
+		a.latencyMeasurement.Lock()
+		if a.firstAudioOutTime.IsZero() && !a.speechEndTime.IsZero() {
+			a.firstAudioOutTime = time.Now()
+			latency := a.firstAudioOutTime.Sub(a.speechEndTime)
+			fmt.Printf("⏱️  LATENCY: %dms (speech end → first audio out)\n", latency.Milliseconds())
+		}
+		a.latencyMeasurement.Unlock()
+
+		// Stage 5: Playback timing - start (sending to GStreamer)
+		a.voicePipeline.MarkPlaybackStart()
+
+		// Send to audio player
+		if err := a.audioPlayer.AppendPCMChunk(pcm16); err != nil {
+			fmt.Printf("⚠️  Audio append error: %v\n", err)
+		}
+
+		// Stage 5: Playback timing - end (audio queued to GStreamer)
+		a.voicePipeline.MarkPlaybackEnd()
+
+		// Update speech wobble
+		if a.speechWobble != nil && len(pcm16) > 0 {
+			samples := make([]int16, len(pcm16)/2)
+			for i := 0; i < len(samples); i++ {
+				samples[i] = int16(pcm16[i*2]) | int16(pcm16[i*2+1])<<8
+			}
+			a.speechWobble.Feed(samples, outputSampleRate)
+		}
+	})
+	
+	a.voicePipeline.OnSpeechStart(func() {
+		// User started speaking - interrupt if Eva is talking
+		if a.audioPlayer != nil && a.audioPlayer.IsSpeaking() {
+			fmt.Println("🛑 [interrupted]")
+			a.audioPlayer.Cancel()
+			a.voicePipeline.Interrupt()
+		}
+	})
+	
+	a.voicePipeline.OnSpeechEnd(func() {
+		a.latencyMeasurement.Lock()
+		a.speechEndTime = time.Now()
+		a.firstAudioOutTime = time.Time{}
+		a.latencyMeasurement.Unlock()
+		debug.Log("⏱️  Speech ended at %v\n", a.speechEndTime)
+	})
+	
+	a.voicePipeline.OnTranscript(func(text string, isFinal bool) {
+		if isFinal && text != "" {
+			fmt.Printf("👤 User: %s\n", text)
+			a.evaResponseStarted = false
+			if a.webServer != nil {
+				a.webServer.UpdateState(func(s *web.EvaState) {
+					s.LastUserMessage = text
+					s.Listening = true
+					s.Speaking = false
+				})
+				a.webServer.AddConversation("user", text)
+			}
+		}
+	})
+	
+	a.voicePipeline.OnResponse(func(text string, isFinal bool) {
+		if !isFinal && text != "" {
+			if !a.evaResponseStarted {
+				fmt.Print("🤖 Eva: ")
+				a.evaResponseStarted = true
+				a.evaCurrentResponse = ""
+			}
+			fmt.Print(text)
+			a.evaCurrentResponse += text
+		} else if isFinal {
+			if a.evaResponseStarted {
+				fmt.Println()
+				a.evaResponseStarted = false
+			}
+			if a.webServer != nil && a.evaCurrentResponse != "" {
+				a.webServer.UpdateState(func(s *web.EvaState) {
+					s.Speaking = true
+					s.Listening = false
+					s.LastEvaMessage = a.evaCurrentResponse
+				})
+				a.webServer.AddConversation("eva", a.evaCurrentResponse)
+			}
+			a.evaCurrentResponse = ""
+		}
+	})
+	
+	a.voicePipeline.OnError(func(err error) {
+		fmt.Printf("⚠️  Voice pipeline error: %v\n", err)
+		if a.webServer != nil {
+			a.webServer.AddLog("error", err.Error())
+		}
+	})
+	
+	// Start the pipeline
+	return a.voicePipeline.Start(ctx)
+}
+
 // streamAudioToBackend streams audio from WebRTC to the backend.
 func (a *App) streamAudioToBackend(ctx context.Context) {
 	var audioBuffer []int16
@@ -847,6 +1058,103 @@ func (a *App) streamAudioToBackend(ctx context.Context) {
 						debug.Log("🎵 First audio sent to OpenAI! (%d bytes)\n", len(pcm16Bytes))
 					} else if sentCount%50 == 0 {
 						debug.Log("🎵 Audio stats: sent=%d chunks to OpenAI\n", sentCount)
+					}
+				}
+			}
+		}
+	}
+}
+
+// streamAudioToVoicePipeline streams audio from WebRTC to the voice pipeline.
+// This is the new version that works with any voice provider (OpenAI/ElevenLabs/Gemini).
+func (a *App) streamAudioToVoicePipeline(ctx context.Context) {
+	var audioBuffer []int16
+	
+	// Determine chunk size based on provider's sample rate
+	cfg := a.voicePipeline.Config()
+	inputRate := cfg.InputSampleRate
+	if inputRate == 0 {
+		inputRate = 24000 // Default to 24kHz
+	}
+	chunkSize := inputRate / 20 // 50ms chunks
+	
+	var loopCount, emptyCount, sentCount int
+	lastLogTime := time.Now()
+
+	debug.Logln("🎵 Voice pipeline audio streaming started")
+	fmt.Printf("   Input sample rate: %d Hz, chunk size: %d samples\n", inputRate, chunkSize)
+
+	for {
+		select {
+		case <-ctx.Done():
+			debug.Logln("🎵 Voice pipeline audio streaming stopped (context cancelled)")
+			return
+		default:
+		}
+
+		loopCount++
+
+		a.speakingMu.Lock()
+		isSpeaking := a.speaking
+		a.speakingMu.Unlock()
+
+		if isSpeaking {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		if a.videoClient == nil {
+			if loopCount == 1 {
+				debug.Logln("🎵 videoClient is nil!")
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		// Stage 1: Capture timing - start (WebRTC delivers audio)
+		a.voicePipeline.MarkCaptureStart()
+
+		a.videoClient.StartRecording()
+		time.Sleep(100 * time.Millisecond)
+		pcmData := a.videoClient.StopRecording()
+
+		if len(pcmData) == 0 {
+			emptyCount++
+			if time.Since(lastLogTime) > 5*time.Second {
+				debug.Log("🎵 Audio stats: loops=%d, empty=%d, sent=%d (empty audio!)\n", loopCount, emptyCount, sentCount)
+				lastLogTime = time.Now()
+			}
+			continue
+		}
+
+		if sentCount == 0 && emptyCount == 0 {
+			debug.Log("🎵 First audio chunk: %d samples\n", len(pcmData))
+		}
+
+		// Resample from 48kHz (WebRTC) to provider's sample rate
+		resampled := audio.Resample(pcmData, 48000, inputRate)
+		audioBuffer = append(audioBuffer, resampled...)
+
+		// Stage 1: Capture timing - end (audio buffered and ready)
+		a.voicePipeline.MarkCaptureEnd()
+
+		if len(audioBuffer) >= chunkSize {
+			pcm16Bytes := audio.ConvertInt16ToPCM16(audioBuffer[:chunkSize])
+			audioBuffer = audioBuffer[chunkSize:]
+
+			if a.voicePipeline == nil {
+				debug.Logln("🎵 voicePipeline is nil!")
+			} else if !a.voicePipeline.IsConnected() {
+				debug.Logln("🎵 voicePipeline not connected!")
+			} else {
+				if err := a.voicePipeline.SendAudio(pcm16Bytes); err != nil {
+					debug.Log("🎵 SendAudio error: %v\n", err)
+				} else {
+					sentCount++
+					if sentCount == 1 {
+						debug.Log("🎵 First audio sent to voice pipeline! (%d bytes)\n", len(pcm16Bytes))
+					} else if sentCount%50 == 0 {
+						debug.Log("🎵 Audio stats: sent=%d chunks to voice pipeline\n", sentCount)
 					}
 				}
 			}

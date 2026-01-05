@@ -444,7 +444,19 @@ func (e *ElevenLabs) Capabilities() Capabilities {
 		SupportsStreaming:    true,
 		InputSampleRate:      16000,
 		OutputSampleRate:     16000,
-		SupportedModels:      []string{"gpt-4o", "claude-3-5-sonnet", "gemini-2.0-flash"},
+		// Full list from https://elevenlabs.io/docs/agents-platform/customization/llm
+		SupportedModels: []string{
+			// ElevenLabs native
+			"glm-4.5-air", "qwen3-30b-a3b", "gpt-oss-120b",
+			// Google
+			"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite",
+			// OpenAI
+			"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+			"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo",
+			// Anthropic
+			"claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+			"claude-3.7-sonnet", "claude-3.5-sonnet", "claude-3-haiku",
+		},
 	}
 }
 

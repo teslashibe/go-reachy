@@ -1,0 +1,348 @@
+package bundled
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/teslashibe/go-reachy/pkg/conversation"
+	"github.com/teslashibe/go-reachy/pkg/voice"
+)
+
+// ElevenLabs implements voice.Pipeline using ElevenLabs Conversational AI.
+// This provides custom cloned voices with choice of LLM (Gemini, Claude, GPT-4o).
+type ElevenLabs struct {
+	config   voice.Config
+	provider *conversation.ElevenLabs
+	
+	// Metrics
+	metrics *voice.MetricsCollector
+	
+	// Tools registered before Connect
+	tools []voice.Tool
+	
+	// Callbacks
+	onAudioOut    func(pcm16 []byte)
+	onSpeechStart func()
+	onSpeechEnd   func()
+	onTranscript  func(text string, isFinal bool)
+	onResponse    func(text string, isFinal bool)
+	onToolCall    func(call voice.ToolCall)
+	onError       func(err error)
+}
+
+// NewElevenLabs creates a new ElevenLabs voice pipeline.
+func NewElevenLabs(cfg voice.Config) (*ElevenLabs, error) {
+	if cfg.ElevenLabsKey == "" {
+		return nil, voice.ErrMissingAPIKey
+	}
+	if cfg.ElevenLabsVoiceID == "" {
+		return nil, fmt.Errorf("voice/elevenlabs: voice ID required")
+	}
+	
+	return &ElevenLabs{
+		config:  cfg,
+		metrics: voice.NewMetricsCollector(),
+		tools:   []voice.Tool{},
+	}, nil
+}
+
+// Start establishes the connection and begins processing.
+func (e *ElevenLabs) Start(ctx context.Context) error {
+	// Build conversation options
+	opts := []conversation.Option{
+		conversation.WithAPIKey(e.config.ElevenLabsKey),
+		conversation.WithVoiceID(e.config.ElevenLabsVoiceID),
+		conversation.WithAutoCreateAgent(true),
+	}
+	
+	// LLM model
+	llm := e.config.LLMModel
+	if llm == "" {
+		llm = "gemini-2.0-flash"
+	}
+	opts = append(opts, conversation.WithLLM(llm))
+	
+	// TTS model (default to fastest)
+	ttsModel := e.config.TTSModel
+	if ttsModel == "" {
+		ttsModel = voice.ElevenLabsTTSFlash // eleven_flash_v2_5 (~75ms)
+	}
+	opts = append(opts, conversation.WithTTSModel(ttsModel))
+	
+	// STT model (default to fastest)
+	sttModel := e.config.STTModel
+	if sttModel == "" {
+		sttModel = voice.ElevenLabsSTTRealtime // scribe_v2_realtime (~150ms)
+	}
+	opts = append(opts, conversation.WithSTTModel(sttModel))
+	
+	// System prompt
+	if e.config.SystemPrompt != "" {
+		opts = append(opts, conversation.WithSystemPrompt(e.config.SystemPrompt))
+	}
+	
+	// Create provider
+	provider, err := conversation.NewElevenLabs(opts...)
+	if err != nil {
+		return fmt.Errorf("voice/elevenlabs: failed to create provider: %w", err)
+	}
+	e.provider = provider
+	
+	// Register tools
+	for _, tool := range e.tools {
+		e.provider.RegisterTool(conversation.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+		})
+	}
+	
+	// Wire callbacks
+	e.provider.OnAudio(func(audio []byte) {
+		// Stage 3: Pipeline timing - first audio received
+		e.metrics.MarkPipelineEnd()
+		e.metrics.IncrementAudioOut()
+		if e.onAudioOut != nil {
+			e.onAudioOut(audio)
+		}
+	})
+
+	e.provider.OnAudioDone(func() {
+		// Stage 4: Receive timing - end
+		e.metrics.MarkReceiveEnd()
+		e.metrics.MarkResponseDone()
+		if e.config.ProfileLatency {
+			m := e.metrics.Current()
+			fmt.Printf("⏱️  %s\n", m.FormatLatency())
+		}
+		// Reset metrics for next turn
+		e.metrics.Reset()
+	})
+	
+	e.provider.OnTranscript(func(role, text string, isFinal bool) {
+		if role == "user" {
+			if isFinal {
+				// Stage 4: Receive timing - start (first data from pipeline)
+				e.metrics.MarkReceiveStart()
+				// Stage 3: Pipeline timing - VAD detected speech end
+				// Use MarkVADSpeechEnded for accurate TTFA measurement
+				e.metrics.MarkVADSpeechEnded()
+				e.metrics.MarkTranscript()
+				if e.onSpeechEnd != nil {
+					e.onSpeechEnd()
+				}
+			}
+			if e.onTranscript != nil {
+				e.onTranscript(text, isFinal)
+			}
+		} else if role == "agent" || role == "assistant" {
+			e.metrics.MarkFirstToken()
+			if e.onResponse != nil {
+				e.onResponse(text, isFinal)
+			}
+		}
+	})
+	
+	e.provider.OnToolCall(func(id, name string, args map[string]any) {
+		if e.onToolCall != nil {
+			e.onToolCall(voice.ToolCall{
+				ID:        id,
+				Name:      name,
+				Arguments: args,
+			})
+		} else {
+			// Execute internally if no external handler
+			for _, tool := range e.tools {
+				if tool.Name == name && tool.Handler != nil {
+					result, err := tool.Handler(args)
+					if err != nil {
+						result = fmt.Sprintf("Error: %v", err)
+					}
+					if submitErr := e.provider.SubmitToolResult(id, result); submitErr != nil {
+						if e.onError != nil {
+							e.onError(submitErr)
+						}
+					}
+					return
+				}
+			}
+			// Tool not found
+			if submitErr := e.provider.SubmitToolResult(id, "Function not found"); submitErr != nil {
+				if e.onError != nil {
+					e.onError(submitErr)
+				}
+			}
+		}
+	})
+	
+	e.provider.OnError(func(err error) {
+		if e.onError != nil {
+			e.onError(err)
+		}
+	})
+	
+	e.provider.OnInterruption(func() {
+		// Treat interruption as speech start
+		if e.onSpeechStart != nil {
+			e.onSpeechStart()
+		}
+	})
+	
+	// Connect
+	if err := e.provider.Connect(ctx); err != nil {
+		return fmt.Errorf("voice/elevenlabs: failed to connect: %w", err)
+	}
+	
+	return nil
+}
+
+// Stop gracefully shuts down the pipeline.
+func (e *ElevenLabs) Stop() error {
+	if e.provider != nil {
+		return e.provider.Close()
+	}
+	return nil
+}
+
+// IsConnected returns true if connected and ready.
+func (e *ElevenLabs) IsConnected() bool {
+	if e.provider == nil {
+		return false
+	}
+	return e.provider.IsConnected()
+}
+
+// SendAudio sends PCM16 audio to the pipeline.
+// Note: ElevenLabs expects 16kHz audio.
+func (e *ElevenLabs) SendAudio(pcm16 []byte) error {
+	if e.provider == nil {
+		return voice.ErrNotConnected
+	}
+
+	// Stage 2: Send timing - start
+	e.metrics.MarkSendStart()
+
+	e.metrics.IncrementAudioIn()
+	err := e.provider.SendAudio(pcm16)
+
+	// Stage 2: Send timing - end (also marks pipeline start)
+	e.metrics.MarkSendEnd()
+
+	return err
+}
+
+// OnAudioOut sets the callback for audio output.
+func (e *ElevenLabs) OnAudioOut(fn func(pcm16 []byte)) {
+	e.onAudioOut = fn
+}
+
+// OnSpeechStart sets the callback for speech start.
+func (e *ElevenLabs) OnSpeechStart(fn func()) {
+	e.onSpeechStart = fn
+}
+
+// OnSpeechEnd sets the callback for speech end.
+func (e *ElevenLabs) OnSpeechEnd(fn func()) {
+	e.onSpeechEnd = fn
+}
+
+// OnTranscript sets the callback for transcripts.
+func (e *ElevenLabs) OnTranscript(fn func(text string, isFinal bool)) {
+	e.onTranscript = fn
+}
+
+// OnResponse sets the callback for AI responses.
+func (e *ElevenLabs) OnResponse(fn func(text string, isFinal bool)) {
+	e.onResponse = fn
+}
+
+// OnError sets the error callback.
+func (e *ElevenLabs) OnError(fn func(err error)) {
+	e.onError = fn
+}
+
+// RegisterTool adds a tool the AI can invoke.
+func (e *ElevenLabs) RegisterTool(tool voice.Tool) {
+	e.tools = append(e.tools, tool)
+	// If already connected, register with provider
+	if e.provider != nil {
+		e.provider.RegisterTool(conversation.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+		})
+	}
+}
+
+// OnToolCall sets the callback for tool invocations.
+func (e *ElevenLabs) OnToolCall(fn func(call voice.ToolCall)) {
+	e.onToolCall = fn
+}
+
+// SubmitToolResult returns a tool result to the AI.
+func (e *ElevenLabs) SubmitToolResult(callID string, result string) error {
+	if e.provider == nil {
+		return voice.ErrNotConnected
+	}
+	return e.provider.SubmitToolResult(callID, result)
+}
+
+// Interrupt stops the current AI response.
+func (e *ElevenLabs) Interrupt() error {
+	if e.provider == nil {
+		return voice.ErrNotConnected
+	}
+	return e.provider.CancelResponse()
+}
+
+// Metrics returns current latency metrics.
+func (e *ElevenLabs) Metrics() voice.Metrics {
+	return e.metrics.Current()
+}
+
+// Config returns the current configuration.
+func (e *ElevenLabs) Config() voice.Config {
+	return e.config
+}
+
+// UpdateConfig applies new configuration.
+// Note: Most settings require reconnection to take effect.
+func (e *ElevenLabs) UpdateConfig(cfg voice.Config) error {
+	e.config = cfg
+	// ElevenLabs doesn't support runtime config updates
+	// Would need to reconnect to apply changes
+	return nil
+}
+
+// App-side timing markers
+
+// MarkCaptureStart records when WebRTC delivered audio to Eva.
+func (e *ElevenLabs) MarkCaptureStart() {
+	e.metrics.MarkCaptureStart()
+}
+
+// MarkCaptureEnd records when audio is buffered and ready to send.
+func (e *ElevenLabs) MarkCaptureEnd() {
+	e.metrics.MarkCaptureEnd()
+}
+
+// MarkPlaybackStart records when audio was sent to GStreamer.
+func (e *ElevenLabs) MarkPlaybackStart() {
+	e.metrics.MarkPlaybackStart()
+}
+
+// MarkPlaybackEnd records when audio playback completed.
+func (e *ElevenLabs) MarkPlaybackEnd() {
+	e.metrics.MarkPlaybackEnd()
+}
+
+// Ensure ElevenLabs implements voice.Pipeline at compile time.
+var _ voice.Pipeline = (*ElevenLabs)(nil)
+
+// Register ElevenLabs provider in voice package.
+func init() {
+	voice.Register(voice.ProviderElevenLabs, func(cfg voice.Config) (voice.Pipeline, error) {
+		return NewElevenLabs(cfg)
+	})
+}
+
