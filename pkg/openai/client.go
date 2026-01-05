@@ -27,6 +27,13 @@ type Tool struct {
 	Handler     func(args map[string]interface{}) (string, error)
 }
 
+// pendingToolCall represents a tool call waiting to be executed
+type pendingToolCall struct {
+	Name   string
+	CallID string
+	Args   map[string]interface{}
+}
+
 // Client manages the WebSocket connection to OpenAI Realtime API.
 type Client struct {
 	apiKey string
@@ -41,6 +48,11 @@ type Client struct {
 	sessionID    string
 	connected    bool
 	sessionReady bool
+
+	// LATENCY OPTIMIZATION #112: Parallel tool execution
+	pendingTools   []pendingToolCall
+	pendingToolsMu sync.Mutex
+	toolBatchTimer *time.Timer
 
 	// Callbacks
 	OnTranscript       func(text string, isFinal bool)
@@ -215,6 +227,16 @@ func (c *Client) CancelResponse() error {
 // Close closes the WebSocket connection.
 func (c *Client) Close() {
 	c.closed = true
+
+	// LATENCY OPTIMIZATION #112: Clean up pending tool batch timer
+	c.pendingToolsMu.Lock()
+	if c.toolBatchTimer != nil {
+		c.toolBatchTimer.Stop()
+		c.toolBatchTimer = nil
+	}
+	c.pendingTools = nil
+	c.pendingToolsMu.Unlock()
+
 	if c.ws != nil {
 		c.ws.Close()
 	}
@@ -324,46 +346,129 @@ func (c *Client) handleMessages() {
 	}
 }
 
-// handleFunctionCall executes a tool and sends the result back.
+// LATENCY OPTIMIZATION #112: Batch tool execution window
+const toolBatchWindow = 50 * time.Millisecond
+
+// handleFunctionCall queues a tool call for parallel execution.
+// Tools are batched within a short window and executed concurrently.
 func (c *Client) handleFunctionCall(msg map[string]interface{}) {
 	name, _ := msg["name"].(string)
 	callID, _ := msg["call_id"].(string)
 	argsStr, _ := msg["arguments"].(string)
 
-	fmt.Printf("🔧 Tool called: %s (args: %s)\n", name, argsStr)
+	fmt.Printf("🔧 Tool queued: %s (args: %s)\n", name, argsStr)
 
 	var args map[string]interface{}
-	json.Unmarshal([]byte(argsStr), &args)
-
-	var result string
-	if tool, ok := c.toolsMap[name]; ok && tool.Handler != nil {
-		var err error
-		result, err = tool.Handler(args)
-		if err != nil {
-			result = fmt.Sprintf("Error: %v", err)
-		}
-		fmt.Printf("🔧 Tool result: %s\n", result)
-	} else if c.OnFunctionCall != nil {
-		result = c.OnFunctionCall(name, args)
-	} else {
-		result = "Function not found"
-		fmt.Printf("⚠️  Tool not found: %s\n", name)
+	if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+		fmt.Printf("⚠️  Failed to parse tool args for %s: %v\n", name, err)
+		args = make(map[string]interface{}) // Use empty args rather than nil
 	}
 
-	responseMsg := map[string]interface{}{
-		"type": "conversation.item.create",
-		"item": map[string]interface{}{
-			"type":    "function_call_output",
-			"call_id": callID,
-			"output":  result,
-		},
-	}
-
-	c.sendJSON(responseMsg)
-
-	c.sendJSON(map[string]string{
-		"type": "response.create",
+	c.pendingToolsMu.Lock()
+	c.pendingTools = append(c.pendingTools, pendingToolCall{
+		Name:   name,
+		CallID: callID,
+		Args:   args,
 	})
+
+	// Start or reset batch timer
+	if c.toolBatchTimer != nil {
+		c.toolBatchTimer.Stop()
+	}
+	c.toolBatchTimer = time.AfterFunc(toolBatchWindow, c.executeToolBatch)
+	c.pendingToolsMu.Unlock()
+}
+
+// executeToolBatch executes all pending tools in parallel.
+func (c *Client) executeToolBatch() {
+	c.pendingToolsMu.Lock()
+	tools := c.pendingTools
+	c.pendingTools = nil
+	c.pendingToolsMu.Unlock()
+
+	if len(tools) == 0 {
+		return
+	}
+
+	startTime := time.Now()
+	fmt.Printf("🔧 Executing %d tools in parallel...\n", len(tools))
+
+	// Execute all tools concurrently
+	var wg sync.WaitGroup
+	results := make([]struct {
+		CallID string
+		Result string
+	}, len(tools))
+
+	for i, tool := range tools {
+		wg.Add(1)
+		go func(idx int, t pendingToolCall) {
+			defer wg.Done()
+
+			// LATENCY OPTIMIZATION #112: Recover from panics in tool handlers
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("⚠️  Tool %s panicked: %v\n", t.Name, r)
+					results[idx] = struct {
+						CallID string
+						Result string
+					}{t.CallID, fmt.Sprintf("Error: tool panicked: %v", r)}
+				}
+			}()
+
+			var result string
+			if handler, ok := c.toolsMap[t.Name]; ok && handler.Handler != nil {
+				var err error
+				result, err = handler.Handler(t.Args)
+				if err != nil {
+					result = fmt.Sprintf("Error: %v", err)
+				}
+			} else if c.OnFunctionCall != nil {
+				result = c.OnFunctionCall(t.Name, t.Args)
+			} else {
+				result = "Function not found"
+			}
+
+			results[idx] = struct {
+				CallID string
+				Result string
+			}{t.CallID, result}
+			fmt.Printf("🔧 Tool %s completed: %s\n", t.Name, result)
+		}(i, tool)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(startTime)
+	fmt.Printf("🔧 All %d tools completed in %dms (parallel execution)\n", len(tools), elapsed.Milliseconds())
+
+	// Check connection before sending results
+	if c.closed || !c.IsConnected() {
+		fmt.Println("⚠️  Connection closed, discarding tool results")
+		return
+	}
+
+	// Send all results back
+	for _, r := range results {
+		responseMsg := map[string]interface{}{
+			"type": "conversation.item.create",
+			"item": map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": r.CallID,
+				"output":  r.Result,
+			},
+		}
+		if err := c.sendJSON(responseMsg); err != nil {
+			fmt.Printf("⚠️  Failed to send tool result: %v\n", err)
+			return
+		}
+	}
+
+	// Request response after all tool results are sent
+	if err := c.sendJSON(map[string]string{
+		"type": "response.create",
+	}); err != nil {
+		fmt.Printf("⚠️  Failed to request response: %v\n", err)
+	}
 }
 
 // sendJSON sends a JSON message over WebSocket.

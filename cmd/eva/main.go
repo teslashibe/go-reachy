@@ -132,6 +132,11 @@ var (
 
 	// Spark configuration (loaded from config file + env + CLI)
 	sparkConfig spark.Config
+
+	// LATENCY OPTIMIZATION #112: Latency measurement
+	speechEndTime      time.Time // When user stopped speaking
+	firstAudioOutTime  time.Time // When first audio chunk played
+	latencyMeasurement sync.Mutex
 )
 
 // webStateAdapter adapts web.Server to tracking.StateUpdater interface
@@ -565,6 +570,19 @@ func initialize() error {
 		speakingMu.Lock()
 		speaking = true
 		speakingMu.Unlock()
+
+		// LATENCY OPTIMIZATION #112: Measure end-to-end latency
+		latencyMeasurement.Lock()
+		if !speechEndTime.IsZero() && firstAudioOutTime.IsZero() {
+			firstAudioOutTime = time.Now()
+			latency := firstAudioOutTime.Sub(speechEndTime)
+			fmt.Printf("⏱️  LATENCY: %dms (speech end → first audio out)\n", latency.Milliseconds())
+			// Log to web dashboard if available
+			if webServer != nil {
+				webServer.AddLog("latency", fmt.Sprintf("%dms", latency.Milliseconds()))
+			}
+		}
+		latencyMeasurement.Unlock()
 	}
 	audioPlayer.OnPlaybackEnd = func() {
 		speakingMu.Lock()
@@ -1209,13 +1227,23 @@ func connectRealtime(apiKey string) error {
 		}
 	}
 
+	// LATENCY OPTIMIZATION #112: Track when user stops speaking for latency measurement
+	realtimeClient.OnSpeechStopped = func() {
+		latencyMeasurement.Lock()
+		speechEndTime = time.Now()
+		firstAudioOutTime = time.Time{} // Reset for new measurement
+		latencyMeasurement.Unlock()
+		debug.Log("⏱️  Speech ended at %v\n", speechEndTime)
+	}
+
 	return realtimeClient.Connect()
 }
 
 func streamAudioToRealtime(ctx context.Context) {
 	// Buffer for accumulating audio
+	// LATENCY OPTIMIZATION #112: Reduced from 100ms to 50ms for faster response
 	var audioBuffer []int16
-	const chunkSize = 2400 // 100ms at 24kHz
+	const chunkSize = 1200 // 50ms at 24kHz (was 2400 = 100ms)
 
 	// Counters for debug logging
 	var loopCount, emptyCount, sentCount int

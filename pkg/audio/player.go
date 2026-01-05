@@ -82,7 +82,9 @@ func (p *Player) AppendAudio(base64Audio string) error {
 // startStream starts the GStreamer pipeline for streaming audio.
 func (p *Player) startStream() error {
 	// GStreamer pipeline that reads from stdin and plays audio
-	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=5000000000 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
+	// LATENCY OPTIMIZATION #112: Reduced queue buffer from 5s to 500ms for aggressive playback
+	// Also reduced opus frame-size from 20ms to 10ms for lower latency
+	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! queue max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue max-size-time=100000000 ! opusenc frame-size=10 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=false`
 
 	p.streamCmd = exec.Command("bash", "-c", fmt.Sprintf(
 		`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s '%s'`,
@@ -120,8 +122,9 @@ func (p *Player) FlushAndPlay() error {
 		return nil
 	}
 
+	// LATENCY OPTIMIZATION #112: Reduced from 100ms to 20ms for aggressive playback
 	// Give GStreamer a moment to process buffered data before closing stdin
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	// Close stdin to signal EOF to GStreamer
 	if p.streamStdin != nil {
@@ -258,8 +261,9 @@ func (p *Player) PlayPCM(pcmData []byte) error {
 		p.OnPlaybackStart()
 	}
 
+	// LATENCY OPTIMIZATION #112: Reduced buffer and opus frame-size for lower latency
 	// GStreamer pipeline - same format as streaming audio
-	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue ! opusenc frame-size=20 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=true`
+	pipeline := `gst-launch-1.0 -q fdsrc fd=0 ! rawaudioparse format=pcm pcm-format=s16le sample-rate=24000 num-channels=1 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1,layout=interleaved ! queue max-size-time=100000000 ! opusenc frame-size=10 ! rtpopuspay pt=96 ! udpsink host=127.0.0.1 port=5000 sync=false`
 
 	cmd := exec.Command("sshpass", "-p", p.sshPass,
 		"ssh", "-o", "StrictHostKeyChecking=no",
