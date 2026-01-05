@@ -17,7 +17,9 @@ import (
 
 const (
 	openAIRealtimeURL = "wss://api.openai.com/v1/realtime"
-	openAIModel       = "gpt-4o-realtime-preview-2024-12-17"
+	// gpt-realtime: most advanced speech-to-speech model
+	// gpt-realtime-mini: faster, more cost-efficient
+	openAIModel = "gpt-realtime"
 )
 
 // openAIPendingToolCall represents a tool call waiting to be executed.
@@ -31,15 +33,15 @@ type openAIPendingToolCall struct {
 // This provides GPT-4o with built-in VAD, ASR, and TTS in a single WebSocket.
 type OpenAI struct {
 	config voice.Config
-	
+
 	// WebSocket connection
-	ws     *websocket.Conn
-	wsMu   sync.Mutex
-	
+	ws   *websocket.Conn
+	wsMu sync.Mutex
+
 	// Tools
 	tools    []voice.Tool
 	toolsMap map[string]voice.Tool
-	
+
 	// Session state
 	mu           sync.RWMutex
 	connected    bool
@@ -47,15 +49,15 @@ type OpenAI struct {
 	closed       bool
 	ctx          context.Context
 	cancel       context.CancelFunc
-	
+
 	// Parallel tool execution
 	pendingTools   []openAIPendingToolCall
 	pendingToolsMu sync.Mutex
 	toolBatchTimer *time.Timer
-	
+
 	// Metrics
 	metrics *voice.MetricsCollector
-	
+
 	// Callbacks
 	onAudioOut    func(pcm16 []byte)
 	onSpeechStart func()
@@ -71,7 +73,7 @@ func NewOpenAI(cfg voice.Config) (*OpenAI, error) {
 	if cfg.OpenAIKey == "" {
 		return nil, voice.ErrMissingAPIKey
 	}
-	
+
 	return &OpenAI{
 		config:   cfg,
 		tools:    []voice.Tool{},
@@ -88,46 +90,46 @@ func (o *OpenAI) Start(ctx context.Context) error {
 		return voice.ErrAlreadyStarted
 	}
 	o.mu.Unlock()
-	
+
 	o.ctx, o.cancel = context.WithCancel(ctx)
-	
+
 	url := fmt.Sprintf("%s?model=%s", openAIRealtimeURL, openAIModel)
-	
+
 	header := make(map[string][]string)
 	header["Authorization"] = []string{"Bearer " + o.config.OpenAIKey}
 	header["OpenAI-Beta"] = []string{"realtime=v1"}
-	
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
-	
+
 	var err error
 	var resp *http.Response
 	o.ws, resp, err = dialer.Dial(url, header)
 	if err != nil {
 		return fmt.Errorf("voice/openai: failed to connect: %w", err)
 	}
-	
+
 	if resp != nil && o.config.Debug {
 		debug.Logln("🎤 OpenAI Response Headers:")
 		for key, values := range resp.Header {
 			debug.Log("🎤   %s: %v\n", key, values)
 		}
 	}
-	
+
 	o.mu.Lock()
 	o.connected = true
 	o.closed = false
 	o.mu.Unlock()
-	
+
 	// Configure session
 	if err := o.configureSession(); err != nil {
 		o.Stop()
 		return fmt.Errorf("voice/openai: failed to configure session: %w", err)
 	}
-	
+
 	go o.handleMessages()
-	
+
 	return nil
 }
 
@@ -137,11 +139,11 @@ func (o *OpenAI) Stop() error {
 	o.closed = true
 	o.connected = false
 	o.mu.Unlock()
-	
+
 	if o.cancel != nil {
 		o.cancel()
 	}
-	
+
 	// Clean up pending tool batch timer
 	o.pendingToolsMu.Lock()
 	if o.toolBatchTimer != nil {
@@ -150,7 +152,7 @@ func (o *OpenAI) Stop() error {
 	}
 	o.pendingTools = nil
 	o.pendingToolsMu.Unlock()
-	
+
 	if o.ws != nil {
 		return o.ws.Close()
 	}
@@ -243,11 +245,11 @@ func (o *OpenAI) SubmitToolResult(callID string, result string) error {
 			"output":  result,
 		},
 	}
-	
+
 	if err := o.sendJSON(msg); err != nil {
 		return err
 	}
-	
+
 	// Request response after tool result
 	return o.sendJSON(map[string]string{
 		"type": "response.create",
@@ -258,6 +260,22 @@ func (o *OpenAI) SubmitToolResult(callID string, result string) error {
 func (o *OpenAI) Interrupt() error {
 	return o.sendJSON(map[string]string{
 		"type": "response.cancel",
+	})
+}
+
+// CommitAudioBuffer commits the current audio buffer.
+// Use this when not using server VAD to signal end of user speech.
+func (o *OpenAI) CommitAudioBuffer() error {
+	return o.sendJSON(map[string]string{
+		"type": "input_audio_buffer.commit",
+	})
+}
+
+// RequestResponse triggers the AI to generate a response.
+// Use this after CommitAudioBuffer when not using server VAD.
+func (o *OpenAI) RequestResponse() error {
+	return o.sendJSON(map[string]string{
+		"type": "response.create",
 	})
 }
 
@@ -275,7 +293,7 @@ func (o *OpenAI) Config() voice.Config {
 // Note: Some settings require reconnection to take effect.
 func (o *OpenAI) UpdateConfig(cfg voice.Config) error {
 	o.config = cfg
-	
+
 	// If connected, reconfigure session with new settings
 	if o.IsConnected() {
 		return o.configureSession()
@@ -285,9 +303,9 @@ func (o *OpenAI) UpdateConfig(cfg voice.Config) error {
 
 // configureSession sets up the OpenAI session with current config.
 func (o *OpenAI) configureSession() error {
-	voice := o.config.TTSVoice
-	if voice == "" {
-		voice = "alloy"
+	voiceName := o.config.TTSVoice
+	if voiceName == "" {
+		voiceName = "alloy"
 	}
 	
 	apiTools := make([]map[string]any, len(o.tools))
@@ -304,19 +322,51 @@ func (o *OpenAI) configureSession() error {
 		}
 	}
 	
-	// Convert durations to milliseconds for API
-	prefixPaddingMs := int(o.config.VADPrefixPadding.Milliseconds())
-	if prefixPaddingMs == 0 {
-		prefixPaddingMs = 300
-	}
-	silenceDurationMs := int(o.config.VADSilenceDuration.Milliseconds())
-	if silenceDurationMs == 0 {
-		silenceDurationMs = 500
+	// Build turn detection config based on VADMode
+	var turnDetection map[string]any
+	
+	vadMode := o.config.VADMode
+	if vadMode == "" {
+		vadMode = "server_vad" // Default for backwards compatibility
 	}
 	
-	threshold := o.config.VADThreshold
-	if threshold == 0 {
-		threshold = 0.5
+	switch vadMode {
+	case "semantic_vad":
+		// Semantic VAD uses content-based detection (recommended for natural conversation)
+		eagerness := o.config.VADEagerness
+		if eagerness == "" {
+			eagerness = "medium"
+		}
+		turnDetection = map[string]any{
+			"type":      "semantic_vad",
+			"eagerness": eagerness,
+		}
+		if o.config.Debug {
+			fmt.Printf("🎤 OpenAI VAD: semantic_vad, eagerness=%s\n", eagerness)
+		}
+	default:
+		// Server VAD uses silence-based detection
+		prefixPaddingMs := int(o.config.VADPrefixPadding.Milliseconds())
+		if prefixPaddingMs == 0 {
+			prefixPaddingMs = 300
+		}
+		silenceDurationMs := int(o.config.VADSilenceDuration.Milliseconds())
+		if silenceDurationMs == 0 {
+			silenceDurationMs = 500
+		}
+		threshold := o.config.VADThreshold
+		if threshold == 0 {
+			threshold = 0.5
+		}
+		turnDetection = map[string]any{
+			"type":                "server_vad",
+			"threshold":           threshold,
+			"prefix_padding_ms":   prefixPaddingMs,
+			"silence_duration_ms": silenceDurationMs,
+		}
+		if o.config.Debug {
+			fmt.Printf("🎤 OpenAI VAD: server_vad, threshold=%.2f, silence=%dms\n", threshold, silenceDurationMs)
+		}
 	}
 	
 	msg := map[string]any{
@@ -324,21 +374,20 @@ func (o *OpenAI) configureSession() error {
 		"session": map[string]any{
 			"modalities":          []string{"text", "audio"},
 			"instructions":        o.config.SystemPrompt,
-			"voice":               voice,
+			"voice":               voiceName,
 			"input_audio_format":  "pcm16",
 			"output_audio_format": "pcm16",
 			"input_audio_transcription": map[string]any{
 				"model": "whisper-1",
 			},
-			"turn_detection": map[string]any{
-				"type":                "server_vad",
-				"threshold":           threshold,
-				"prefix_padding_ms":   prefixPaddingMs,
-				"silence_duration_ms": silenceDurationMs,
-			},
-			"tools":       apiTools,
-			"tool_choice": "auto",
+			"turn_detection": turnDetection,
+			"tools":         apiTools,
+			"tool_choice":   "auto",
 		},
+	}
+	
+	if o.config.Debug {
+		fmt.Printf("🎤 OpenAI session: model=%s, voice=%s\n", openAIModel, voiceName)
 	}
 	
 	return o.sendJSON(msg)
@@ -350,30 +399,38 @@ func (o *OpenAI) handleMessages() {
 		o.mu.RLock()
 		closed := o.closed
 		o.mu.RUnlock()
-		
+
 		if closed {
 			return
 		}
-		
+
 		_, message, err := o.ws.ReadMessage()
 		if err != nil {
 			o.mu.RLock()
 			closed := o.closed
 			o.mu.RUnlock()
-			
+
 			if !closed && o.onError != nil {
 				o.onError(err)
 			}
 			return
 		}
-		
+
 		var msg map[string]any
 		if err := json.Unmarshal(message, &msg); err != nil {
 			continue
 		}
-		
+
 		msgType, _ := msg["type"].(string)
-		
+
+		// Log all message types for debugging (always log key events)
+		if o.config.Debug {
+			// Log all events except frequent audio deltas
+			if msgType != "response.audio.delta" && msgType != "response.output_audio.delta" {
+				fmt.Printf("🎤 OpenAI recv: %s\n", msgType)
+			}
+		}
+
 		switch msgType {
 		case "session.created":
 			o.mu.Lock()
@@ -382,40 +439,42 @@ func (o *OpenAI) handleMessages() {
 			if o.config.Debug {
 				debug.Logln("🎤 OpenAI session created")
 			}
-			
+
 		case "session.updated":
 			if o.config.Debug {
 				debug.Logln("🎤 Session configured")
 			}
-			
+
 		case "input_audio_buffer.speech_started":
 			if o.config.Debug {
 				debug.Logln("🎤 VAD: Speech started")
 			}
+			// Mark capture start for speech detection timing
+			o.metrics.MarkCaptureStart()
 			if o.onSpeechStart != nil {
 				o.onSpeechStart()
 			}
 			
 		case "input_audio_buffer.speech_stopped":
-			// Stage 4: Receive timing - start
-			o.metrics.MarkReceiveStart()
 			if o.config.Debug {
 				debug.Logln("🎤 VAD: Speech stopped")
 			}
-			// Stage 3: Pipeline timing - VAD detected speech end
-			o.metrics.MarkPipelineStart()
+			// Stage 3: Pipeline timing starts when VAD detects speech end
+			// This is the KEY timestamp for latency measurement
+			o.metrics.MarkVADSpeechEnded()
 			if o.onSpeechEnd != nil {
 				o.onSpeechEnd()
 			}
-			
+
 		case "conversation.item.input_audio_transcription.completed":
 			o.metrics.MarkTranscript()
 			if transcript, ok := msg["transcript"].(string); ok && o.onTranscript != nil {
 				o.onTranscript(transcript, true)
 			}
-			
-		case "response.audio.delta":
+
+		case "response.audio.delta", "response.output_audio.delta":
 			// Stage 3: Pipeline timing - first audio received
+			// Note: New API uses response.output_audio.delta, old uses response.audio.delta
 			o.metrics.MarkPipelineEnd()
 			o.metrics.IncrementAudioOut()
 			if delta, ok := msg["delta"].(string); ok && o.onAudioOut != nil {
@@ -424,9 +483,10 @@ func (o *OpenAI) handleMessages() {
 					o.onAudioOut(audioData)
 				}
 			}
-			
-		case "response.audio.done":
+
+		case "response.audio.done", "response.output_audio.done":
 			// Stage 4: Receive timing - end
+			// Note: New API uses response.output_audio.done, old uses response.audio.done
 			o.metrics.MarkReceiveEnd()
 			o.metrics.MarkResponseDone()
 			if o.config.ProfileLatency {
@@ -435,36 +495,56 @@ func (o *OpenAI) handleMessages() {
 			}
 			// Reset metrics for next turn
 			o.metrics.Reset()
-			
-		case "response.audio_transcript.delta":
+
+		case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
 			o.metrics.MarkFirstToken()
 			if delta, ok := msg["delta"].(string); ok && o.onResponse != nil {
 				o.onResponse(delta, false)
 			}
-			
-		case "response.audio_transcript.done":
+
+		case "response.audio_transcript.done", "response.output_audio_transcript.done":
 			if o.onResponse != nil {
 				// Final response, extract full transcript if available
 				if transcript, ok := msg["transcript"].(string); ok {
 					o.onResponse(transcript, true)
 				}
 			}
-			
+
 		case "response.function_call_arguments.done":
 			o.handleFunctionCall(msg)
-			
-		case "error":
-			if errData, ok := msg["error"].(map[string]any); ok {
-				if errMsg, ok := errData["message"].(string); ok {
-					if o.onError != nil {
-						o.onError(fmt.Errorf("OpenAI API error: %s", errMsg))
+
+		case "response.done":
+			// Check if response has output or was empty
+			if o.config.Debug {
+				if response, ok := msg["response"].(map[string]any); ok {
+					status, _ := response["status"].(string)
+					output, _ := response["output"].([]any)
+					fmt.Printf("🎤 response.done: status=%s, outputs=%d\n", status, len(output))
+					if statusDetails, ok := response["status_details"].(map[string]any); ok {
+						fmt.Printf("🎤   status_details: %+v\n", statusDetails)
 					}
 				}
 			}
-			
+
+		case "error":
+			if errData, ok := msg["error"].(map[string]any); ok {
+				errMsg, _ := errData["message"].(string)
+				errType, _ := errData["type"].(string)
+				errCode, _ := errData["code"].(string)
+				errParam, _ := errData["param"].(string)
+
+				fullErr := fmt.Sprintf("OpenAI API error: type=%s, code=%s, param=%s, message=%s",
+					errType, errCode, errParam, errMsg)
+				fmt.Printf("❌ %s\n", fullErr)
+
+				if o.onError != nil {
+					o.onError(fmt.Errorf("%s", fullErr))
+				}
+			}
+
 		default:
-			if o.config.Debug && msgType != "" && 
-				msgType != "response.audio.delta" && 
+			if o.config.Debug && msgType != "" &&
+				msgType != "response.audio.delta" &&
 				msgType != "response.audio_transcript.delta" {
 				debug.Log("🎤 Message: %s\n", msgType)
 			}
@@ -480,16 +560,16 @@ func (o *OpenAI) handleFunctionCall(msg map[string]any) {
 	name, _ := msg["name"].(string)
 	callID, _ := msg["call_id"].(string)
 	argsStr, _ := msg["arguments"].(string)
-	
+
 	if o.config.Debug {
 		fmt.Printf("🔧 Tool queued: %s\n", name)
 	}
-	
+
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
 		args = make(map[string]any)
 	}
-	
+
 	// If external callback is set, use that instead of internal handling
 	if o.onToolCall != nil {
 		o.onToolCall(voice.ToolCall{
@@ -499,7 +579,7 @@ func (o *OpenAI) handleFunctionCall(msg map[string]any) {
 		})
 		return
 	}
-	
+
 	// Internal tool handling with batching
 	o.pendingToolsMu.Lock()
 	o.pendingTools = append(o.pendingTools, openAIPendingToolCall{
@@ -507,7 +587,7 @@ func (o *OpenAI) handleFunctionCall(msg map[string]any) {
 		CallID: callID,
 		Args:   args,
 	})
-	
+
 	if o.toolBatchTimer != nil {
 		o.toolBatchTimer.Stop()
 	}
@@ -521,22 +601,22 @@ func (o *OpenAI) executeToolBatch() {
 	tools := o.pendingTools
 	o.pendingTools = nil
 	o.pendingToolsMu.Unlock()
-	
+
 	if len(tools) == 0 {
 		return
 	}
-	
+
 	startTime := time.Now()
 	if o.config.Debug {
 		fmt.Printf("🔧 Executing %d tools in parallel...\n", len(tools))
 	}
-	
+
 	var wg sync.WaitGroup
 	results := make([]struct {
 		CallID string
 		Result string
 	}, len(tools))
-	
+
 	for i, tool := range tools {
 		wg.Add(1)
 		go func(idx int, t openAIPendingToolCall) {
@@ -549,7 +629,7 @@ func (o *OpenAI) executeToolBatch() {
 					}{t.CallID, fmt.Sprintf("Error: tool panicked: %v", r)}
 				}
 			}()
-			
+
 			var result string
 			if handler, ok := o.toolsMap[t.Name]; ok && handler.Handler != nil {
 				var err error
@@ -560,26 +640,26 @@ func (o *OpenAI) executeToolBatch() {
 			} else {
 				result = "Function not found"
 			}
-			
+
 			results[idx] = struct {
 				CallID string
 				Result string
 			}{t.CallID, result}
 		}(i, tool)
 	}
-	
+
 	wg.Wait()
-	
+
 	if o.config.Debug {
 		elapsed := time.Since(startTime)
 		fmt.Printf("🔧 All %d tools completed in %dms\n", len(tools), elapsed.Milliseconds())
 	}
-	
+
 	// Check connection before sending results
 	if !o.IsConnected() {
 		return
 	}
-	
+
 	// Send all results back
 	for _, r := range results {
 		msg := map[string]any{
@@ -597,7 +677,7 @@ func (o *OpenAI) executeToolBatch() {
 			return
 		}
 	}
-	
+
 	// Request response after all tool results
 	if err := o.sendJSON(map[string]string{"type": "response.create"}); err != nil {
 		if o.onError != nil {
@@ -610,11 +690,11 @@ func (o *OpenAI) executeToolBatch() {
 func (o *OpenAI) sendJSON(v any) error {
 	o.wsMu.Lock()
 	defer o.wsMu.Unlock()
-	
+
 	if o.ws == nil {
 		return voice.ErrNotConnected
 	}
-	
+
 	return o.ws.WriteJSON(v)
 }
 
@@ -649,4 +729,3 @@ func init() {
 		return NewOpenAI(cfg)
 	})
 }
-

@@ -166,10 +166,47 @@ func (g *Gemini) sendSetup(model string) error {
 		}
 	}
 
+	// Build VAD configuration for realtime input
+	// See: https://ai.google.dev/gemini-api/docs/live-guide
+	startSensitivity := g.config.VADStartSensitivity
+	if startSensitivity == "" {
+		startSensitivity = "START_SENSITIVITY_HIGH" // Faster speech detection
+	} else {
+		startSensitivity = "START_SENSITIVITY_" + startSensitivity
+	}
+	
+	endSensitivity := g.config.VADEndSensitivity
+	if endSensitivity == "" {
+		endSensitivity = "END_SENSITIVITY_HIGH" // Faster end detection
+	} else {
+		endSensitivity = "END_SENSITIVITY_" + endSensitivity
+	}
+	
+	prefixPaddingMs := int(g.config.VADPrefixPadding.Milliseconds())
+	if prefixPaddingMs == 0 {
+		prefixPaddingMs = 20 // Gemini default: 20ms
+	}
+	
+	silenceDurationMs := int(g.config.VADSilenceDuration.Milliseconds())
+	if silenceDurationMs == 0 {
+		silenceDurationMs = 100 // Gemini default: 100ms (much faster than OpenAI!)
+	}
+
+	realtimeInputConfig := map[string]any{
+		"automatic_activity_detection": map[string]any{
+			"disabled":                    false,
+			"start_of_speech_sensitivity": startSensitivity,
+			"end_of_speech_sensitivity":   endSensitivity,
+			"prefix_padding_ms":           prefixPaddingMs,
+			"silence_duration_ms":         silenceDurationMs,
+		},
+	}
+
 	setup := map[string]any{
 		"setup": map[string]any{
-			"model":             model,
-			"generation_config": generationConfig,
+			"model":                model,
+			"generation_config":    generationConfig,
+			"realtime_input_config": realtimeInputConfig,
 			"system_instruction": map[string]any{
 				"parts": []map[string]any{
 					{"text": g.config.SystemPrompt},
@@ -185,6 +222,11 @@ func (g *Gemini) sendSetup(model string) error {
 				"function_declarations": toolDeclarations,
 			},
 		}
+	}
+
+	if g.config.Debug {
+		fmt.Printf("🌟 Gemini VAD: start=%s, end=%s, prefix=%dms, silence=%dms\n",
+			startSensitivity, endSensitivity, prefixPaddingMs, silenceDurationMs)
 	}
 
 	return g.sendJSON(setup)
@@ -327,6 +369,23 @@ func (g *Gemini) Interrupt() error {
 	return nil
 }
 
+// SignalTurnComplete signals to Gemini that the user has finished speaking.
+// Use this to manually trigger a response when VAD doesn't detect end of speech.
+func (g *Gemini) SignalTurnComplete() error {
+	msg := map[string]any{
+		"client_content": map[string]any{
+			"turns": []map[string]any{
+				{
+					"role":  "user",
+					"parts": []map[string]any{},
+				},
+			},
+			"turn_complete": true,
+		},
+	}
+	return g.sendJSON(msg)
+}
+
 // Metrics returns current latency metrics.
 func (g *Gemini) Metrics() voice.Metrics {
 	return g.metrics.Current()
@@ -412,7 +471,7 @@ func (g *Gemini) handleMessage(msg map[string]any) {
 
 	// Handle interruption (user started speaking during AI response)
 	if _, ok := msg["interrupted"]; ok {
-		g.metrics.MarkSpeechEnd()
+		g.metrics.MarkCaptureStart() // User started speaking (interruption)
 		if g.onSpeechStart != nil {
 			g.onSpeechStart()
 		}
@@ -521,7 +580,8 @@ func (g *Gemini) handleServerContent(content map[string]any) {
 	// Handle input transcription (what user said)
 	if inputTranscript, ok := content["inputTranscription"].(map[string]any); ok {
 		if text, ok := inputTranscript["text"].(string); ok {
-			// Transcript received - pipeline processing is starting
+			// Transcript received - VAD has detected end of speech
+			g.metrics.MarkVADSpeechEnded() // Key timestamp for pipeline latency
 			g.metrics.MarkTranscript()
 			if g.onSpeechEnd != nil {
 				g.onSpeechEnd()

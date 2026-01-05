@@ -120,18 +120,31 @@ func (m *MetricsCollector) MarkSendEnd() {
 	if !m.current.SendStartTime.IsZero() {
 		m.current.SendLatency = m.current.SendEndTime.Sub(m.current.SendStartTime)
 	}
-	// Also update pipeline start time (last audio sent = when user stopped speaking)
-	m.current.PipelineStartTime = m.current.SendEndTime
+	// Note: PipelineStartTime should be set by MarkVADSpeechEnded, not here
 }
 
 // --- Stage 3: Pipeline Processing (provider-internal) ---
 
-// MarkPipelineStart records when we last sent audio (user stopped speaking).
-// This is typically called automatically by MarkSendEnd.
+// MarkVADSpeechEnded records when VAD detected end of user speech.
+// This is the correct start point for pipeline latency measurement.
+// Called when provider receives speech_stopped/speech_ended event from server VAD.
+func (m *MetricsCollector) MarkVADSpeechEnded() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Only set once per turn (first VAD detection)
+	if m.current.PipelineStartTime.IsZero() {
+		m.current.PipelineStartTime = time.Now()
+	}
+}
+
+// MarkPipelineStart records pipeline processing start time.
+// Prefer MarkVADSpeechEnded for accurate VAD-based timing.
 func (m *MetricsCollector) MarkPipelineStart() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.current.PipelineStartTime = time.Now()
+	if m.current.PipelineStartTime.IsZero() {
+		m.current.PipelineStartTime = time.Now()
+	}
 }
 
 // MarkPipelineEnd records when we received first audio from the pipeline.
@@ -241,6 +254,27 @@ func (m *MetricsCollector) AudioInChunks() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.current.AudioChunksIn
+}
+
+// SpeechStarted returns true if VAD has detected speech start.
+func (m *MetricsCollector) SpeechStarted() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.current.CaptureStartTime.IsZero()
+}
+
+// SpeechEnded returns true if VAD has detected speech end.
+func (m *MetricsCollector) SpeechEnded() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.current.PipelineStartTime.IsZero()
+}
+
+// HasReceivedAudio returns true if any audio output has been received.
+func (m *MetricsCollector) HasReceivedAudio() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current.AudioChunksOut > 0
 }
 
 // IncrementAudioOut increments the count of audio chunks sent.

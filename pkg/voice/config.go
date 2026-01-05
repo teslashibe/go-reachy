@@ -37,9 +37,18 @@ type Config struct {
 	BufferDuration   time.Duration // Audio buffer before sending (default: 100ms)
 
 	// VAD (Voice Activity Detection) settings
+	VADMode            string        // VAD mode: "server_vad", "semantic_vad" (OpenAI), "automatic" (Gemini)
 	VADThreshold       float64       // Activation threshold 0.0-1.0 (default: 0.5)
 	VADPrefixPadding   time.Duration // Audio to include before speech start (default: 300ms)
 	VADSilenceDuration time.Duration // Silence duration to detect end of speech (default: 500ms)
+	VADEagerness       string        // Semantic VAD eagerness: "low", "medium", "high" (OpenAI only)
+	
+	// Gemini-specific VAD settings
+	VADStartSensitivity string // Start of speech sensitivity: "LOW", "MEDIUM", "HIGH"
+	VADEndSensitivity   string // End of speech sensitivity: "LOW", "MEDIUM", "HIGH"
+	
+	// Audio chunk settings (for optimization)
+	ChunkDuration time.Duration // Duration of each audio chunk sent (default: 100ms, try 10-50ms for lower latency)
 
 	// ASR (Automatic Speech Recognition) settings
 	ASRModel    string // Model for transcription (default: provider-specific)
@@ -74,8 +83,11 @@ func DefaultConfig() Config {
 		InputSampleRate:  24000,
 		OutputSampleRate: 24000,
 		BufferDuration:   100 * time.Millisecond,
+		ChunkDuration:    100 * time.Millisecond, // Default 100ms chunks
 
-		// VAD
+		// VAD - Use semantic_vad for better turn detection
+		VADMode:            "semantic_vad",
+		VADEagerness:       "medium",
 		VADThreshold:       0.5,
 		VADPrefixPadding:   300 * time.Millisecond,
 		VADSilenceDuration: 500 * time.Millisecond,
@@ -113,7 +125,13 @@ func DefaultGeminiConfig() Config {
 	cfg.Provider = ProviderGemini
 	cfg.InputSampleRate = 16000  // Gemini uses 16kHz input
 	cfg.OutputSampleRate = 24000 // Gemini outputs 24kHz
-	cfg.LLMModel = "gemini-2.0-flash-exp"
+	cfg.LLMModel = "gemini-2.5-flash-native-audio-preview-12-2025" // Latest native audio model
+	// Gemini VAD settings - much faster than OpenAI defaults
+	cfg.VADMode = "automatic"
+	cfg.VADSilenceDuration = 100 * time.Millisecond // Gemini supports 100ms!
+	cfg.VADStartSensitivity = "HIGH"
+	cfg.VADEndSensitivity = "HIGH"
+	cfg.VADPrefixPadding = 20 * time.Millisecond
 	return cfg
 }
 
