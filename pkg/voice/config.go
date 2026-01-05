@@ -26,10 +26,10 @@ type Config struct {
 	Provider Provider
 
 	// API Keys (provider-specific)
-	OpenAIKey      string
-	ElevenLabsKey  string
+	OpenAIKey         string
+	ElevenLabsKey     string
 	ElevenLabsVoiceID string // Required for ElevenLabs
-	GoogleAPIKey   string
+	GoogleAPIKey      string
 
 	// Audio settings
 	InputSampleRate  int           // Input audio sample rate (default: 24000 for OpenAI, 16000 for others)
@@ -42,11 +42,11 @@ type Config struct {
 	VADPrefixPadding   time.Duration // Audio to include before speech start (default: 300ms)
 	VADSilenceDuration time.Duration // Silence duration to detect end of speech (default: 500ms)
 	VADEagerness       string        // Semantic VAD eagerness: "low", "medium", "high" (OpenAI only)
-	
+
 	// Gemini-specific VAD settings
 	VADStartSensitivity string // Start of speech sensitivity: "LOW", "MEDIUM", "HIGH"
 	VADEndSensitivity   string // End of speech sensitivity: "LOW", "MEDIUM", "HIGH"
-	
+
 	// Audio chunk settings (for optimization)
 	ChunkDuration time.Duration // Duration of each audio chunk sent (default: 100ms, try 10-50ms for lower latency)
 
@@ -62,9 +62,13 @@ type Config struct {
 
 	// TTS (Text-to-Speech) settings
 	TTSVoice      string  // Voice ID or name
+	TTSModel      string  // TTS model (ElevenLabs: eleven_flash_v2_5, eleven_turbo_v2_5, eleven_multilingual_v2)
 	TTSSpeed      float64 // Speech speed multiplier (default: 1.0)
 	TTSStability  float64 // ElevenLabs: voice stability 0.0-1.0 (default: 0.5)
 	TTSSimilarity float64 // ElevenLabs: similarity boost 0.0-1.0 (default: 0.75)
+
+	// STT (Speech-to-Text) settings
+	STTModel string // STT model (ElevenLabs: scribe_v2_realtime, scribe_v1)
 
 	// Streaming settings
 	StreamingEnabled bool // Enable streaming responses (default: true)
@@ -109,13 +113,42 @@ func DefaultConfig() Config {
 	}
 }
 
+// ElevenLabs model constants
+const (
+	// TTS models (text-to-speech) - in order of speed
+	// Flash models - fastest (~75ms latency)
+	ElevenLabsTTSFlash   = "eleven_flash_v2_5" // Fastest, 32 languages (~75ms)
+	ElevenLabsTTSFlashV2 = "eleven_flash_v2"   // Fast, English only (~75ms)
+
+	// Turbo models - balanced quality/speed (~250-300ms)
+	ElevenLabsTTSTurbo   = "eleven_turbo_v2_5" // Balanced, 32 languages (~250-300ms)
+	ElevenLabsTTSTurboV2 = "eleven_turbo_v2"   // Balanced, English only (~250-300ms)
+
+	// Quality models - best quality (higher latency)
+	ElevenLabsTTSMultilingual = "eleven_multilingual_v2" // Best quality, 29 languages (~400ms+)
+	ElevenLabsTTSV3           = "eleven_v3"              // Most expressive, 70+ languages (alpha)
+
+	// Specialty models
+	ElevenLabsTTSMultilingualSTS = "eleven_multilingual_sts_v2" // Speech-to-speech, 29 languages
+	ElevenLabsTTSEnglishSTS      = "eleven_english_sts_v2"      // Speech-to-speech, English only
+	ElevenLabsTTSMultilingualTTV = "eleven_multilingual_ttv_v2" // Text-to-voice design
+	ElevenLabsTTSV3TTV           = "eleven_ttv_v3"              // Text-to-voice design v3
+
+	// STT models (speech-to-text) - in order of speed
+	ElevenLabsSTTRealtime = "scribe_v2_realtime" // Fastest (~150ms latency), 90 languages
+	ElevenLabsSTTV1       = "scribe_v1"          // More accurate, 99 languages
+)
+
 // DefaultElevenLabsConfig returns a Config with defaults for ElevenLabs.
+// Uses the fastest TTS and STT models by default for minimal latency.
 func DefaultElevenLabsConfig() Config {
 	cfg := DefaultConfig()
 	cfg.Provider = ProviderElevenLabs
-	cfg.InputSampleRate = 16000  // ElevenLabs uses 16kHz
+	cfg.InputSampleRate = 16000 // ElevenLabs uses 16kHz
 	cfg.OutputSampleRate = 16000
-	cfg.LLMModel = "gemini-2.0-flash" // Default LLM for ElevenLabs
+	cfg.LLMModel = "gemini-2.0-flash"    // Default LLM for ElevenLabs
+	cfg.TTSModel = ElevenLabsTTSFlash    // Fastest TTS (~75ms)
+	cfg.STTModel = ElevenLabsSTTRealtime // Fastest STT (~150ms)
 	return cfg
 }
 
@@ -123,8 +156,8 @@ func DefaultElevenLabsConfig() Config {
 func DefaultGeminiConfig() Config {
 	cfg := DefaultConfig()
 	cfg.Provider = ProviderGemini
-	cfg.InputSampleRate = 16000  // Gemini uses 16kHz input
-	cfg.OutputSampleRate = 24000 // Gemini outputs 24kHz
+	cfg.InputSampleRate = 16000                                    // Gemini uses 16kHz input
+	cfg.OutputSampleRate = 24000                                   // Gemini outputs 24kHz
 	cfg.LLMModel = "gemini-2.5-flash-native-audio-preview-12-2025" // Latest native audio model
 	// Gemini VAD settings - much faster than OpenAI defaults
 	cfg.VADMode = "automatic"
@@ -192,4 +225,3 @@ func (c Config) WithDebug(debug bool) Config {
 	c.Debug = debug
 	return c
 }
-

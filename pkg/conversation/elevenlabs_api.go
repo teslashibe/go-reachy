@@ -49,6 +49,7 @@ type LLMConfig struct {
 // TTSConfig configures text-to-speech.
 type TTSConfig struct {
 	VoiceID string `json:"voice_id"`
+	ModelID string `json:"model_id,omitempty"` // eleven_flash_v2_5 (fastest), eleven_turbo_v2_5, eleven_multilingual_v2
 }
 
 // ASRConfig configures automatic speech recognition.
@@ -249,10 +250,18 @@ func buildAgentConfig(cfg *Config, tools []Tool) AgentConfig {
 		}
 	}
 
-	// Set voice if specified
+	// Set TTS (voice + model) if specified
 	if cfg.VoiceID != "" {
 		agentCfg.ConversationConfig.TTS = &TTSConfig{
 			VoiceID: cfg.VoiceID,
+			ModelID: cfg.TTSModel, // Use fastest model by default (eleven_flash_v2_5)
+		}
+	}
+
+	// Set ASR (speech-to-text) if specified
+	if cfg.STTModel != "" {
+		agentCfg.ConversationConfig.ASR = &ASRConfig{
+			Model: cfg.STTModel, // Use fastest model by default (scribe_v2_realtime)
 		}
 	}
 

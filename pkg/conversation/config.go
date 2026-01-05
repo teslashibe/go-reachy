@@ -79,6 +79,14 @@ type Config struct {
 
 	// TurnDetection configures voice activity detection.
 	TurnDetection *TurnDetection
+
+	// TTSModel is the text-to-speech model (ElevenLabs: eleven_flash_v2_5, eleven_turbo_v2_5, eleven_multilingual_v2).
+	// Default: eleven_flash_v2_5 (fastest, ~75ms latency)
+	TTSModel string
+
+	// STTModel is the speech-to-text model (ElevenLabs: scribe_v2_realtime, scribe_v1).
+	// Default: scribe_v2_realtime (fastest, ~150ms latency)
+	STTModel string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -95,6 +103,8 @@ func DefaultConfig() *Config {
 		ReconnectDelay:    time.Second,
 		EnableMetrics:     true,
 		Logger:            slog.Default(),
+		TTSModel:          TTSModelFlash, // Fastest TTS (~75ms)
+		STTModel:          STTModelScribeRealtime, // Fastest STT (~150ms)
 		TurnDetection: &TurnDetection{
 			Type:              "server_vad",
 			Threshold:         0.5,
@@ -283,7 +293,46 @@ const (
 	VoiceNova    = "nova"
 	VoiceShimmer = "shimmer"
 
-	// ElevenLabs models
+	// ElevenLabs TTS models (text-to-speech) - ordered by latency
+	// Flash models - fastest (~75ms latency)
+	TTSModelFlash   = "eleven_flash_v2_5" // Fastest, 32 languages (~75ms)
+	TTSModelFlashV2 = "eleven_flash_v2"   // Fast, English only (~75ms)
+
+	// Turbo models - balanced quality/speed (~250-300ms)
+	TTSModelTurbo   = "eleven_turbo_v2_5" // Balanced, 32 languages (~250-300ms)
+	TTSModelTurboV2 = "eleven_turbo_v2"   // Balanced, English only (~250-300ms)
+
+	// Quality models - best quality (higher latency)
+	TTSModelMultilingual = "eleven_multilingual_v2" // Best quality, 29 languages (~400ms+)
+	TTSModelV3           = "eleven_v3"              // Most expressive, 70+ languages (alpha)
+
+	// Specialty models
+	TTSModelMultilingualSTS = "eleven_multilingual_sts_v2" // Speech-to-speech, 29 languages
+	TTSModelEnglishSTS      = "eleven_english_sts_v2"      // Speech-to-speech, English only
+	TTSModelMultilingualTTV = "eleven_multilingual_ttv_v2" // Text-to-voice design
+	TTSModelV3TTV           = "eleven_ttv_v3"              // Text-to-voice design v3
+
+	// ElevenLabs STT models (speech-to-text)
+	STTModelScribeRealtime = "scribe_v2_realtime" // Fastest (~150ms latency), 90 languages
+	STTModelScribeV1       = "scribe_v1"          // More accurate, 99 languages
+
+	// Legacy aliases
 	ModelFlashV2_5 = "eleven_flash_v2_5"
 	ModelTurboV2_5 = "eleven_turbo_v2_5"
 )
+
+// WithTTSModel sets the text-to-speech model.
+// Fastest: TTSModelFlash (~75ms), Best quality: TTSModelMultilingual
+func WithTTSModel(model string) Option {
+	return func(c *Config) {
+		c.TTSModel = model
+	}
+}
+
+// WithSTTModel sets the speech-to-text model.
+// Fastest: STTModelScribeRealtime (~150ms), More accurate: STTModelScribeV1
+func WithSTTModel(model string) Option {
+	return func(c *Config) {
+		c.STTModel = model
+	}
+}

@@ -62,6 +62,20 @@ func (e *ElevenLabs) Start(ctx context.Context) error {
 	}
 	opts = append(opts, conversation.WithLLM(llm))
 	
+	// TTS model (default to fastest)
+	ttsModel := e.config.TTSModel
+	if ttsModel == "" {
+		ttsModel = voice.ElevenLabsTTSFlash // eleven_flash_v2_5 (~75ms)
+	}
+	opts = append(opts, conversation.WithTTSModel(ttsModel))
+	
+	// STT model (default to fastest)
+	sttModel := e.config.STTModel
+	if sttModel == "" {
+		sttModel = voice.ElevenLabsSTTRealtime // scribe_v2_realtime (~150ms)
+	}
+	opts = append(opts, conversation.WithSTTModel(sttModel))
+	
 	// System prompt
 	if e.config.SystemPrompt != "" {
 		opts = append(opts, conversation.WithSystemPrompt(e.config.SystemPrompt))
