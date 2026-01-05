@@ -407,3 +407,24 @@ func (e *ElevenLabsWS) VoiceID() string {
 func (e *ElevenLabsWS) ModelID() string {
 	return e.config.ModelID
 }
+
+// SetOnAudio sets the callback invoked for each audio chunk.
+// Implements StreamProvider interface.
+func (e *ElevenLabsWS) SetOnAudio(callback func(pcmData []byte)) {
+	e.OnAudio = callback
+}
+
+// SetOnComplete sets the callback invoked when audio stream is complete.
+// Implements StreamProvider interface.
+func (e *ElevenLabsWS) SetOnComplete(callback func()) {
+	e.OnStreamComplete = callback
+}
+
+// SetOnError sets the callback invoked on errors.
+// Implements StreamProvider interface.
+func (e *ElevenLabsWS) SetOnError(callback func(err error)) {
+	e.OnError = callback
+}
+
+// Verify ElevenLabsWS implements StreamProvider at compile time.
+var _ StreamProvider = (*ElevenLabsWS)(nil)

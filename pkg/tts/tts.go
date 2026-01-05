@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-// Provider defines the TTS provider interface.
+// Provider defines the TTS provider interface for HTTP-based synthesis.
 // All implementations must satisfy this interface for seamless provider switching.
 type Provider interface {
 	// Synthesize converts text to audio, returning the complete audio buffer.
@@ -37,6 +37,37 @@ type Provider interface {
 
 	// Close releases any resources held by the provider.
 	Close() error
+}
+
+// StreamProvider represents a WebSocket-based streaming TTS provider.
+// Use this for lowest latency when text arrives in chunks (e.g., from LLM streaming).
+// This is a separate interface from Provider because the I/O patterns are fundamentally different.
+type StreamProvider interface {
+	// Connect establishes the WebSocket connection.
+	// Call this once at startup to pre-warm the connection.
+	Connect(ctx context.Context) error
+
+	// SendText queues a text chunk for synthesis (non-blocking).
+	// Text is buffered and synthesized as it arrives.
+	SendText(chunk string) error
+
+	// Flush signals end of text stream and triggers final audio generation.
+	Flush() error
+
+	// IsConnected returns true if the WebSocket is connected.
+	IsConnected() bool
+
+	// Close terminates the WebSocket connection.
+	Close() error
+
+	// SetOnAudio sets the callback invoked for each audio chunk.
+	SetOnAudio(callback func(pcmData []byte))
+
+	// SetOnComplete sets the callback invoked when audio stream is complete.
+	SetOnComplete(callback func())
+
+	// SetOnError sets the callback invoked on errors.
+	SetOnError(callback func(err error))
 }
 
 // AudioStream represents a streaming audio response.
