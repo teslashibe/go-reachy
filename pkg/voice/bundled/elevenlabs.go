@@ -111,7 +111,8 @@ func (e *ElevenLabs) Start(ctx context.Context) error {
 				// Stage 4: Receive timing - start (first data from pipeline)
 				e.metrics.MarkReceiveStart()
 				// Stage 3: Pipeline timing - VAD detected speech end
-				e.metrics.MarkPipelineStart()
+				// Use MarkVADSpeechEnded for accurate TTFA measurement
+				e.metrics.MarkVADSpeechEnded()
 				e.metrics.MarkTranscript()
 				if e.onSpeechEnd != nil {
 					e.onSpeechEnd()

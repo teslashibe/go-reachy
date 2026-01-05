@@ -1061,17 +1061,17 @@ type BenchmarkResult struct {
 	VADEagerness  string
 	VADSilence    time.Duration
 	// Total time from start of sending audio to first response audio
-	AvgLatency    time.Duration
-	MinLatency    time.Duration
-	MaxLatency    time.Duration
+	AvgLatency time.Duration
+	MinLatency time.Duration
+	MaxLatency time.Duration
 	// TTFA = Time to First Audio: from VAD speech_stopped to first audio byte
 	// This is the KEY metric for natural conversation feel!
-	AvgTTFA       time.Duration
-	MinTTFA       time.Duration
-	MaxTTFA       time.Duration
-	Success       int
-	Total         int
-	Error         error
+	AvgTTFA time.Duration
+	MinTTFA time.Duration
+	MaxTTFA time.Duration
+	Success int
+	Total   int
+	Error   error
 }
 
 // BenchmarkJob represents a single benchmark configuration to test
@@ -1334,14 +1334,14 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 			// Total latency from start of sending
 			latency := firstAudioTime.Sub(sendStart)
 			latencies = append(latencies, latency)
-			
+
 			// TTFA: Time from VAD speech_stopped to first audio
 			// This is the KEY metric for natural conversation!
 			if !speechEndTime.IsZero() {
 				ttfa := firstAudioTime.Sub(speechEndTime)
 				ttfas = append(ttfas, ttfa)
 			}
-			
+
 			result.Success++
 		case <-time.After(15 * time.Second):
 			// Timeout, no latency recorded
