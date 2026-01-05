@@ -63,7 +63,7 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Second, "Timeout waiting for response")
 	silenceDuration := flag.Duration("silence", 1*time.Second, "Trailing silence after speech to trigger VAD end")
 	forceCommit := flag.Bool("force-commit", false, "Force commit audio buffer (OpenAI) or signal turn complete (Gemini)")
-	
+
 	// Benchmark tuning parameters
 	chunkDuration := flag.Duration("chunk", 100*time.Millisecond, "Audio chunk duration (10ms-100ms, lower = faster)")
 	vadMode := flag.String("vad-mode", "server_vad", "VAD mode: server_vad, semantic_vad (OpenAI)")
@@ -104,7 +104,7 @@ func main() {
 		logWarn("MAIN", "No speech file found: %v", speechErr)
 		logInfo("MAIN", "Will use synthetic audio")
 	} else {
-		logSuccess("MAIN", "Loaded speech file: %d samples (%.1fs at 16kHz)", 
+		logSuccess("MAIN", "Loaded speech file: %d samples (%.1fs at 16kHz)",
 			len(speechSamples), float64(len(speechSamples))/16000.0)
 	}
 
@@ -126,7 +126,7 @@ func main() {
 		VADSilenceDuration: *vadSilence,
 		VADThreshold:       *vadThreshold,
 	}
-	
+
 	// If benchmark mode, run comprehensive tests
 	if *benchmark {
 		runBenchmarkSuite(ctx, baseConfig, speechSamples)
@@ -187,7 +187,7 @@ func runAllProviders(ctx context.Context, baseConfig voice.Config, speechSamples
 		wg.Add(1)
 		go func(provider voice.Provider) {
 			defer wg.Done()
-			
+
 			// Clone config for this provider
 			cfg := baseConfig
 			cfg.Provider = provider
@@ -443,7 +443,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 	}
 
 	if useRealSpeech {
-		logInfo(t.prefix, "Using recorded speech (%d samples, %.1fs)", 
+		logInfo(t.prefix, "Using recorded speech (%d samples, %.1fs)",
 			len(t.speechSamples), float64(len(t.speechSamples))/float64(sampleRate))
 	} else {
 		logInfo(t.prefix, "Using synthetic audio (%.1fs)", t.opts.Duration.Seconds())
@@ -456,7 +456,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 	chunkDuration := 100 * time.Millisecond
 	chunkSamples := int(float64(sampleRate) * chunkDuration.Seconds())
 
-	logDebug(t.prefix, t.opts.Debug, "Sending audio in %dms chunks (%d samples each)", 
+	logDebug(t.prefix, t.opts.Debug, "Sending audio in %dms chunks (%d samples each)",
 		chunkDuration.Milliseconds(), chunkSamples)
 
 	if useRealSpeech {
@@ -492,7 +492,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 
 			chunkNum := i/chunkSamples + 1
 			if chunkNum == 1 || chunkNum%10 == 0 || chunkNum == totalChunks {
-				logDebug(t.prefix, t.opts.Debug, "📤 Sent chunk %d/%d (%d bytes total)", 
+				logDebug(t.prefix, t.opts.Debug, "📤 Sent chunk %d/%d (%d bytes total)",
 					chunkNum, totalChunks, audioSent)
 			}
 
@@ -528,7 +528,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 			audioSent += len(pcm16)
 
 			if i == 0 || (i+1)%10 == 0 || i == totalChunks-1 {
-				logDebug(t.prefix, t.opts.Debug, "📤 Sent chunk %d/%d (%d bytes total)", 
+				logDebug(t.prefix, t.opts.Debug, "📤 Sent chunk %d/%d (%d bytes total)",
 					i+1, totalChunks, audioSent)
 			}
 
@@ -536,7 +536,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 		}
 	}
 
-	logInfo(t.prefix, "Speech audio complete: %d bytes in %s", 
+	logInfo(t.prefix, "Speech audio complete: %d bytes in %s",
 		audioSent, formatDuration(time.Since(startTime)))
 
 	// Send trailing silence to help VAD detect end of speech
@@ -544,7 +544,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 		logInfo(t.prefix, "Sending %s of trailing silence...", t.opts.SilenceDuration)
 		silenceSamples := int(float64(sampleRate) * t.opts.SilenceDuration.Seconds())
 		silenceChunks := (silenceSamples + chunkSamples - 1) / chunkSamples
-		
+
 		for i := 0; i < silenceChunks; i++ {
 			select {
 			case <-ctx.Done():
@@ -590,13 +590,13 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 		mu.Lock()
 		vadAlreadyEnded := speechEnded
 		mu.Unlock()
-		
+
 		if vadAlreadyEnded {
 			logInfo(t.prefix, "VAD already ended - just requesting response...")
 		} else {
 			logInfo(t.prefix, "Force commit mode: manually triggering response...")
 		}
-		
+
 		if err := t.forceCommitAndRespond(vadAlreadyEnded); err != nil {
 			logError(t.prefix, "Force commit failed: %v", err)
 		}
@@ -641,7 +641,7 @@ func (t *PipelineTester) runSingleTest(ctx context.Context, loop int) TestResult
 
 			// Log status every 5 seconds
 			if time.Since(lastStatusLog) > 5*time.Second {
-				logDebug(t.prefix, t.opts.Debug, "⏳ Still waiting... (%.1fs, audio=%v, complete=%v)", 
+				logDebug(t.prefix, t.opts.Debug, "⏳ Still waiting... (%.1fs, audio=%v, complete=%v)",
 					time.Since(waitStart).Seconds(), hasAudio, done)
 				lastStatusLog = time.Now()
 			}
@@ -693,7 +693,7 @@ func (t *PipelineTester) forceCommitAndRespond(vadAlreadyEnded bool) error {
 			} else {
 				logDebug(t.prefix, t.opts.Debug, "OpenAI: Skipping commit (VAD already committed)")
 			}
-			
+
 			logDebug(t.prefix, t.opts.Debug, "OpenAI: Requesting response...")
 			if err := committer.RequestResponse(); err != nil {
 				return fmt.Errorf("request response failed: %w", err)
@@ -702,14 +702,14 @@ func (t *PipelineTester) forceCommitAndRespond(vadAlreadyEnded bool) error {
 		} else {
 			return fmt.Errorf("pipeline does not support CommitAudioBuffer")
 		}
-		
+
 	case voice.ProviderGemini:
 		// Only signal turn complete if VAD hasn't already triggered
 		if vadAlreadyEnded {
 			logDebug(t.prefix, t.opts.Debug, "Gemini: Skipping turn complete (VAD already triggered)")
 			return nil
 		}
-		
+
 		// Type assert to access Gemini-specific methods
 		type geminiTurnCompleter interface {
 			SignalTurnComplete() error
@@ -723,15 +723,15 @@ func (t *PipelineTester) forceCommitAndRespond(vadAlreadyEnded bool) error {
 		} else {
 			return fmt.Errorf("pipeline does not support SignalTurnComplete")
 		}
-		
+
 	case voice.ProviderElevenLabs:
 		// ElevenLabs doesn't have a manual trigger - it relies on VAD
 		logDebug(t.prefix, t.opts.Debug, "ElevenLabs: No manual trigger available (uses server VAD)")
-		
+
 	default:
 		return fmt.Errorf("unknown provider: %s", t.config.Provider)
 	}
-	
+
 	return nil
 }
 
@@ -1055,26 +1055,32 @@ func truncate(s string, maxLen int) string {
 
 // BenchmarkResult holds results for a single benchmark configuration
 type BenchmarkResult struct {
-	Provider       voice.Provider
-	ChunkDuration  time.Duration
-	VADMode        string
-	VADEagerness   string
-	VADSilence     time.Duration
-	AvgLatency     time.Duration
-	MinLatency     time.Duration
-	MaxLatency     time.Duration
-	Success        int
-	Total          int
-	Error          error
+	Provider      voice.Provider
+	ChunkDuration time.Duration
+	VADMode       string
+	VADEagerness  string
+	VADSilence    time.Duration
+	// Total time from start of sending audio to first response audio
+	AvgLatency    time.Duration
+	MinLatency    time.Duration
+	MaxLatency    time.Duration
+	// TTFA = Time to First Audio: from VAD speech_stopped to first audio byte
+	// This is the KEY metric for natural conversation feel!
+	AvgTTFA       time.Duration
+	MinTTFA       time.Duration
+	MaxTTFA       time.Duration
+	Success       int
+	Total         int
+	Error         error
 }
 
 // BenchmarkJob represents a single benchmark configuration to test
 type BenchmarkJob struct {
-	Config       voice.Config
+	Config        voice.Config
 	ChunkDuration time.Duration
-	VADMode      string
-	VADEagerness string
-	VADSilence   time.Duration
+	VADMode       string
+	VADEagerness  string
+	VADSilence    time.Duration
 }
 
 // runBenchmarkSuite runs comprehensive benchmarks across all settings IN PARALLEL
@@ -1090,7 +1096,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 
 	// Define test matrix - use fewer configs for faster testing
 	chunkDurations := []time.Duration{10 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond}
-	
+
 	// OpenAI configurations
 	if baseConfig.OpenAIKey != "" {
 		openAIConfigs := []struct {
@@ -1103,7 +1109,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 			{"semantic_vad", "medium", 0},
 			{"semantic_vad", "high", 0},
 		}
-		
+
 		for _, chunk := range chunkDurations {
 			for _, cfg := range openAIConfigs {
 				testConfig := baseConfig
@@ -1112,7 +1118,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 				testConfig.VADMode = cfg.vadMode
 				testConfig.VADEagerness = cfg.vadEagerness
 				testConfig.VADSilenceDuration = cfg.vadSilence
-				
+
 				jobs = append(jobs, BenchmarkJob{
 					Config:        testConfig,
 					ChunkDuration: chunk,
@@ -1127,7 +1133,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 	// Gemini configurations
 	if baseConfig.GoogleAPIKey != "" {
 		geminiSilences := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
-		
+
 		for _, chunk := range chunkDurations {
 			for _, silence := range geminiSilences {
 				testConfig := baseConfig
@@ -1136,7 +1142,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 				testConfig.VADSilenceDuration = silence
 				testConfig.VADStartSensitivity = "HIGH"
 				testConfig.VADEndSensitivity = "HIGH"
-				
+
 				jobs = append(jobs, BenchmarkJob{
 					Config:        testConfig,
 					ChunkDuration: chunk,
@@ -1152,7 +1158,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 			testConfig := baseConfig
 			testConfig.Provider = voice.ProviderElevenLabs
 			testConfig.ChunkDuration = chunk
-			
+
 			jobs = append(jobs, BenchmarkJob{
 				Config:        testConfig,
 				ChunkDuration: chunk,
@@ -1174,7 +1180,7 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 		wg.Add(1)
 		go func(j BenchmarkJob) {
 			defer wg.Done()
-			
+
 			select {
 			case <-ctx.Done():
 				return
@@ -1187,10 +1193,10 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 			result.VADMode = j.VADMode
 			result.VADEagerness = j.VADEagerness
 			result.VADSilence = j.VADSilence
-			
+
 			// Print progress
 			if result.Error != nil {
-				fmt.Printf("  ❌ [%s] chunk=%dms %s: %v\n", 
+				fmt.Printf("  ❌ [%s] chunk=%dms %s: %v\n",
 					j.Config.Provider, j.ChunkDuration.Milliseconds(), j.VADMode, result.Error)
 			} else {
 				vadDesc := j.VADMode
@@ -1200,11 +1206,15 @@ func runBenchmarkSuite(ctx context.Context, baseConfig voice.Config, speechSampl
 				if vadDesc == "" {
 					vadDesc = "default"
 				}
-				fmt.Printf("  ✅ [%s] chunk=%dms %s: avg=%s\n",
+				ttfaStr := formatDuration(result.AvgTTFA)
+				if result.AvgTTFA == 0 {
+					ttfaStr = "N/A"
+				}
+				fmt.Printf("  ✅ [%s] chunk=%dms %s: TTFA=%s (total=%s)\n",
 					j.Config.Provider, j.ChunkDuration.Milliseconds(), vadDesc,
-					formatDuration(result.AvgLatency))
+					ttfaStr, formatDuration(result.AvgLatency))
 			}
-			
+
 			results <- result
 		}(job)
 	}
@@ -1252,6 +1262,7 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 	time.Sleep(500 * time.Millisecond)
 
 	var latencies []time.Duration
+	var ttfas []time.Duration // Time to First Audio (from VAD speech_stopped)
 
 	for i := 0; i < loops; i++ {
 		select {
@@ -1272,12 +1283,21 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 
 		audioComplete := make(chan struct{})
 		var firstAudioTime time.Time
+		var speechEndTime time.Time
+		var audioOnce sync.Once
+
+		// Track when VAD detects speech end - this is the KEY timestamp!
+		pipeline.OnSpeechEnd(func() {
+			if speechEndTime.IsZero() {
+				speechEndTime = time.Now()
+			}
+		})
 
 		pipeline.OnAudioOut(func(pcm16 []byte) {
-			if firstAudioTime.IsZero() {
+			audioOnce.Do(func() {
 				firstAudioTime = time.Now()
 				close(audioComplete)
-			}
+			})
 		})
 
 		sendStart := time.Now()
@@ -1303,7 +1323,7 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 			time.Sleep(cfg.ChunkDuration)
 		}
 
-		// Send trailing silence
+		// Send trailing silence to trigger VAD end
 		silenceSamples := int(float64(cfg.InputSampleRate) * 0.5) // 500ms silence
 		silenceChunk := make([]byte, silenceSamples*2)
 		pipeline.SendAudio(silenceChunk)
@@ -1311,8 +1331,17 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 		// Wait for response
 		select {
 		case <-audioComplete:
+			// Total latency from start of sending
 			latency := firstAudioTime.Sub(sendStart)
 			latencies = append(latencies, latency)
+			
+			// TTFA: Time from VAD speech_stopped to first audio
+			// This is the KEY metric for natural conversation!
+			if !speechEndTime.IsZero() {
+				ttfa := firstAudioTime.Sub(speechEndTime)
+				ttfas = append(ttfas, ttfa)
+			}
+			
 			result.Success++
 		case <-time.After(15 * time.Second):
 			// Timeout, no latency recorded
@@ -1325,7 +1354,7 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Calculate statistics
+	// Calculate total latency statistics
 	if len(latencies) > 0 {
 		var sum time.Duration
 		result.MinLatency = latencies[0]
@@ -1340,6 +1369,23 @@ func runSingleBenchmark(ctx context.Context, cfg voice.Config, speechSamples []i
 			}
 		}
 		result.AvgLatency = sum / time.Duration(len(latencies))
+	}
+
+	// Calculate TTFA statistics (the important one!)
+	if len(ttfas) > 0 {
+		var sum time.Duration
+		result.MinTTFA = ttfas[0]
+		result.MaxTTFA = ttfas[0]
+		for _, t := range ttfas {
+			sum += t
+			if t < result.MinTTFA {
+				result.MinTTFA = t
+			}
+			if t > result.MaxTTFA {
+				result.MaxTTFA = t
+			}
+		}
+		result.AvgTTFA = sum / time.Duration(len(ttfas))
 	}
 
 	return result
@@ -1360,15 +1406,21 @@ func printBenchmarkSummary(results []BenchmarkResult) {
 		if r.Error != nil || r.Success == 0 {
 			continue
 		}
-		if best, ok := bestByProvider[r.Provider]; !ok || r.AvgLatency < best.AvgLatency {
+		// Use TTFA as the primary metric (Time to First Audio)
+		// Fall back to AvgLatency if TTFA not available
+		if r.AvgTTFA > 0 {
+			if best, ok := bestByProvider[r.Provider]; !ok || r.AvgTTFA < best.AvgTTFA {
+				bestByProvider[r.Provider] = r
+			}
+		} else if best, ok := bestByProvider[r.Provider]; !ok || r.AvgLatency < best.AvgLatency {
 			bestByProvider[r.Provider] = r
 		}
 	}
 
-	fmt.Println("🏆 BEST CONFIGURATION PER PROVIDER:")
-	fmt.Println("┌───────────────┬────────────┬──────────────────┬────────────┬─────────────┐")
-	fmt.Println("│ Provider      │ Chunk      │ VAD Mode         │ Silence    │ Avg Latency │")
-	fmt.Println("├───────────────┼────────────┼──────────────────┼────────────┼─────────────┤")
+	fmt.Println("🏆 BEST CONFIGURATION PER PROVIDER (by Time to First Audio):")
+	fmt.Println("┌───────────────┬────────────┬──────────────────┬────────────┬─────────────┬─────────────┐")
+	fmt.Println("│ Provider      │ Chunk      │ VAD Mode         │ Silence    │ TTFA        │ Total       │")
+	fmt.Println("├───────────────┼────────────┼──────────────────┼────────────┼─────────────┼─────────────┤")
 
 	for _, p := range []voice.Provider{voice.ProviderOpenAI, voice.ProviderGemini, voice.ProviderElevenLabs} {
 		if best, ok := bestByProvider[p]; ok {
@@ -1379,36 +1431,58 @@ func printBenchmarkSummary(results []BenchmarkResult) {
 			if vadDesc == "" {
 				vadDesc = "server"
 			}
-			fmt.Printf("│ %-13s │ %10s │ %-16s │ %10s │ %11s │\n",
+			ttfaStr := formatDuration(best.AvgTTFA)
+			if best.AvgTTFA == 0 {
+				ttfaStr = "N/A"
+			}
+			fmt.Printf("│ %-13s │ %10s │ %-16s │ %10s │ %11s │ %11s │\n",
 				p,
 				formatDuration(best.ChunkDuration),
 				vadDesc,
 				formatDuration(best.VADSilence),
+				ttfaStr,
 				formatDuration(best.AvgLatency))
 		}
 	}
-	fmt.Println("└───────────────┴────────────┴──────────────────┴────────────┴─────────────┘")
+	fmt.Println("└───────────────┴────────────┴──────────────────┴────────────┴─────────────┴─────────────┘")
 
-	// Find overall winner
+	// Find overall winner by TTFA (Time to First Audio)
 	var overallBest *BenchmarkResult
 	for i := range results {
 		r := &results[i]
 		if r.Error != nil || r.Success == 0 {
 			continue
 		}
-		if overallBest == nil || r.AvgLatency < overallBest.AvgLatency {
+		// Prefer TTFA, fall back to AvgLatency
+		if r.AvgTTFA > 0 {
+			if overallBest == nil || r.AvgTTFA < overallBest.AvgTTFA {
+				overallBest = r
+			}
+		} else if overallBest == nil || r.AvgLatency < overallBest.AvgLatency {
 			overallBest = r
 		}
 	}
 
 	if overallBest != nil {
 		fmt.Println()
-		fmt.Printf("🥇 OVERALL WINNER: %s with %s avg latency\n",
-			overallBest.Provider,
-			formatDuration(overallBest.AvgLatency))
-		fmt.Printf("   Config: chunk=%s, vad=%s, silence=%s\n",
+		ttfaStr := formatDuration(overallBest.AvgTTFA)
+		if overallBest.AvgTTFA == 0 {
+			ttfaStr = "N/A"
+		}
+		fmt.Printf("🥇 OVERALL WINNER: %s\n", overallBest.Provider)
+		fmt.Printf("   ⚡ Time to First Audio (TTFA): %s\n", ttfaStr)
+		fmt.Printf("   📊 Total latency: %s\n", formatDuration(overallBest.AvgLatency))
+		fmt.Printf("   ⚙️  Config: chunk=%s, vad=%s, silence=%s\n",
 			formatDuration(overallBest.ChunkDuration),
 			overallBest.VADMode,
 			formatDuration(overallBest.VADSilence))
 	}
+
+	// Print explanation
+	fmt.Println()
+	fmt.Println("📖 METRICS EXPLAINED:")
+	fmt.Println("   TTFA = Time to First Audio: delay from when you STOP speaking to hearing the AI")
+	fmt.Println("   Total = Full round-trip including sending your audio")
+	fmt.Println()
+	fmt.Println("   For natural conversation, TTFA < 500ms feels instant, < 1s feels responsive")
 }
