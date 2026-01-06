@@ -228,12 +228,22 @@ func (c *RateController) tick() {
 		return // Skip sending - position hasn't changed enough
 	}
 
-	// DEBUG: Log large movements (potential crash culprits)
-	if headDiff > 0.1 { // > ~6 degrees
-		fmt.Printf("⚡ [%s] LARGE HEAD MOVE: diff=%.3f rad (%.1f°), from=(%.3f,%.3f,%.3f) to=(%.3f,%.3f,%.3f)\n",
-			time.Now().Format("15:04:05.000"), headDiff, headDiff*57.3,
-			c.lastSentHead.Roll, c.lastSentHead.Pitch, c.lastSentHead.Yaw,
-			combined.Roll, combined.Pitch, combined.Yaw)
+	// Rate-limit large movements to prevent overwhelming the robot
+	// If movement is too large, clamp it to a safe step size
+	const MaxStepRad = 0.05 // ~3 degrees per tick max (safe ramp rate)
+	
+	if headDiff > MaxStepRad {
+		// Calculate direction and clamp
+		rollStep := clampStep(combined.Roll-c.lastSentHead.Roll, MaxStepRad)
+		pitchStep := clampStep(combined.Pitch-c.lastSentHead.Pitch, MaxStepRad)
+		yawStep := clampStep(combined.Yaw-c.lastSentHead.Yaw, MaxStepRad)
+		
+		combined.Roll = c.lastSentHead.Roll + rollStep
+		combined.Pitch = c.lastSentHead.Pitch + pitchStep
+		combined.Yaw = c.lastSentHead.Yaw + yawStep
+		
+		fmt.Printf("⚡ [%s] RATE-LIMITED: clamped %.1f° to %.1f° step\n",
+			time.Now().Format("15:04:05.000"), headDiff*57.3, MaxStepRad*57.3)
 	}
 
 	// Single batched call - prevents daemon flooding
@@ -263,4 +273,15 @@ func (c *RateController) tick() {
 // Stop halts the control loop gracefully.
 func (c *RateController) Stop() {
 	close(c.stop)
+}
+
+// clampStep limits a step size to a maximum magnitude while preserving direction.
+func clampStep(delta, maxStep float64) float64 {
+	if delta > maxStep {
+		return maxStep
+	}
+	if delta < -maxStep {
+		return -maxStep
+	}
+	return delta
 }
