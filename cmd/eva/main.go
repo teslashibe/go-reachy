@@ -36,7 +36,7 @@ const (
 )
 
 var robotIP = defaultRobotIP
-var transport = "http" // "http" or "zenoh"
+var transport = "zenoh" // "zenoh" (default) or "http"
 
 func init() {
 	if ip := os.Getenv("ROBOT_IP"); ip != "" {
@@ -172,7 +172,7 @@ func main() {
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
 	noBodyFlag := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
-	transportFlag := flag.String("transport", "http", "Robot transport: http (default) or zenoh (direct, 100Hz+)")
+	transportFlag := flag.String("transport", "zenoh", "Robot transport: zenoh (default, direct 100Hz+) or http")
 	sparkFlagSet := false
 	flag.Parse()
 	// Check if --spark was explicitly set
