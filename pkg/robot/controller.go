@@ -113,9 +113,10 @@ func (c *RateController) SetBaseHead(offset Offset) {
 
 // SetTrackingOffset sets the face tracking offset (additive).
 // This is combined with the base head pose each tick.
+// Input is clamped to physical limits to prevent PDController drift from causing issues.
 func (c *RateController) SetTrackingOffset(offset Offset) {
 	c.mu.Lock()
-	c.trackingHead = offset
+	c.trackingHead = offset.Clamp() // Clamp to physical limits on input
 	c.mu.Unlock()
 }
 
@@ -228,15 +229,39 @@ func (c *RateController) tick() {
 		return // Skip sending - position hasn't changed enough
 	}
 
+	// Rate-limit large movements to prevent overwhelming the robot
+	// If movement is too large, clamp it to a safe step size
+	const MaxStepRad = 0.05 // ~3 degrees per tick max (safe ramp rate)
+	
+	if headDiff > MaxStepRad {
+		// Calculate direction and clamp
+		rollStep := clampStep(combined.Roll-c.lastSentHead.Roll, MaxStepRad)
+		pitchStep := clampStep(combined.Pitch-c.lastSentHead.Pitch, MaxStepRad)
+		yawStep := clampStep(combined.Yaw-c.lastSentHead.Yaw, MaxStepRad)
+		
+		combined.Roll = c.lastSentHead.Roll + rollStep
+		combined.Pitch = c.lastSentHead.Pitch + pitchStep
+		combined.Yaw = c.lastSentHead.Yaw + yawStep
+		
+		// Re-clamp after rate limiting to prevent drift beyond physical limits
+		combined = combined.Clamp()
+		
+		fmt.Printf("⚡ [%s] RATE-LIMITED: clamped %.1f° to %.1f° step\n",
+			time.Now().Format("15:04:05.000"), headDiff*57.3, MaxStepRad*57.3)
+	}
+
 	// Single batched call - prevents daemon flooding
 	err := c.robot.SetPose(&combined, &antennas, &bodyYaw)
 
-	if err == nil {
-		// Update last sent values on success
-		c.lastSentHead = combined
-		c.lastSentAntennas = antennas
-		c.lastSentBodyYaw = bodyYaw
-	} else {
+	// ALWAYS update last sent values - even on error!
+	// This prevents "infinite diff" bug when robot disconnects:
+	// - Without this: lastSentHead frozen → diff stays large → rate-limit forever
+	// - With this: internal state progresses smoothly, robot gets latest on reconnect
+	c.lastSentHead = combined
+	c.lastSentAntennas = antennas
+	c.lastSentBodyYaw = bodyYaw
+
+	if err != nil {
 		// Log errors (but don't spam - max once per 5 seconds)
 		c.errorCount++
 		if c.lastErrorTime.IsZero() || time.Since(c.lastErrorTime) > 5*time.Second {
@@ -255,4 +280,15 @@ func (c *RateController) tick() {
 // Stop halts the control loop gracefully.
 func (c *RateController) Stop() {
 	close(c.stop)
+}
+
+// clampStep limits a step size to a maximum magnitude while preserving direction.
+func clampStep(delta, maxStep float64) float64 {
+	if delta > maxStep {
+		return maxStep
+	}
+	if delta < -maxStep {
+		return -maxStep
+	}
+	return delta
 }

@@ -15,6 +15,11 @@ type BodyYawNotifier interface {
 	SetBodyYaw(yaw float64)
 }
 
+// TrackingController allows pausing/resuming tracking during animations.
+type TrackingController interface {
+	SetEnabled(enabled bool)
+}
+
 // MotionController provides rate-limited motion control.
 // All motion commands should go through this interface to prevent
 // HTTP racing with the RateController (Issue #139).
@@ -46,18 +51,19 @@ type Tool struct {
 
 // ToolsConfig holds dependencies for Eva's tools.
 type ToolsConfig struct {
-	Robot           robot.Controller // For non-motion ops (volume, status)
-	Motion          MotionController // For all motion (head, antennas, body) - Issue #139
-	Memory          *memory.Memory
-	Vision          vision.Provider
-	ObjectDetector  ObjectDetector
-	GoogleAPIKey    string
-	AudioPlayer     *audio.Player
-	Tracker         BodyYawNotifier
-	Emotions        *emotions.Registry
-	SparkStore      *spark.JSONStore        // Spark idea storage
-	SparkGemini     *spark.GeminiClient     // Spark Gemini for title/tag generation
-	SparkGoogleDocs *spark.GoogleDocsClient // Spark Google Docs for syncing
+	Robot              robot.Controller   // For non-motion ops (volume, status)
+	Motion             MotionController   // For all motion (head, antennas, body) - Issue #139
+	Memory             *memory.Memory
+	Vision             vision.Provider
+	ObjectDetector     ObjectDetector
+	GoogleAPIKey       string
+	AudioPlayer        *audio.Player
+	Tracker            BodyYawNotifier
+	TrackingController TrackingController // For pausing tracking during emotions
+	Emotions           *emotions.Registry
+	SparkStore         *spark.JSONStore        // Spark idea storage
+	SparkGemini        *spark.GeminiClient     // Spark Gemini for title/tag generation
+	SparkGoogleDocs    *spark.GoogleDocsClient // Spark Google Docs for syncing
 }
 
 // isAnimal returns true if the class name is an animal.

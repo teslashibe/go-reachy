@@ -173,6 +173,7 @@ func main() {
 	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
 	noBodyFlag := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
 	transportFlag := flag.String("transport", "zenoh", "Robot transport: zenoh (default, direct 100Hz+) or http")
+	vadSilenceFlag := flag.Int("vad-silence", 300, "VAD silence duration in ms (200=fast/may cut off, 300=balanced, 500=safe)")
 	sparkFlagSet := false
 	flag.Parse()
 	// Check if --spark was explicitly set
@@ -475,8 +476,8 @@ func main() {
 	}
 
 	// Connect to OpenAI Realtime API
-	fmt.Printf("🧠 Connecting to OpenAI Realtime API (model: %s)... ", *modelFlag)
-	if err := connectRealtime(openaiKey, *modelFlag); err != nil {
+	fmt.Printf("🧠 Connecting to OpenAI Realtime API (model: %s, VAD silence: %dms)... ", *modelFlag, *vadSilenceFlag)
+	if err := connectRealtime(openaiKey, *modelFlag, *vadSilenceFlag); err != nil {
 		fmt.Printf("❌ Failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -693,14 +694,15 @@ func startWebDashboard(ctx context.Context) {
 
 		// Get tool config - Motion routes through RateController (Issue #139)
 		cfg := eva.ToolsConfig{
-			Robot:          httpCtrl,  // For non-motion (volume, status) - always HTTP
-			Motion:         rateCtrl,   // For all motion (head, antennas, body)
-			Memory:         memoryStore,
-			Vision:         &videoVisionAdapter{videoClient},
-			ObjectDetector: &yoloAdapter{objectDetector},
-			GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
-			AudioPlayer:    audioPlayer,
-			Tracker:        headTracker,
+			Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+			Motion:             rateCtrl,    // For all motion (head, antennas, body)
+			Memory:             memoryStore,
+			Vision:             &videoVisionAdapter{videoClient},
+			ObjectDetector:     &yoloAdapter{objectDetector},
+			GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
+			AudioPlayer:        audioPlayer,
+			Tracker:            headTracker,
+			TrackingController: headTracker, // For pausing during emotions
 		}
 
 		// Get tools and find the one requested
@@ -1081,8 +1083,9 @@ func connectWebRTC() error {
 	return videoClient.Connect()
 }
 
-func connectRealtime(apiKey, model string) error {
+func connectRealtime(apiKey, model string, vadSilenceMs int) error {
 	realtimeClient = openai.NewClient(apiKey, model)
+	realtimeClient.SetSilenceDuration(vadSilenceMs)
 
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
@@ -1090,18 +1093,19 @@ func connectRealtime(apiKey, model string) error {
 	// Register Eva's tools with vision and tracking support
 	// Motion routes through RateController to prevent HTTP racing (Issue #139)
 	toolsCfg := eva.ToolsConfig{
-		Robot:           httpCtrl,  // For non-motion (volume, status) - always HTTP
-		Motion:          rateCtrl,   // For all motion (head, antennas, body)
-		Memory:          memoryStore,
-		Vision:          &videoVisionAdapter{videoClient},
-		ObjectDetector:  &yoloAdapter{objectDetector},
-		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:     audioPlayer,
-		Tracker:         headTracker, // For body rotation sync
-		Emotions:        emotionRegistry,
-		SparkStore:      sparkStore,      // Idea collection
-		SparkGemini:     sparkGemini,     // Gemini for title/tag generation
-		SparkGoogleDocs: sparkGoogleDocs, // Google Docs for syncing
+		Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+		Motion:             rateCtrl,    // For all motion (head, antennas, body)
+		Memory:             memoryStore,
+		Vision:             &videoVisionAdapter{videoClient},
+		ObjectDetector:     &yoloAdapter{objectDetector},
+		GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:        audioPlayer,
+		Tracker:            headTracker, // For body rotation sync
+		TrackingController: headTracker, // For pausing during emotions
+		Emotions:           emotionRegistry,
+		SparkStore:         sparkStore,      // Idea collection
+		SparkGemini:        sparkGemini,     // Gemini for title/tag generation
+		SparkGoogleDocs:    sparkGoogleDocs, // Google Docs for syncing
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {

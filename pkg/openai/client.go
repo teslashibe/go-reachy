@@ -38,6 +38,9 @@ type Client struct {
 	tools    []Tool
 	toolsMap map[string]Tool
 
+	// VAD settings
+	silenceDurationMs int // Default 300, can be set to 200 for faster response
+
 	// Session state
 	sessionID    string
 	connected    bool
@@ -65,11 +68,19 @@ func NewClient(apiKey, model string) *Client {
 		model = DefaultModel
 	}
 	return &Client{
-		apiKey:   apiKey,
-		model:    model,
-		tools:    []Tool{},
-		toolsMap: make(map[string]Tool),
+		apiKey:            apiKey,
+		model:             model,
+		tools:             []Tool{},
+		toolsMap:          make(map[string]Tool),
+		silenceDurationMs: 300, // Default: balanced latency/accuracy
 	}
+}
+
+// SetSilenceDuration sets the VAD silence duration in milliseconds.
+// Lower values (200ms) = faster response but may cut off speech.
+// Higher values (500ms) = more accurate but slower response.
+func (c *Client) SetSilenceDuration(ms int) {
+	c.silenceDurationMs = ms
 }
 
 // RegisterTool adds a tool that Eva can use during conversation.
@@ -146,7 +157,7 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 				"type":                "server_vad",
 				"threshold":           0.5,
 				"prefix_padding_ms":   300,
-				"silence_duration_ms": 300,
+				"silence_duration_ms": c.silenceDurationMs,
 			},
 			"tools":       apiTools,
 			"tool_choice": "auto",
