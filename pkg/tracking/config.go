@@ -43,6 +43,7 @@ type Config struct {
 
 	// Logging
 	LogThreshold float64 // Only log movements larger than this (radians)
+	DebugEnabled bool    // Enable verbose tracking debug logs (face detection, not moving, etc.)
 
 	// Body rotation (when head reaches mechanical limits)
 	BodyRotationThreshold float64 // Trigger rotation when head yaw exceeds this fraction of YawRange (0-1)

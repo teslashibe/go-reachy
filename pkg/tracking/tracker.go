@@ -157,6 +157,14 @@ func (t *Tracker) Close() error {
 	return nil
 }
 
+// debugLog logs only when tracking debug is enabled (--tracking-debug flag).
+// Use this for high-frequency logs that would otherwise flood the console.
+func (t *Tracker) debugLog(format string, args ...interface{}) {
+	if t.config.DebugEnabled {
+		debug.Log(format, args...)
+	}
+}
+
 // SetStateUpdater sets the dashboard state updater
 func (t *Tracker) SetStateUpdater(state StateUpdater) {
 	t.state = state
@@ -588,14 +596,16 @@ func (t *Tracker) updateMovement() {
 
 	// Debug: log when we're not moving and why
 	if !yawShouldMove && !pitchShouldMove {
-		// Only log occasionally to avoid spam
+		// Only log occasionally to avoid spam (requires --tracking-debug)
 		if hasFace {
 			headYaw := t.controller.GetCurrentYaw()
-			debug.Log("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
+			t.debugLog("⏸️  Not moving: headYaw=%.2f, error=%.3f (deadzone=%.3f), at limit=%v\n",
 				headYaw, t.controller.GetError(), t.config.ControlDeadZone,
 				math.Abs(headYaw) > t.config.YawRange*0.95)
 		}
-		// STILL check body alignment even when head not moving!
+		// STILL output current pose to keep RateController updated (Issue #135 fix)
+		// Without this, offset mode would send stale values
+		t.outputPose(newYaw, newPitch, t.controller.GetTargetYaw())
 		t.checkBodyAlignment()
 		return
 	}
@@ -626,6 +636,12 @@ func (t *Tracker) outputPose(yaw, pitch, targetAngle float64) {
 	if handler != nil {
 		// Offset mode: output for fusion with unified controller
 		handler(robot.Offset{Roll: finalRoll, Pitch: finalPitch, Yaw: finalYaw})
+		// Log significant movements (requires --tracking-debug)
+		if math.Abs(yaw-t.lastLoggedYaw) > t.config.LogThreshold {
+			t.debugLog("🔄 Head offset: yaw=%.2f pitch=%.2f (target=%.2f)\n",
+				finalYaw, finalPitch, targetAngle)
+			t.lastLoggedYaw = yaw
+		}
 	} else if t.robot != nil {
 		// Direct mode: control robot directly
 		err := t.robot.SetHeadPose(finalRoll, finalPitch, finalYaw)
@@ -1087,10 +1103,10 @@ func (t *Tracker) detectAndUpdate() {
 		dist = entity.Distance
 	}
 	if dist > 0 {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad, dist %.1fm\n",
+		t.debugLog("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad, dist %.1fm\n",
 			frameX, frameY, yawOffset, pitchOffset, dist)
 	} else {
-		debug.Log("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad\n",
+		t.debugLog("👁️  Face at (%.0f%%, %.0f%%) → yaw offset %.2f rad, pitch offset %.2f rad\n",
 			frameX, frameY, yawOffset, pitchOffset)
 	}
 

@@ -163,6 +163,7 @@ func (a *webStateAdapter) AddLog(logType, message string) {
 func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	trackingDebugFlag := flag.Bool("tracking-debug", false, "Enable verbose tracking logs (face detection, movement)")
 	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
 	modelFlag := flag.String("model", "gpt-realtime-2025-08-28", "OpenAI Realtime model (e.g., gpt-realtime-2025-08-28)")
 	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
@@ -359,8 +360,10 @@ func main() {
 	// Uses offset mode (nil robot) to route through centralized RateController (Issue #135)
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
+	trackingConfig := tracking.DefaultConfig()
+	trackingConfig.DebugEnabled = *trackingDebugFlag // Pass --tracking-debug flag
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), nil, videoClient, modelPath)
+	headTracker, err = tracking.New(trackingConfig, nil, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
