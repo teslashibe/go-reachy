@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	RealtimeURL = "wss://api.openai.com/v1/realtime"
-	Model       = "gpt-4o-realtime-preview-2024-12-17"
+	RealtimeURL  = "wss://api.openai.com/v1/realtime"
+	DefaultModel = "gpt-realtime-2025-08-28"
 )
 
 // Tool represents a function that Eva can use.
@@ -30,6 +30,7 @@ type Tool struct {
 // Client manages the WebSocket connection to OpenAI Realtime API.
 type Client struct {
 	apiKey string
+	model  string
 	ws     *websocket.Conn
 	wsMu   sync.Mutex
 
@@ -58,9 +59,14 @@ type Client struct {
 }
 
 // NewClient creates a new Realtime API client.
-func NewClient(apiKey string) *Client {
+// If model is empty, DefaultModel is used.
+func NewClient(apiKey, model string) *Client {
+	if model == "" {
+		model = DefaultModel
+	}
 	return &Client{
 		apiKey:   apiKey,
+		model:    model,
 		tools:    []Tool{},
 		toolsMap: make(map[string]Tool),
 	}
@@ -74,7 +80,7 @@ func (c *Client) RegisterTool(tool Tool) {
 
 // Connect establishes WebSocket connection to OpenAI Realtime API.
 func (c *Client) Connect() error {
-	url := fmt.Sprintf("%s?model=%s", RealtimeURL, Model)
+	url := fmt.Sprintf("%s?model=%s", RealtimeURL, c.model)
 
 	header := make(map[string][]string)
 	header["Authorization"] = []string{"Bearer " + c.apiKey}
@@ -386,6 +392,11 @@ func (c *Client) IsConnected() bool {
 // IsReady returns whether the session is ready for conversation.
 func (c *Client) IsReady() bool {
 	return c.sessionReady
+}
+
+// Model returns the model being used.
+func (c *Client) Model() string {
+	return c.model
 }
 
 

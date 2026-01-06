@@ -123,6 +123,11 @@ var (
 	speaking   bool
 	speakingMu sync.Mutex
 
+	// Audio control flags (dashboard mute/pause)
+	evaPaused bool       // Eva completely paused
+	evaMuted  bool       // Microphone muted only
+	pauseMu   sync.Mutex // Protects evaPaused and evaMuted
+
 	// TTS mode: "realtime", "elevenlabs", "elevenlabs-streaming", or "openai-tts"
 	ttsMode string
 
@@ -158,6 +163,7 @@ func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
 	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
+	modelFlag := flag.String("model", "gpt-realtime-2025-08-28", "OpenAI Realtime model (e.g., gpt-realtime-2025-08-28)")
 	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
@@ -442,8 +448,8 @@ func main() {
 	}
 
 	// Connect to OpenAI Realtime API
-	fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
-	if err := connectRealtime(openaiKey); err != nil {
+	fmt.Printf("🧠 Connecting to OpenAI Realtime API (model: %s)... ", *modelFlag)
+	if err := connectRealtime(openaiKey, *modelFlag); err != nil {
 		fmt.Printf("❌ Failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -897,6 +903,29 @@ func startWebDashboard(ctx context.Context) {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
 	}
 
+	// Wire up audio control callbacks (pause/mute from dashboard)
+	webServer.OnSetPaused = func(paused bool) {
+		pauseMu.Lock()
+		evaPaused = paused
+		pauseMu.Unlock()
+		if paused {
+			fmt.Println("⏸️  Eva PAUSED from dashboard")
+		} else {
+			fmt.Println("▶️  Eva RESUMED from dashboard")
+		}
+	}
+
+	webServer.OnSetListening = func(enabled bool) {
+		pauseMu.Lock()
+		evaMuted = !enabled
+		pauseMu.Unlock()
+		if enabled {
+			fmt.Println("🎤 Microphone UNMUTED from dashboard")
+		} else {
+			fmt.Println("🔇 Microphone MUTED from dashboard")
+		}
+	}
+
 	// Start server in goroutine
 	go func() {
 		if err := webServer.Start(); err != nil {
@@ -1003,8 +1032,8 @@ func connectWebRTC() error {
 	return videoClient.Connect()
 }
 
-func connectRealtime(apiKey string) error {
-	realtimeClient = openai.NewClient(apiKey)
+func connectRealtime(apiKey, model string) error {
+	realtimeClient = openai.NewClient(apiKey, model)
 
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
@@ -1239,6 +1268,17 @@ func streamAudioToRealtime(ctx context.Context) {
 		speakingMu.Unlock()
 
 		if isSpeaking {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		// Don't send audio if Eva is paused or muted
+		pauseMu.Lock()
+		isPaused := evaPaused
+		isMuted := evaMuted
+		pauseMu.Unlock()
+
+		if isPaused || isMuted {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}

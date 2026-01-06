@@ -118,3 +118,74 @@ func (s *Server) handleStatusWS(c *websocket.Conn) {
 	client := hub.NewClient(s.statusHub, c)
 	client.Run()
 }
+
+// handleSetPaused pauses or resumes Eva completely
+func (s *Server) handleSetPaused(c *fiber.Ctx) error {
+	var req struct {
+		Paused bool `json:"paused"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid JSON: " + err.Error(),
+		})
+	}
+
+	if s.OnSetPaused != nil {
+		s.OnSetPaused(req.Paused)
+	}
+
+	// Update state
+	s.UpdateState(func(state *EvaState) {
+		state.Paused = req.Paused
+		if req.Paused {
+			state.Listening = false
+		}
+	})
+
+	status := "running"
+	if req.Paused {
+		status = "paused"
+	}
+
+	s.AddLog("info", "Eva "+status)
+
+	return c.JSON(fiber.Map{
+		"paused": req.Paused,
+		"status": status,
+	})
+}
+
+// handleSetListening mutes or unmutes the microphone
+func (s *Server) handleSetListening(c *fiber.Ctx) error {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid JSON: " + err.Error(),
+		})
+	}
+
+	if s.OnSetListening != nil {
+		s.OnSetListening(req.Enabled)
+	}
+
+	// Update state
+	s.UpdateState(func(state *EvaState) {
+		state.Muted = !req.Enabled
+		state.Listening = req.Enabled && !state.Paused
+	})
+
+	status := "listening"
+	if !req.Enabled {
+		status = "muted"
+	}
+
+	s.AddLog("info", "Microphone "+status)
+
+	return c.JSON(fiber.Map{
+		"listening": req.Enabled,
+		"muted":     !req.Enabled,
+		"status":    status,
+	})
+}

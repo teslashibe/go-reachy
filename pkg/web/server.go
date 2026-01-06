@@ -19,6 +19,8 @@ type EvaState struct {
 	WebRTCConnected  bool    `json:"webrtc_connected"`
 	Speaking         bool    `json:"speaking"`
 	Listening        bool    `json:"listening"`
+	Paused           bool    `json:"paused"`  // Eva completely paused (not listening or responding)
+	Muted            bool    `json:"muted"`   // Microphone muted (not listening but can respond to tools)
 	HeadYaw          float64 `json:"head_yaw"`
 	FacePosition     float64 `json:"face_position"` // 0-100%
 	ActiveTimer      string  `json:"active_timer"`
@@ -84,11 +86,15 @@ type Server struct {
 	OnSparkDisconnect   func() error
 
 	// Spark CRUD callbacks
-	OnSparkList     func() interface{}
-	OnSparkGet      func(id string) interface{}
-	OnSparkSync     func(id string) error
-	OnSparkDelete   func(id string) error
-	OnSparkGenPlan  func(id string) error
+	OnSparkList    func() interface{}
+	OnSparkGet     func(id string) interface{}
+	OnSparkSync    func(id string) error
+	OnSparkDelete  func(id string) error
+	OnSparkGenPlan func(id string) error
+
+	// Audio control callbacks
+	OnSetPaused    func(paused bool)  // Pause/resume Eva completely
+	OnSetListening func(enabled bool) // Mute/unmute microphone
 }
 
 // NewServer creates a new web dashboard server
@@ -144,6 +150,10 @@ func NewServer(port string) *Server {
 	api.Post("/sparks/:id/sync", s.handleSparkSyncOne)
 	api.Post("/sparks/:id/plan", s.handleSparkGenPlan)
 	api.Delete("/sparks/:id", s.handleSparkDeleteOne)
+
+	// Audio control routes
+	api.Post("/paused", s.handleSetPaused)
+	api.Post("/listening", s.handleSetListening)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
