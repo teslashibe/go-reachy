@@ -5,7 +5,6 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/audio"
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
-	"github.com/teslashibe/go-reachy/pkg/movement"
 	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/vision"
@@ -50,25 +49,17 @@ type Tool struct {
 	Handler     func(args map[string]interface{}) (string, error)
 }
 
-// MoveQueuer allows queueing primary moves (emotions, dances).
-type MoveQueuer interface {
-	QueueMove(move movement.Move)
-	IsMovePlaying() bool
-	StopMove()
-}
-
 // ToolsConfig holds dependencies for Eva's tools.
 type ToolsConfig struct {
-	Robot              robot.Controller        // For non-motion ops (volume, status)
-	Motion             MotionController        // For all motion (head, antennas, body) - Issue #139
-	MovementManager    MoveQueuer              // For primary moves (emotions) - Issue #151
+	Robot              robot.Controller   // For non-motion ops (volume, status)
+	Motion             MotionController   // For all motion (head, antennas, body) - Issue #139
 	Memory             *memory.Memory
 	Vision             vision.Provider
 	ObjectDetector     ObjectDetector
 	GoogleAPIKey       string
 	AudioPlayer        *audio.Player
 	Tracker            BodyYawNotifier
-	TrackingController TrackingController      // DEPRECATED: Use MovementManager instead
+	TrackingController TrackingController // For pausing tracking during emotions
 	Emotions           *emotions.Registry
 	SparkStore         *spark.JSONStore        // Spark idea storage
 	SparkGemini        *spark.GeminiClient     // Spark Gemini for title/tag generation

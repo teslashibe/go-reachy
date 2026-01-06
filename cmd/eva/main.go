@@ -18,7 +18,6 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/eva"
 	"github.com/teslashibe/go-reachy/pkg/memory"
-	"github.com/teslashibe/go-reachy/pkg/movement"
 	"github.com/teslashibe/go-reachy/pkg/openai"
 	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/spark"
@@ -110,8 +109,7 @@ var (
 	audioPlayer     *audio.Player
 	robotCtrl       robot.MotionController  // Motion control (HTTP or Zenoh)
 	httpCtrl        *robot.HTTPController   // HTTP-only ops (status, volume)
-	rateCtrl        *robot.RateController   // Centralized rate-limited controller (Issue #135) - DEPRECATED
-	movementMgr     *movement.Manager       // MovementManager for primary/secondary moves (Issue #151)
+	rateCtrl        *robot.RateController // Centralized rate-limited controller (Issue #135)
 	memoryStore     *memory.Memory
 	sparkStore      *spark.JSONStore
 	sparkGemini     *spark.GeminiClient
@@ -377,13 +375,11 @@ func main() {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
-		// Route tracker offsets through MovementManager (Issue #151)
-		// This allows face tracking to run continuously, even during emotions
+		// Route tracker offsets through centralized RateController
 		headTracker.SetOffsetHandler(func(offset robot.Offset) {
-			movementMgr.SetFaceTrackingOffset(offset)
-			rateCtrl.SetTrackingOffset(offset) // Legacy fallback
+			rateCtrl.SetTrackingOffset(offset)
 		})
-		fmt.Println("✅ (offset mode → MovementManager)")
+		fmt.Println("✅ (offset mode → RateController)")
 	}
 
 	// Initialize YOLO object detection
@@ -437,7 +433,7 @@ func main() {
 			fmt.Println("🚫 Body rotation DISABLED (--no-body flag)")
 		} else {
 			// Returns actual delta for head counter-rotation (Issue #79 fix)
-			// Routes through MovementManager (Issue #151)
+			// Routes through centralized RateController (Issue #135)
 			headTracker.SetBodyRotationHandler(func(direction float64) float64 {
 				currentBody := headTracker.GetBodyYaw()
 				newBody := currentBody + direction
@@ -456,31 +452,27 @@ func main() {
 				debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
 					currentBody, newBody, actualDelta, limit)
 
-				// Route through MovementManager
-				movementMgr.SetBodyYaw(newBody)
-				rateCtrl.SetBodyYaw(newBody)    // Legacy fallback
+				// Route through RateController instead of direct HTTP call
+				rateCtrl.SetBodyYaw(newBody)
 				headTracker.SetBodyYaw(newBody) // Sync world model
 
 				return actualDelta // Return actual movement for head counter-rotation
 			})
-			fmt.Println("🔄 Auto body rotation enabled (→ MovementManager)")
+			fmt.Println("🔄 Auto body rotation enabled (→ RateController)")
 		}
 
 		// Enable antenna breathing animation (matches Python reachy)
-		// Route through MovementManager (Issue #151)
+		// Route through RateController to prevent HTTP racing (Issue #139)
 		headTracker.SetAntennaHandler(func(left, right float64) {
-			movementMgr.SetAntennas(left, right)
-			rateCtrl.SetAntennas(left, right) // Legacy fallback
+			rateCtrl.SetAntennas(left, right)
 		})
-		fmt.Println("😮‍💨 Breathing antenna sway enabled (→ MovementManager)")
+		fmt.Println("😮‍💨 Breathing antenna sway enabled (→ RateController)")
 
 		// Initialize speech wobbler for natural speaking gestures
-		// Route through MovementManager as secondary offset (Issue #151)
 		speechWobbler = speech.NewWobbler(func(roll, pitch, yaw float64) {
-			movementMgr.SetSpeechOffset(robot.Offset{Roll: roll, Pitch: pitch, Yaw: yaw})
-			headTracker.SetSpeechOffsets(roll, pitch, yaw) // Legacy fallback
+			headTracker.SetSpeechOffsets(roll, pitch, yaw)
 		})
-		fmt.Println("😮‍💨 Speech wobble enabled (→ MovementManager)")
+		fmt.Println("😮‍💨 Speech wobble enabled")
 	}
 
 	// Connect to OpenAI Realtime API
@@ -560,18 +552,12 @@ func initialize() error {
 		robotCtrl = httpCtrl // Reuse HTTP controller for motion
 	}
 
-	// Create MovementManager (Issue #151)
-	// This replaces RateController with a primary/secondary move architecture:
-	// - Primary moves (emotions) set the base pose
-	// - Secondary offsets (face tracking) are composed on top
-	// - Single 30Hz control loop sends ONE command per tick
-	movementMgr = movement.NewManager(robotCtrl, 33*time.Millisecond) // 30Hz
-	go movementMgr.Run() // Start control loop in background
-
-	// Create legacy RateController for backward compatibility during transition
-	// TODO: Remove once MovementManager is fully tested
+	// Create rate-limited controller (centralizes all robot commands)
+	// This prevents daemon flooding by batching all updates into ONE HTTP call per tick (Issue #135)
+	// Before: 50-100+ HTTP requests/second from multiple sources
+	// After: 30 HTTP requests/second (one batched call every 33ms, matches Python reachy)
 	rateCtrl = robot.NewRateController(robotCtrl, 50*time.Millisecond)
-	go rateCtrl.Run()
+	go rateCtrl.Run() // Start control loop in background
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
 	homeDir, _ := os.UserHomeDir()
@@ -706,19 +692,17 @@ func startWebDashboard(ctx context.Context) {
 	webServer.OnToolTrigger = func(name string, args map[string]interface{}) (string, error) {
 		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
 
-		// Get tool config - Motion routes through MovementManager (Issue #151)
+		// Get tool config - Motion routes through RateController (Issue #139)
 		cfg := eva.ToolsConfig{
-			Robot:              httpCtrl,      // For non-motion (volume, status) - always HTTP
-			Motion:             movementMgr,   // For direct motion commands
-			MovementManager:    movementMgr,   // For primary moves (emotions)
+			Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+			Motion:             rateCtrl,    // For all motion (head, antennas, body)
 			Memory:             memoryStore,
 			Vision:             &videoVisionAdapter{videoClient},
 			ObjectDetector:     &yoloAdapter{objectDetector},
 			GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
 			AudioPlayer:        audioPlayer,
 			Tracker:            headTracker,
-			TrackingController: headTracker,   // Legacy fallback
-			Emotions:           emotionRegistry,
+			TrackingController: headTracker, // For pausing during emotions
 		}
 
 		// Get tools and find the one requested
@@ -1080,9 +1064,9 @@ func wakeUpRobot() error {
 
 	// Reset body to neutral position at startup
 	// This ensures known initial state and matches Python reachy behavior
-	// Routes through MovementManager (Issue #151)
-	if movementMgr != nil {
-		movementMgr.SetBodyYaw(0.0)
+	// Routes through RateController for consistency (Issue #135)
+	if rateCtrl != nil {
+		rateCtrl.SetBodyYaw(0.0)
 		debug.Log("🔄 Body reset to neutral (0.0 rad)\n")
 		// Sync head tracker's world model with the physical robot state
 		if headTracker != nil {
@@ -1107,18 +1091,17 @@ func connectRealtime(apiKey, model string, vadSilenceMs int) error {
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
-	// Motion routes through MovementManager (Issue #151)
+	// Motion routes through RateController to prevent HTTP racing (Issue #139)
 	toolsCfg := eva.ToolsConfig{
-		Robot:              httpCtrl,        // For non-motion (volume, status) - always HTTP
-		Motion:             movementMgr,     // For direct motion commands
-		MovementManager:    movementMgr,     // For primary moves (emotions)
+		Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+		Motion:             rateCtrl,    // For all motion (head, antennas, body)
 		Memory:             memoryStore,
 		Vision:             &videoVisionAdapter{videoClient},
 		ObjectDetector:     &yoloAdapter{objectDetector},
 		GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
 		AudioPlayer:        audioPlayer,
-		Tracker:            headTracker,     // For body rotation sync
-		TrackingController: headTracker,     // Legacy fallback
+		Tracker:            headTracker, // For body rotation sync
+		TrackingController: headTracker, // For pausing during emotions
 		Emotions:           emotionRegistry,
 		SparkStore:         sparkStore,      // Idea collection
 		SparkGemini:        sparkGemini,     // Gemini for title/tag generation
