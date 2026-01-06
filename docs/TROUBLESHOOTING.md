@@ -382,6 +382,27 @@ sshpass -p "root" ssh pollen@192.168.68.83 "echo 'root' | sudo -S systemctl rest
 
 ## Performance Tuning
 
+### Reduce WebRTC Video Resolution (RECOMMENDED)
+
+The default 1080p video encoding consumes ~54% CPU. Reducing to 720p saves ~40% CPU:
+
+```bash
+# SSH to robot
+ssh pollen@192.168.68.83
+
+# Change default resolution from 1080p to 720p
+sudo sed -i 's/R1920x1080at30fps/R1280x720at30fps/g' \
+  /venvs/mini_daemon/lib/python3.12/site-packages/reachy_mini/media/camera_constants.py
+
+# Restart daemon
+sudo systemctl restart reachy-mini-daemon
+```
+
+| Resolution | Pixels | Encoding CPU |
+|------------|--------|--------------|
+| 1920x1080 | 2,073,600 | ~54% |
+| **1280x720** | 921,600 | **~25-30%** |
+
 ### Reduce go-reachy Control Loop Frequency
 The default control loop runs at 20Hz. If experiencing issues, this can be reduced by modifying `cmd/eva/main.go`:
 ```go
