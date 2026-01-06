@@ -242,11 +242,11 @@ func (t *Tracker) SetEnabled(enabled bool) {
 		t.disabledAt = time.Time{}
 		t.isFaceEnabled = true
 		t.isAudioEnabled = true
-		debug.Logln("👁️  Head tracking enabled (face + audio)")
+		fmt.Printf("👁️  [%s] Head tracking ENABLED (face + audio)\n", time.Now().Format("15:04:05.000"))
 	} else {
 		// Disabling: record time for delayed return to neutral
 		t.disabledAt = time.Now()
-		debug.Logln("👁️  Head tracking disabled (all)")
+		fmt.Printf("👁️  [%s] Head tracking DISABLED\n", time.Now().Format("15:04:05.000"))
 	}
 }
 

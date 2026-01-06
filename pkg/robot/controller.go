@@ -228,6 +228,14 @@ func (c *RateController) tick() {
 		return // Skip sending - position hasn't changed enough
 	}
 
+	// DEBUG: Log large movements (potential crash culprits)
+	if headDiff > 0.1 { // > ~6 degrees
+		fmt.Printf("⚡ [%s] LARGE HEAD MOVE: diff=%.3f rad (%.1f°), from=(%.3f,%.3f,%.3f) to=(%.3f,%.3f,%.3f)\n",
+			time.Now().Format("15:04:05.000"), headDiff, headDiff*57.3,
+			c.lastSentHead.Roll, c.lastSentHead.Pitch, c.lastSentHead.Yaw,
+			combined.Roll, combined.Pitch, combined.Yaw)
+	}
+
 	// Single batched call - prevents daemon flooding
 	err := c.robot.SetPose(&combined, &antennas, &bodyYaw)
 

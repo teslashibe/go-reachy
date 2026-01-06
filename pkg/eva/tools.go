@@ -80,28 +80,38 @@ func Tools(cfg ToolsConfig) []Tool {
 					return fmt.Sprintf("Emotion '%s' not found", emotionName), nil
 				}
 
-				fmt.Printf("🎭 Playing emotion: %s (%.1fs)\n", emotionName, emotion.Duration.Seconds())
+				emotionStart := time.Now()
+				fmt.Printf("🎭 [%s] Playing emotion: %s (%.1fs)\n", emotionStart.Format("15:04:05.000"), emotionName, emotion.Duration.Seconds())
 
 				// Play asynchronously - pause tracking during emotion to prevent conflicts
 				go func() {
 					// Pause tracking to prevent head movement conflicts
 					if cfg.TrackingController != nil {
 						cfg.TrackingController.SetEnabled(false)
-						fmt.Println("⏸️  Tracking paused for emotion")
+						fmt.Printf("⏸️  [%s] Tracking DISABLED for emotion\n", time.Now().Format("15:04:05.000"))
 					}
 
 					ctx := context.Background()
+					playStart := time.Now()
+					fmt.Printf("🎭 [%s] Emotion playback STARTING\n", playStart.Format("15:04:05.000"))
+					
 					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
-						fmt.Printf("🎭 Emotion playback error: %v\n", err)
+						fmt.Printf("🎭 [%s] Emotion playback ERROR: %v\n", time.Now().Format("15:04:05.000"), err)
 					}
+					
+					playEnd := time.Now()
+					fmt.Printf("🎭 [%s] Emotion playback COMPLETE (took %.2fs)\n", playEnd.Format("15:04:05.000"), playEnd.Sub(playStart).Seconds())
 
 					// Delay before resuming tracking to let robot settle
+					fmt.Printf("⏳ [%s] Waiting 500ms before resuming tracking...\n", time.Now().Format("15:04:05.000"))
 					time.Sleep(500 * time.Millisecond)
 
 					// Resume tracking after emotion completes
 					if cfg.TrackingController != nil {
+						resumeTime := time.Now()
+						fmt.Printf("▶️  [%s] About to ENABLE tracking (%.2fs since emotion start)\n", resumeTime.Format("15:04:05.000"), resumeTime.Sub(emotionStart).Seconds())
 						cfg.TrackingController.SetEnabled(true)
-						fmt.Println("▶️  Tracking resumed")
+						fmt.Printf("▶️  [%s] Tracking ENABLED\n", time.Now().Format("15:04:05.000"))
 					}
 				}()
 
