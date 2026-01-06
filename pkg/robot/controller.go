@@ -6,9 +6,37 @@ import (
 	"time"
 )
 
+// Physical head limits (radians) - matches Python reachy move_head.py
+// These are safety limits to prevent sending impossible commands to the daemon.
+const (
+	MaxHeadRoll  = 0.35 // ±20° (conservative)
+	MaxHeadPitch = 0.52 // ±30° (matches Python)
+	MaxHeadYaw   = 0.70 // ±40° (matches Python)
+)
+
+// clamp restricts v to the range [min, max].
+func clamp(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 // Offset represents additive head adjustments (roll, pitch, yaw in radians)
 type Offset struct {
 	Roll, Pitch, Yaw float64
+}
+
+// Clamp returns a new Offset with values clamped to physical head limits.
+func (o Offset) Clamp() Offset {
+	return Offset{
+		Roll:  clamp(o.Roll, -MaxHeadRoll, MaxHeadRoll),
+		Pitch: clamp(o.Pitch, -MaxHeadPitch, MaxHeadPitch),
+		Yaw:   clamp(o.Yaw, -MaxHeadYaw, MaxHeadYaw),
+	}
 }
 
 // Add returns a new Offset that is the sum of o and other
@@ -143,6 +171,10 @@ func (c *RateController) tick() {
 	antennas := c.antennas
 	bodyYaw := c.bodyYaw
 	c.mu.RUnlock()
+
+	// Clamp to physical head limits (Issue #141)
+	// Prevents sending impossible commands when tracking outputs world-model values
+	combined = combined.Clamp()
 
 	if c.robot == nil {
 		return
