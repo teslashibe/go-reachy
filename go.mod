@@ -10,7 +10,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/rtp v1.9.0
 	github.com/pion/webrtc/v3 v3.3.6
-	github.com/teslashibe/zenoh-go v0.0.0-00010101000000-000000000000
+	github.com/teslashibe/zenoh-go v0.1.0-alpha
 	gocv.io/x/gocv v0.42.0
 	golang.org/x/oauth2 v0.34.0
 	google.golang.org/api v0.258.0
