@@ -113,9 +113,10 @@ func (c *RateController) SetBaseHead(offset Offset) {
 
 // SetTrackingOffset sets the face tracking offset (additive).
 // This is combined with the base head pose each tick.
+// Input is clamped to physical limits to prevent PDController drift from causing issues.
 func (c *RateController) SetTrackingOffset(offset Offset) {
 	c.mu.Lock()
-	c.trackingHead = offset
+	c.trackingHead = offset.Clamp() // Clamp to physical limits on input
 	c.mu.Unlock()
 }
 
@@ -242,6 +243,9 @@ func (c *RateController) tick() {
 		combined.Pitch = c.lastSentHead.Pitch + pitchStep
 		combined.Yaw = c.lastSentHead.Yaw + yawStep
 		
+		// Re-clamp after rate limiting to prevent drift beyond physical limits
+		combined = combined.Clamp()
+		
 		fmt.Printf("⚡ [%s] RATE-LIMITED: clamped %.1f° to %.1f° step\n",
 			time.Now().Format("15:04:05.000"), headDiff*57.3, MaxStepRad*57.3)
 	}
@@ -249,12 +253,15 @@ func (c *RateController) tick() {
 	// Single batched call - prevents daemon flooding
 	err := c.robot.SetPose(&combined, &antennas, &bodyYaw)
 
-	if err == nil {
-		// Update last sent values on success
-		c.lastSentHead = combined
-		c.lastSentAntennas = antennas
-		c.lastSentBodyYaw = bodyYaw
-	} else {
+	// ALWAYS update last sent values - even on error!
+	// This prevents "infinite diff" bug when robot disconnects:
+	// - Without this: lastSentHead frozen → diff stays large → rate-limit forever
+	// - With this: internal state progresses smoothly, robot gets latest on reconnect
+	c.lastSentHead = combined
+	c.lastSentAntennas = antennas
+	c.lastSentBodyYaw = bodyYaw
+
+	if err != nil {
 		// Log errors (but don't spam - max once per 5 seconds)
 		c.errorCount++
 		if c.lastErrorTime.IsZero() || time.Since(c.lastErrorTime) > 5*time.Second {
