@@ -94,6 +94,66 @@ func Tools(cfg ToolsConfig) []Tool {
 			},
 		},
 		{
+			Name:        "express_emotion",
+			Description: `Express an emotion through body language and animation. This is an alias for play_emotion. Available emotions: happy, sad, surprised, angry, curious, confused, excited, tired, scared, proud, grateful, shy, and many more specific variations like cheerful1, dance1, laughing1, etc.`,
+			Parameters: map[string]interface{}{
+				"emotion": map[string]interface{}{
+					"type":        "string",
+					"description": "Name of the emotion to express (e.g., 'happy', 'curious', 'excited', 'cheerful1')",
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				emotionName, _ := args["emotion"].(string)
+				if emotionName == "" {
+					return "Please specify an emotion name", nil
+				}
+
+				if cfg.Emotions == nil {
+					return "Emotion system not available", nil
+				}
+
+				// Map common emotion names to specific animations
+				emotionMap := map[string]string{
+					"happy":     "cheerful1",
+					"sad":       "sad1",
+					"surprised": "surprised1",
+					"angry":     "rage1",
+					"curious":   "curious1",
+					"confused":  "confused1",
+					"excited":   "dance1",
+					"tired":     "tired1",
+					"scared":    "scared1",
+					"proud":     "proud1",
+					"grateful":  "grateful1",
+					"shy":       "shy1",
+				}
+				if mapped, ok := emotionMap[emotionName]; ok {
+					emotionName = mapped
+				}
+
+				// Check if emotion exists
+				emotion, err := cfg.Emotions.Get(emotionName)
+				if err != nil {
+					matches := cfg.Emotions.Search(emotionName)
+					if len(matches) > 0 {
+						return fmt.Sprintf("Emotion '%s' not found. Did you mean: %s?", emotionName, strings.Join(matches[:min(5, len(matches))], ", ")), nil
+					}
+					return fmt.Sprintf("Emotion '%s' not found", emotionName), nil
+				}
+
+				fmt.Printf("🎭 Expressing emotion: %s (%.1fs)\n", emotionName, emotion.Duration.Seconds())
+
+				go func() {
+					ctx := context.Background()
+					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
+						fmt.Printf("🎭 Emotion playback error: %v\n", err)
+					}
+				}()
+
+				return fmt.Sprintf("Expressing: %s - %s", emotionName, emotion.Description), nil
+			},
+		},
+		{
 			Name:        "stop_emotion",
 			Description: "Stop the currently playing emotion animation.",
 			Parameters:  map[string]interface{}{},
