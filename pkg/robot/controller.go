@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -20,11 +21,13 @@ func (o Offset) Add(other Offset) Offset {
 }
 
 // MotionController is the interface needed by the rate-limited Controller.
-// It combines head, antenna, and body control for the control loop.
+// It combines head, antenna, body, and batched pose control for the control loop.
+// The PoseController interface is used by tick() to send all updates in one HTTP call.
 type MotionController interface {
 	HeadController
 	AntennaController
 	BodyController
+	PoseController
 }
 
 // RateController provides unified robot control at a fixed rate.
@@ -41,6 +44,11 @@ type RateController struct {
 
 	rate time.Duration // Control loop tick rate
 	stop chan struct{}
+
+	// Diagnostics (Issue #136)
+	tickCount     uint64    // Total ticks since start
+	errorCount    uint64    // Number of SetPose errors
+	lastErrorTime time.Time // Last error timestamp (avoid spam)
 }
 
 // NewRateController creates a rate-limited controller running at the given rate.
@@ -127,6 +135,8 @@ func (c *RateController) Run() {
 }
 
 // tick executes one control cycle: fuse poses and send to robot.
+// Uses batched SetPose() to send all updates in ONE HTTP call instead of three.
+// This prevents robot daemon flooding (Issue #135).
 func (c *RateController) tick() {
 	c.mu.RLock()
 	combined := c.baseHead.Add(c.trackingHead)
@@ -138,14 +148,30 @@ func (c *RateController) tick() {
 		return
 	}
 
-	// Single control point - all robot commands go here
-	c.robot.SetHeadPose(combined.Roll, combined.Pitch, combined.Yaw)
-	c.robot.SetAntennas(antennas[0], antennas[1])
-	c.robot.SetBodyYaw(bodyYaw)
+	c.tickCount++
+
+	// Single batched HTTP call - prevents daemon flooding
+	// Before: 3 separate calls (SetHeadPose + SetAntennas + SetBodyYaw) = 60 HTTP/s at 20Hz
+	// After: 1 batched call = 20 HTTP/s at 20Hz (3x reduction)
+	err := c.robot.SetPose(&combined, &antennas, &bodyYaw)
+
+	// Log errors (but don't spam - max once per 5 seconds)
+	if err != nil {
+		c.errorCount++
+		if c.lastErrorTime.IsZero() || time.Since(c.lastErrorTime) > 5*time.Second {
+			fmt.Printf("⚠️  RateController.SetPose error: %v (total errors: %d)\n", err, c.errorCount)
+			c.lastErrorTime = time.Now()
+		}
+	}
+
+	// Heartbeat log every ~5 seconds (100 ticks at 50ms)
+	if c.tickCount%100 == 0 {
+		fmt.Printf("💓 RateController: %d ticks, %d errors, head=(%.2f,%.2f,%.2f)\n",
+			c.tickCount, c.errorCount, combined.Roll, combined.Pitch, combined.Yaw)
+	}
 }
 
 // Stop halts the control loop gracefully.
 func (c *RateController) Stop() {
 	close(c.stop)
 }
-

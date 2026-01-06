@@ -72,6 +72,37 @@ func (r *HTTPController) SetBodyYaw(yaw float64) error {
 	return r.postMove(payload)
 }
 
+// SetPose sets head, antennas, and body yaw in a single batched HTTP call.
+// This reduces HTTP request rate by 3x compared to calling SetHeadPose,
+// SetAntennas, and SetBodyYaw separately.
+// Pass nil for any value you don't want to change.
+func (r *HTTPController) SetPose(head *Offset, antennas *[2]float64, bodyYaw *float64) error {
+	payload := map[string]interface{}{
+		"target_head_pose": nil,
+		"target_antennas":  nil,
+		"target_body_yaw":  nil,
+		"duration":         0.3,
+	}
+
+	if head != nil {
+		payload["target_head_pose"] = map[string]float64{
+			"roll":  head.Roll,
+			"pitch": head.Pitch,
+			"yaw":   head.Yaw,
+		}
+	}
+
+	if antennas != nil {
+		payload["target_antennas"] = []float64{antennas[0], antennas[1]}
+	}
+
+	if bodyYaw != nil {
+		payload["target_body_yaw"] = *bodyYaw
+	}
+
+	return r.postMove(payload)
+}
+
 // GetDaemonStatus returns the robot daemon status.
 func (r *HTTPController) GetDaemonStatus() (string, error) {
 	resp, err := httpClient.Get(r.BaseURL + "/api/daemon/status")

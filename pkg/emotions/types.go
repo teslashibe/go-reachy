@@ -133,3 +133,4 @@ func DefaultPlayerOptions() PlayerOptions {
 		Loop:      false,
 	}
 }
+

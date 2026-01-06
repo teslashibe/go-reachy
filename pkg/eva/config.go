@@ -6,6 +6,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/emotions"
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/vision"
 )
 
@@ -36,14 +37,17 @@ type Tool struct {
 
 // ToolsConfig holds dependencies for Eva's tools.
 type ToolsConfig struct {
-	Robot          robot.Controller
-	Memory         *memory.Memory
-	Vision         vision.Provider
-	ObjectDetector ObjectDetector
-	GoogleAPIKey   string
-	AudioPlayer    *audio.Player
-	Tracker        BodyYawNotifier
-	Emotions       *emotions.Registry
+	Robot            robot.Controller
+	Memory           *memory.Memory
+	Vision           vision.Provider
+	ObjectDetector   ObjectDetector
+	GoogleAPIKey     string
+	AudioPlayer      *audio.Player
+	Tracker          BodyYawNotifier
+	Emotions         *emotions.Registry
+	SparkStore       *spark.JSONStore       // Spark idea storage
+	SparkGemini      *spark.GeminiClient    // Spark Gemini for title/tag generation
+	SparkGoogleDocs  *spark.GoogleDocsClient // Spark Google Docs for syncing
 }
 
 // isAnimal returns true if the class name is an animal.

@@ -144,3 +144,4 @@ func (m *Memory) GetLocationsByDirection(direction string) map[string]*Location 
 }
 
 
+

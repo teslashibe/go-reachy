@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/vision"
 )
 
@@ -13,7 +14,7 @@ import (
 func Tools(cfg ToolsConfig) []Tool {
 	robot := cfg.Robot
 	mem := cfg.Memory
-	return []Tool{
+	tools := []Tool{
 		{
 			Name:        "move_head",
 			Description: "Move Eva's head to look in a direction. Use this when you want to look at something or someone.",
@@ -943,4 +944,24 @@ func Tools(cfg ToolsConfig) []Tool {
 			},
 		},
 	}
+
+	// Add Spark tools if store is available
+	if cfg.SparkStore != nil {
+		sparkCfg := spark.ToolsConfig{
+			Store:      cfg.SparkStore,
+			Gemini:     cfg.SparkGemini,      // Gemini for AI title/tag generation
+			GoogleDocs: cfg.SparkGoogleDocs,  // Google Docs for syncing
+		}
+		sparkTools := spark.Tools(sparkCfg)
+		for _, st := range sparkTools {
+			tools = append(tools, Tool{
+				Name:        st.Name,
+				Description: st.Description,
+				Parameters:  st.Parameters,
+				Handler:     st.Handler,
+			})
+		}
+	}
+
+	return tools
 }

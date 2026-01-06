@@ -16,3 +16,4 @@ var (
 	ErrRegistryNotInitialized = errors.New("emotion registry not initialized")
 )
 
+

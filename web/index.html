@@ -131,6 +131,23 @@
                             </div>
                         </div>
                         <hr class="border-gray-700">
+                        <!-- Eva Power Toggle -->
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">⚡ Eva</span>
+                            <button id="power-btn" onclick="togglePower()" 
+                                class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition">
+                                ON
+                            </button>
+                        </div>
+                        <!-- Listening Toggle -->
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400">🎤 Listening</span>
+                            <button id="listen-btn" onclick="toggleListening()" 
+                                class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition">
+                                ON
+                            </button>
+                        </div>
+                        <hr class="border-gray-700">
                         <div class="flex items-center justify-between">
                             <span class="text-gray-400">State</span>
                             <span id="eva-state" class="text-eva-cyan font-medium">--</span>
@@ -253,6 +270,10 @@
         let logsPaused = false;
         let autoScroll = true;
         let isFullscreen = false;
+        
+        // Eva state
+        let evaPowered = true;
+        let evaListening = true;
 
         // Connect to WebSockets
         function connect() {
@@ -322,9 +343,21 @@
             updateIndicator('openai-status', state.openai_connected);
             updateIndicator('webrtc-status', state.webrtc_connected);
 
-            // Update state
+            // Update power/listening buttons based on server state
+            evaPowered = !state.paused;
+            evaListening = !state.muted;
+            updatePowerButton();
+            updateListenButton();
+
+            // Update state display
             const evaState = document.getElementById('eva-state');
-            if (state.speaking) {
+            if (state.paused) {
+                evaState.textContent = '⏸️ Paused';
+                evaState.className = 'text-gray-500 font-medium';
+            } else if (state.muted) {
+                evaState.textContent = '🔇 Muted';
+                evaState.className = 'text-yellow-400 font-medium';
+            } else if (state.speaking) {
                 evaState.textContent = '🗣️ Speaking';
                 evaState.className = 'text-green-400 font-medium';
             } else {
@@ -405,6 +438,58 @@
         async function setVolume(value) {
             updateVolumeDisplay(value);
             await triggerTool('set_volume', { level: parseInt(value) });
+        }
+
+        // Power toggle (pause/resume Eva)
+        async function togglePower() {
+            evaPowered = !evaPowered;
+            updatePowerButton();
+            try {
+                await fetch('/api/paused', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paused: !evaPowered })
+                });
+            } catch (err) {
+                console.error('Power toggle error:', err);
+            }
+        }
+
+        function updatePowerButton() {
+            const btn = document.getElementById('power-btn');
+            if (evaPowered) {
+                btn.textContent = 'ON';
+                btn.className = 'px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition';
+            } else {
+                btn.textContent = 'OFF';
+                btn.className = 'px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm font-medium transition';
+            }
+        }
+
+        // Listening toggle (mute/unmute microphone)
+        async function toggleListening() {
+            evaListening = !evaListening;
+            updateListenButton();
+            try {
+                await fetch('/api/listening', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: evaListening })
+                });
+            } catch (err) {
+                console.error('Listening toggle error:', err);
+            }
+        }
+
+        function updateListenButton() {
+            const btn = document.getElementById('listen-btn');
+            if (evaListening) {
+                btn.textContent = 'ON';
+                btn.className = 'px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition';
+            } else {
+                btn.textContent = 'OFF';
+                btn.className = 'px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm font-medium transition';
+            }
         }
 
         // Initialize

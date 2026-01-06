@@ -20,6 +20,7 @@ import (
 	"github.com/teslashibe/go-reachy/pkg/memory"
 	"github.com/teslashibe/go-reachy/pkg/openai"
 	"github.com/teslashibe/go-reachy/pkg/robot"
+	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/speech"
 	"github.com/teslashibe/go-reachy/pkg/tracking"
 	"github.com/teslashibe/go-reachy/pkg/tracking/detection"
@@ -102,22 +103,31 @@ IMPORTANT:
 - When you can't see or hear something, use your tools to actually look`
 
 var (
-	realtimeClient   *openai.Client
-	videoClient      *video.Client
-	audioPlayer      *audio.Player
-	robotCtrl        *robot.HTTPController
-	memoryStore      *memory.Memory
-	webServer        *web.Server
-	headTracker      *tracking.Tracker
-	ttsProvider      tts.Provider      // HTTP TTS provider
-	ttsStreaming     *tts.ElevenLabsWS // WebSocket streaming TTS
-	objectDetector   *detection.YOLODetector
-	speechWobbler    *speech.Wobbler        // Speech-synced head movement
-	cameraManager    *camera.Manager        // Camera configuration manager
-	emotionRegistry  *emotions.Registry     // Pre-recorded emotion animations
+	realtimeClient  *openai.Client
+	videoClient     *video.Client
+	audioPlayer     *audio.Player
+	robotCtrl       *robot.HTTPController
+	rateCtrl        *robot.RateController // Centralized rate-limited controller (Issue #135)
+	memoryStore     *memory.Memory
+	sparkStore      *spark.JSONStore
+	sparkGemini     *spark.GeminiClient
+	sparkGoogleDocs *spark.GoogleDocsClient
+	webServer       *web.Server
+	headTracker     *tracking.Tracker
+	ttsProvider     tts.Provider      // HTTP TTS provider
+	ttsStreaming    *tts.ElevenLabsWS // WebSocket streaming TTS
+	objectDetector  *detection.YOLODetector
+	speechWobbler   *speech.Wobbler    // Speech-synced head movement
+	cameraManager   *camera.Manager    // Camera configuration manager
+	emotionRegistry *emotions.Registry // Pre-recorded emotion animations
 
 	speaking   bool
 	speakingMu sync.Mutex
+
+	// Audio control flags (dashboard mute/pause)
+	evaPaused bool       // Eva completely paused
+	evaMuted  bool       // Microphone muted only
+	pauseMu   sync.Mutex // Protects evaPaused and evaMuted
 
 	// TTS mode: "realtime", "elevenlabs", "elevenlabs-streaming", or "openai-tts"
 	ttsMode string
@@ -125,6 +135,9 @@ var (
 	// Track if we've started printing Eva's response
 	evaResponseStarted bool
 	evaCurrentResponse string
+
+	// Spark configuration (loaded from config file + env + CLI)
+	sparkConfig spark.Config
 )
 
 // webStateAdapter adapts web.Server to tracking.StateUpdater interface
@@ -150,10 +163,29 @@ func (a *webStateAdapter) AddLog(logType, message string) {
 func main() {
 	// Parse flags
 	debugFlag := flag.Bool("debug", false, "Enable verbose debug logging")
+	trackingDebugFlag := flag.Bool("tracking-debug", false, "Enable verbose tracking logs (face detection, movement)")
 	robotIPFlag := flag.String("robot-ip", "", "Robot IP address (overrides ROBOT_IP env var)")
+	modelFlag := flag.String("model", "gpt-realtime-2025-08-28", "OpenAI Realtime model (e.g., gpt-realtime-2025-08-28)")
 	ttsFlag := flag.String("tts", "realtime", "TTS provider: realtime, elevenlabs, elevenlabs-streaming (lowest latency), openai-tts")
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
+	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
+	noBodyFlag := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
+	sparkFlagSet := false
 	flag.Parse()
+	// Check if --spark was explicitly set
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "spark" {
+			sparkFlagSet = true
+		}
+	})
+
+	// Load Spark config (file -> env -> CLI precedence)
+	var cliEnabled *bool
+	if sparkFlagSet {
+		cliEnabled = sparkFlag
+	}
+	sparkConfig = spark.LoadConfigWithOverrides(nil, cliEnabled)
+
 	debug.Enabled = *debugFlag
 	if *robotIPFlag != "" {
 		robotIP = *robotIPFlag
@@ -325,15 +357,22 @@ func main() {
 	fmt.Println("✅")
 
 	// Initialize head tracking BEFORE connecting to realtime API (so tools can reference it)
+	// Uses offset mode (nil robot) to route through centralized RateController (Issue #135)
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
+	trackingConfig := tracking.DefaultConfig()
+	trackingConfig.DebugEnabled = *trackingDebugFlag // Pass --tracking-debug flag
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robotCtrl, videoClient, modelPath)
+	headTracker, err = tracking.New(trackingConfig, nil, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
-		fmt.Println("✅")
+		// Route tracker offsets through centralized RateController
+		headTracker.SetOffsetHandler(func(offset robot.Offset) {
+			rateCtrl.SetTrackingOffset(offset)
+		})
+		fmt.Println("✅ (offset mode → RateController)")
 	}
 
 	// Initialize YOLO object detection
@@ -353,12 +392,19 @@ func main() {
 	} else {
 		fmt.Printf("✅ (%d emotions loaded)\n", emotionRegistry.Count())
 		// Set up callback to control robot during emotion playback
+		// Routes through centralized RateController (Issue #135)
+		// Before: 3 HTTP calls per emotion frame
+		// After: Sets state on RateController, batched into 1 HTTP call per tick
 		emotionRegistry.SetCallback(func(pose emotions.Pose, elapsed time.Duration) bool {
-			if robotCtrl != nil {
-				// Convert emotion pose to robot commands
-				robotCtrl.SetHeadPose(pose.Head.Roll, pose.Head.Pitch, pose.Head.Yaw)
-				robotCtrl.SetAntennas(pose.Antennas[0], pose.Antennas[1])
-				robotCtrl.SetBodyYaw(pose.BodyYaw)
+			if rateCtrl != nil {
+				// Set base pose (emotions override tracking offsets)
+				rateCtrl.SetBaseHead(robot.Offset{
+					Roll:  pose.Head.Roll,
+					Pitch: pose.Head.Pitch,
+					Yaw:   pose.Head.Yaw,
+				})
+				rateCtrl.SetAntennas(pose.Antennas[0], pose.Antennas[1])
+				rateCtrl.SetBodyYaw(pose.BodyYaw)
 			}
 			return true // Continue playback
 		})
@@ -375,32 +421,38 @@ func main() {
 			fmt.Println("✅")
 		}
 
-		// Set up automatic body rotation when head reaches limits
-		// Returns actual delta for head counter-rotation (Issue #79 fix)
-		headTracker.SetBodyRotationHandler(func(direction float64) float64 {
-			currentBody := headTracker.GetBodyYaw()
-			newBody := currentBody + direction
+		// Set up automatic body rotation when head reaches limits (unless --no-body flag)
+		if *noBodyFlag {
+			fmt.Println("🚫 Body rotation DISABLED (--no-body flag)")
+		} else {
+			// Returns actual delta for head counter-rotation (Issue #79 fix)
+			// Routes through centralized RateController (Issue #135)
+			headTracker.SetBodyRotationHandler(func(direction float64) float64 {
+				currentBody := headTracker.GetBodyYaw()
+				newBody := currentBody + direction
 
-			// Use world model's limit (matches Python reachy: 0.9*π ≈ ±162°)
-			limit := headTracker.GetWorld().GetBodyYawLimit()
-			if newBody > limit {
-				newBody = limit
-			} else if newBody < -limit {
-				newBody = -limit
-			}
+				// Use world model's limit (matches Python reachy: 0.9*π ≈ ±162°)
+				limit := headTracker.GetWorld().GetBodyYawLimit()
+				if newBody > limit {
+					newBody = limit
+				} else if newBody < -limit {
+					newBody = -limit
+				}
 
-			// Calculate actual delta after clamping
-			actualDelta := newBody - currentBody
+				// Calculate actual delta after clamping
+				actualDelta := newBody - currentBody
 
-			debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
-				currentBody, newBody, actualDelta, limit)
+				debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
+					currentBody, newBody, actualDelta, limit)
 
-			robotCtrl.SetBodyYaw(newBody)
-			headTracker.SetBodyYaw(newBody) // Sync world model
+				// Route through RateController instead of direct HTTP call
+				rateCtrl.SetBodyYaw(newBody)
+				headTracker.SetBodyYaw(newBody) // Sync world model
 
-			return actualDelta // Return actual movement for head counter-rotation
-		})
-		fmt.Println("🔄 Auto body rotation enabled")
+				return actualDelta // Return actual movement for head counter-rotation
+			})
+			fmt.Println("🔄 Auto body rotation enabled (→ RateController)")
+		}
 
 		// Enable antenna breathing animation (matches Python reachy)
 		headTracker.SetAntennaController(robotCtrl)
@@ -414,8 +466,8 @@ func main() {
 	}
 
 	// Connect to OpenAI Realtime API
-	fmt.Print("🧠 Connecting to OpenAI Realtime API... ")
-	if err := connectRealtime(openaiKey); err != nil {
+	fmt.Printf("🧠 Connecting to OpenAI Realtime API (model: %s)... ", *modelFlag)
+	if err := connectRealtime(openaiKey, *modelFlag); err != nil {
 		fmt.Printf("❌ Failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -473,14 +525,70 @@ func main() {
 }
 
 func initialize() error {
-	// Create robot controller
+	// Create robot controller (HTTP layer)
 	robotCtrl = robot.NewHTTPController(robotIP)
+
+	// Create rate-limited controller (centralizes all robot commands)
+	// This prevents daemon flooding by batching all updates into ONE HTTP call per tick (Issue #135)
+	// Before: 50-100+ HTTP requests/second from multiple sources
+	// After: 20 HTTP requests/second (one batched call every 50ms)
+	rateCtrl = robot.NewRateController(robotCtrl, 50*time.Millisecond)
+	go rateCtrl.Run() // Start control loop in background
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
 	homeDir, _ := os.UserHomeDir()
 	memoryPath := homeDir + "/.eva/memory.json"
 	memoryStore = memory.NewWithFile(memoryPath)
 	fmt.Printf("📝 Memory loaded from %s\n", memoryPath)
+
+	// Create Spark components (idea collection)
+	// Priority: CLI flags > env vars > config file (~/.eva/config.json) > defaults
+	if sparkConfig.Enabled {
+		var sparkErr error
+		sparkStore, sparkErr = spark.NewDefaultStore()
+		if sparkErr != nil {
+			fmt.Printf("⚠️  Spark store error: %v\n", sparkErr)
+		} else {
+			fmt.Printf("🔥 Spark loaded (%d sparks) from %s\n", sparkStore.Count(), sparkStore.Path())
+		}
+
+		// Create Spark Gemini client for AI title/tag generation
+		if googleAPIKey := os.Getenv("GOOGLE_API_KEY"); googleAPIKey != "" {
+			sparkGemini = spark.NewGeminiClient(spark.GeminiConfig{
+				APIKey:         googleAPIKey,
+				Model:          sparkConfig.GeminiModel,
+				MaxRequestsMin: 10,
+			})
+			fmt.Printf("🔥 Spark Gemini enabled (model: %s)\n", sparkConfig.GeminiModel)
+		}
+
+		// Create Spark Google Docs client for syncing
+		googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+		googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+		if googleClientID != "" && googleClientSecret != "" {
+			var err error
+			sparkGoogleDocs, err = spark.NewGoogleDocsClient(spark.GoogleDocsConfig{
+				ClientID:     googleClientID,
+				ClientSecret: googleClientSecret,
+				RedirectURL:  "http://localhost:8181/api/spark/callback",
+			})
+			if err != nil {
+				fmt.Printf("⚠️  Spark Google Docs error: %v\n", err)
+			} else {
+				if sparkGoogleDocs.IsAuthenticated() {
+					fmt.Println("🔥 Spark Google Docs connected")
+				} else {
+					fmt.Println("🔥 Spark Google Docs configured (not connected)")
+				}
+			}
+		}
+
+		// Log config source
+		fmt.Printf("🔥 Spark config: enabled=%v, auto_sync=%v, planning=%v (config: %s)\n",
+			sparkConfig.Enabled, sparkConfig.AutoSync, sparkConfig.PlanningEnabled, spark.ConfigPath())
+	} else {
+		fmt.Println("🔥 Spark disabled")
+	}
 
 	// Create audio player
 	audioPlayer = audio.NewPlayer(robotIP, sshUser, sshPass)
@@ -750,9 +858,97 @@ func startWebDashboard(ctx context.Context) {
 		return nil
 	}
 
+	// Wire up Spark Google Docs API callbacks
+	if sparkGoogleDocs != nil {
+		webServer.OnSparkGetStatus = func() interface{} {
+			return sparkGoogleDocs.GetStatus()
+		}
+		webServer.OnSparkAuthStart = func() string {
+			return sparkGoogleDocs.GetAuthURL()
+		}
+		webServer.OnSparkAuthCallback = func(code string) error {
+			return sparkGoogleDocs.HandleCallback(code)
+		}
+		webServer.OnSparkDisconnect = func() error {
+			return sparkGoogleDocs.Disconnect()
+		}
+	}
+
+	// Wire up Spark CRUD callbacks (always if spark is enabled)
+	if sparkStore != nil {
+		webServer.OnSparkList = func() interface{} {
+			sparks, _ := sparkStore.List()
+			return sparks
+		}
+		webServer.OnSparkGet = func(id string) interface{} {
+			spark, err := sparkStore.Get(id)
+			if err != nil {
+				return nil
+			}
+			return spark
+		}
+		webServer.OnSparkDelete = func(id string) error {
+			return sparkStore.Delete(id)
+		}
+		webServer.OnSparkSync = func(id string) error {
+			if sparkGoogleDocs == nil {
+				return fmt.Errorf("Google Docs not configured")
+			}
+			if !sparkGoogleDocs.IsAuthenticated() {
+				return fmt.Errorf("not connected to Google")
+			}
+			s, err := sparkStore.Get(id)
+			if err != nil {
+				return err
+			}
+			if err := sparkGoogleDocs.SyncSpark(s); err != nil {
+				return err
+			}
+			return sparkStore.Update(s)
+		}
+		webServer.OnSparkGenPlan = func(id string) error {
+			if sparkGemini == nil {
+				return fmt.Errorf("Gemini not configured")
+			}
+			s, err := sparkStore.Get(id)
+			if err != nil {
+				return err
+			}
+			plan, err := sparkGemini.GeneratePlan(s)
+			if err != nil {
+				return err
+			}
+			s.SetPlan(plan)
+			return sparkStore.Update(s)
+		}
+	}
+
 	// Connect head tracker to web dashboard for state updates
 	if headTracker != nil {
 		headTracker.SetStateUpdater(&webStateAdapter{webServer})
+	}
+
+	// Wire up audio control callbacks (pause/mute from dashboard)
+	webServer.OnSetPaused = func(paused bool) {
+		pauseMu.Lock()
+		evaPaused = paused
+		pauseMu.Unlock()
+		if paused {
+			fmt.Println("⏸️  Eva PAUSED from dashboard")
+		} else {
+			fmt.Println("▶️  Eva RESUMED from dashboard")
+		}
+	}
+
+	webServer.OnSetListening = func(enabled bool) {
+		pauseMu.Lock()
+		evaMuted = !enabled
+		pauseMu.Unlock()
+		if enabled {
+			fmt.Println("🎤 Microphone UNMUTED from dashboard")
+		} else {
+			fmt.Println("🔇 Microphone MUTED from dashboard")
+		}
 	}
 
 	// Start server in goroutine
@@ -790,7 +986,7 @@ func streamCameraToWeb(ctx context.Context) {
 	fmt.Println("📷 Camera streaming to dashboard started")
 
 	// Stream at 10 FPS to dashboard - much smoother than trying to hit 30 FPS
-	// The H264 decoder can't keep up with 30 FPS anyway, and 10 FPS is 
+	// The H264 decoder can't keep up with 30 FPS anyway, and 10 FPS is
 	// plenty smooth for monitoring purposes while saving ~70% CPU
 	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS
 	defer ticker.Stop()
@@ -842,9 +1038,9 @@ func wakeUpRobot() error {
 
 	// Reset body to neutral position at startup
 	// This ensures known initial state and matches Python reachy behavior
-	if err := robotCtrl.SetBodyYaw(0.0); err != nil {
-		debug.Log("⚠️  Failed to reset body to neutral: %v\n", err)
-	} else {
+	// Routes through RateController for consistency (Issue #135)
+	if rateCtrl != nil {
+		rateCtrl.SetBodyYaw(0.0)
 		debug.Log("🔄 Body reset to neutral (0.0 rad)\n")
 		// Sync head tracker's world model with the physical robot state
 		if headTracker != nil {
@@ -861,22 +1057,25 @@ func connectWebRTC() error {
 	return videoClient.Connect()
 }
 
-func connectRealtime(apiKey string) error {
-	realtimeClient = openai.NewClient(apiKey)
+func connectRealtime(apiKey, model string) error {
+	realtimeClient = openai.NewClient(apiKey, model)
 
 	// Set OpenAI key on audio player for timer announcements
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
 	toolsCfg := eva.ToolsConfig{
-		Robot:          robotCtrl,
-		Memory:         memoryStore,
-		Vision:         &videoVisionAdapter{videoClient},
-		ObjectDetector: &yoloAdapter{objectDetector},
-		GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:    audioPlayer,
-		Tracker:        headTracker, // For body rotation sync
-		Emotions:       emotionRegistry,
+		Robot:           robotCtrl,
+		Memory:          memoryStore,
+		Vision:          &videoVisionAdapter{videoClient},
+		ObjectDetector:  &yoloAdapter{objectDetector},
+		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:     audioPlayer,
+		Tracker:         headTracker, // For body rotation sync
+		Emotions:        emotionRegistry,
+		SparkStore:      sparkStore,      // Idea collection
+		SparkGemini:     sparkGemini,     // Gemini for title/tag generation
+		SparkGoogleDocs: sparkGoogleDocs, // Google Docs for syncing
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {
@@ -1094,6 +1293,17 @@ func streamAudioToRealtime(ctx context.Context) {
 		speakingMu.Unlock()
 
 		if isSpeaking {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		// Don't send audio if Eva is paused or muted
+		pauseMu.Lock()
+		isPaused := evaPaused
+		isMuted := evaMuted
+		pauseMu.Unlock()
+
+		if isPaused || isMuted {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
