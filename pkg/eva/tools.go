@@ -95,6 +95,9 @@ func Tools(cfg ToolsConfig) []Tool {
 						fmt.Printf("🎭 Emotion playback error: %v\n", err)
 					}
 
+					// Delay before resuming tracking to let robot settle
+					time.Sleep(500 * time.Millisecond)
+
 					// Resume tracking after emotion completes
 					if cfg.TrackingController != nil {
 						cfg.TrackingController.SetEnabled(true)
@@ -167,6 +170,9 @@ func Tools(cfg ToolsConfig) []Tool {
 					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
 						fmt.Printf("🎭 Emotion playback error: %v\n", err)
 					}
+
+					// Delay before resuming tracking to let robot settle
+					time.Sleep(500 * time.Millisecond)
 
 					// Resume tracking after emotion completes
 					if cfg.TrackingController != nil {
