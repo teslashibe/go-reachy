@@ -134,10 +134,26 @@ func InterpolateKeyframes(a, b Keyframe, t float64) Keyframe {
 	}
 }
 
+// Safe head movement limits (radians) to prevent robot damage
+const (
+	// Head limits - conservative values to prevent crashes
+	MaxRoll  = 0.35 // ~20 degrees
+	MaxPitch = 0.40 // ~23 degrees
+	MaxYaw   = 0.60 // ~35 degrees
+)
+
 // KeyframeToPose converts a Keyframe to a simplified Pose.
+// Applies safe range clamping to prevent extreme movements.
 func KeyframeToPose(kf Keyframe) Pose {
+	head := MatrixToHeadPose(kf.Head)
+
+	// Clamp head movements to safe range
+	head.Roll = clamp(head.Roll, -MaxRoll, MaxRoll)
+	head.Pitch = clamp(head.Pitch, -MaxPitch, MaxPitch)
+	head.Yaw = clamp(head.Yaw, -MaxYaw, MaxYaw)
+
 	return Pose{
-		Head:     MatrixToHeadPose(kf.Head),
+		Head:     head,
 		Antennas: kf.Antennas,
 		BodyYaw:  kf.BodyYaw,
 	}
