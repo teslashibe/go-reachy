@@ -22,6 +22,13 @@ type BodyController interface {
 	SetBodyYaw(yaw float64) error
 }
 
+// PoseController provides batched pose control (head + antennas + body).
+// This reduces HTTP request rate by combining multiple updates into one call.
+// Use this interface for rate-limited control loops to prevent daemon flooding.
+type PoseController interface {
+	SetPose(head *Offset, antennas *[2]float64, bodyYaw *float64) error
+}
+
 // StatusController provides robot status queries.
 type StatusController interface {
 	GetDaemonStatus() (string, error)
@@ -39,6 +46,7 @@ type Controller interface {
 	HeadController
 	AntennaController
 	BodyController
+	PoseController
 	StatusController
 	VolumeController
 }

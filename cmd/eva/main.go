@@ -107,6 +107,7 @@ var (
 	videoClient     *video.Client
 	audioPlayer     *audio.Player
 	robotCtrl       *robot.HTTPController
+	rateCtrl        *robot.RateController // Centralized rate-limited controller (Issue #135)
 	memoryStore     *memory.Memory
 	sparkStore      *spark.JSONStore
 	sparkGemini     *spark.GeminiClient
@@ -355,15 +356,20 @@ func main() {
 	fmt.Println("✅")
 
 	// Initialize head tracking BEFORE connecting to realtime API (so tools can reference it)
+	// Uses offset mode (nil robot) to route through centralized RateController (Issue #135)
 	fmt.Print("👁️  Initializing head tracking... ")
 	modelPath := "models/face_detection_yunet.onnx"
 	var err error
-	headTracker, err = tracking.New(tracking.DefaultConfig(), robotCtrl, videoClient, modelPath)
+	headTracker, err = tracking.New(tracking.DefaultConfig(), nil, videoClient, modelPath)
 	if err != nil {
 		fmt.Printf("⚠️  Disabled: %v\n", err)
 		fmt.Println("   (Download model with: curl -L https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx -o models/face_detection_yunet.onnx)")
 	} else {
-		fmt.Println("✅")
+		// Route tracker offsets through centralized RateController
+		headTracker.SetOffsetHandler(func(offset robot.Offset) {
+			rateCtrl.SetTrackingOffset(offset)
+		})
+		fmt.Println("✅ (offset mode → RateController)")
 	}
 
 	// Initialize YOLO object detection
@@ -383,12 +389,19 @@ func main() {
 	} else {
 		fmt.Printf("✅ (%d emotions loaded)\n", emotionRegistry.Count())
 		// Set up callback to control robot during emotion playback
+		// Routes through centralized RateController (Issue #135)
+		// Before: 3 HTTP calls per emotion frame
+		// After: Sets state on RateController, batched into 1 HTTP call per tick
 		emotionRegistry.SetCallback(func(pose emotions.Pose, elapsed time.Duration) bool {
-			if robotCtrl != nil {
-				// Convert emotion pose to robot commands
-				robotCtrl.SetHeadPose(pose.Head.Roll, pose.Head.Pitch, pose.Head.Yaw)
-				robotCtrl.SetAntennas(pose.Antennas[0], pose.Antennas[1])
-				robotCtrl.SetBodyYaw(pose.BodyYaw)
+			if rateCtrl != nil {
+				// Set base pose (emotions override tracking offsets)
+				rateCtrl.SetBaseHead(robot.Offset{
+					Roll:  pose.Head.Roll,
+					Pitch: pose.Head.Pitch,
+					Yaw:   pose.Head.Yaw,
+				})
+				rateCtrl.SetAntennas(pose.Antennas[0], pose.Antennas[1])
+				rateCtrl.SetBodyYaw(pose.BodyYaw)
 			}
 			return true // Continue playback
 		})
@@ -410,6 +423,7 @@ func main() {
 			fmt.Println("🚫 Body rotation DISABLED (--no-body flag)")
 		} else {
 			// Returns actual delta for head counter-rotation (Issue #79 fix)
+			// Routes through centralized RateController (Issue #135)
 			headTracker.SetBodyRotationHandler(func(direction float64) float64 {
 				currentBody := headTracker.GetBodyYaw()
 				newBody := currentBody + direction
@@ -428,12 +442,13 @@ func main() {
 				debug.Log("🔄 Body rotation: %.2f → %.2f rad (delta: %.3f, limit: ±%.2f)\n",
 					currentBody, newBody, actualDelta, limit)
 
-				robotCtrl.SetBodyYaw(newBody)
+				// Route through RateController instead of direct HTTP call
+				rateCtrl.SetBodyYaw(newBody)
 				headTracker.SetBodyYaw(newBody) // Sync world model
 
 				return actualDelta // Return actual movement for head counter-rotation
 			})
-			fmt.Println("🔄 Auto body rotation enabled")
+			fmt.Println("🔄 Auto body rotation enabled (→ RateController)")
 		}
 
 		// Enable antenna breathing animation (matches Python reachy)
@@ -507,8 +522,15 @@ func main() {
 }
 
 func initialize() error {
-	// Create robot controller
+	// Create robot controller (HTTP layer)
 	robotCtrl = robot.NewHTTPController(robotIP)
+
+	// Create rate-limited controller (centralizes all robot commands)
+	// This prevents daemon flooding by batching all updates into ONE HTTP call per tick (Issue #135)
+	// Before: 50-100+ HTTP requests/second from multiple sources
+	// After: 20 HTTP requests/second (one batched call every 50ms)
+	rateCtrl = robot.NewRateController(robotCtrl, 50*time.Millisecond)
+	go rateCtrl.Run() // Start control loop in background
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
 	homeDir, _ := os.UserHomeDir()
@@ -1013,9 +1035,9 @@ func wakeUpRobot() error {
 
 	// Reset body to neutral position at startup
 	// This ensures known initial state and matches Python reachy behavior
-	if err := robotCtrl.SetBodyYaw(0.0); err != nil {
-		debug.Log("⚠️  Failed to reset body to neutral: %v\n", err)
-	} else {
+	// Routes through RateController for consistency (Issue #135)
+	if rateCtrl != nil {
+		rateCtrl.SetBodyYaw(0.0)
 		debug.Log("🔄 Body reset to neutral (0.0 rad)\n")
 		// Sync head tracker's world model with the physical robot state
 		if headTracker != nil {
