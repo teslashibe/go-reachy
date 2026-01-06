@@ -398,10 +398,18 @@ sudo sed -i 's/R1920x1080at30fps/R1280x720at30fps/g' \
 sudo systemctl restart reachy-mini-daemon
 ```
 
-| Resolution | Pixels | Encoding CPU |
-|------------|--------|--------------|
-| 1920x1080 | 2,073,600 | ~54% |
-| **1280x720** | 921,600 | **~25-30%** |
+| Resolution | Pixels | Encoding CPU | Status |
+|------------|--------|--------------|--------|
+| 1920x1080 @ 30fps | 2,073,600 | ~54% | ❌ Unstable |
+| **1536x864 @ 40fps** | 1,327,104 | **~30-35%** | ✅ **Recommended** |
+| 1280x720 @ 30fps | 921,600 | ~25% | ✅ Stable (fallback) |
+
+To set 1536x864 (recommended balance of quality/performance):
+```bash
+sudo sed -i 's/default_resolution = CameraResolution.R[^/]*/default_resolution = CameraResolution.R1536x864at40fps/' \
+  /venvs/mini_daemon/lib/python3.12/site-packages/reachy_mini/media/camera_constants.py
+sudo systemctl restart reachy-mini-daemon
+```
 
 ### Reduce go-reachy Control Loop Frequency
 The default control loop runs at 20Hz. If experiencing issues, this can be reduced by modifying `cmd/eva/main.go`:
