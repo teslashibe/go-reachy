@@ -58,6 +58,14 @@ type MotionController interface {
 	PoseController
 }
 
+// Dead-zone thresholds (match Python reachy's _issue_control_command)
+// Skip sending if position hasn't changed enough - reduces network traffic by 50-80% when idle
+const (
+	DeadZoneHeadRad    = 0.005  // ~0.3 degrees
+	DeadZoneAntennaRad = 0.009  // ~0.5 degrees (np.deg2rad(0.5))
+	DeadZoneBodyRad    = 0.009  // ~0.5 degrees
+)
+
 // RateController provides unified robot control at a fixed rate.
 // All movement requests flow through here to prevent conflicts.
 // It fuses base poses (from tools/moves) with tracking offsets (from face tracker).
@@ -72,6 +80,12 @@ type RateController struct {
 
 	rate time.Duration // Control loop tick rate
 	stop chan struct{}
+
+	// Dead-zone filtering (matches Python reachy)
+	lastSentHead     Offset     // Last sent head pose
+	lastSentAntennas [2]float64 // Last sent antenna positions
+	lastSentBodyYaw  float64    // Last sent body yaw
+	skippedTicks     uint64     // Ticks skipped due to dead-zone
 
 	// Diagnostics (Issue #136)
 	tickCount     uint64    // Total ticks since start
@@ -162,6 +176,22 @@ func (c *RateController) Run() {
 	}
 }
 
+// abs returns the absolute value of x.
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// max returns the larger of a or b.
+func max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // tick executes one control cycle: fuse poses and send to robot.
 // Uses batched SetPose() to send all updates in ONE HTTP call instead of three.
 // This prevents robot daemon flooding (Issue #135).
@@ -182,13 +212,32 @@ func (c *RateController) tick() {
 
 	c.tickCount++
 
-	// Single batched HTTP call - prevents daemon flooding
-	// Before: 3 separate calls (SetHeadPose + SetAntennas + SetBodyYaw) = 60 HTTP/s at 20Hz
-	// After: 1 batched call = 20 HTTP/s at 20Hz (3x reduction)
+	// Dead-zone filtering (matches Python reachy's _issue_control_command)
+	// Skip sending if position hasn't changed enough - reduces network traffic significantly
+	headDiff := max(max(abs(combined.Roll-c.lastSentHead.Roll), abs(combined.Pitch-c.lastSentHead.Pitch)), abs(combined.Yaw-c.lastSentHead.Yaw))
+	antennaDiff := max(abs(antennas[0]-c.lastSentAntennas[0]), abs(antennas[1]-c.lastSentAntennas[1]))
+	bodyDiff := abs(bodyYaw - c.lastSentBodyYaw)
+
+	if headDiff < DeadZoneHeadRad && antennaDiff < DeadZoneAntennaRad && bodyDiff < DeadZoneBodyRad {
+		c.skippedTicks++
+		// Heartbeat log even when skipping (every ~5 seconds)
+		if c.tickCount%100 == 0 {
+			fmt.Printf("💓 RateController: %d ticks, %d skipped, %d errors, head=(%.2f,%.2f,%.2f)\n",
+				c.tickCount, c.skippedTicks, c.errorCount, combined.Roll, combined.Pitch, combined.Yaw)
+		}
+		return // Skip sending - position hasn't changed enough
+	}
+
+	// Single batched call - prevents daemon flooding
 	err := c.robot.SetPose(&combined, &antennas, &bodyYaw)
 
-	// Log errors (but don't spam - max once per 5 seconds)
-	if err != nil {
+	if err == nil {
+		// Update last sent values on success
+		c.lastSentHead = combined
+		c.lastSentAntennas = antennas
+		c.lastSentBodyYaw = bodyYaw
+	} else {
+		// Log errors (but don't spam - max once per 5 seconds)
 		c.errorCount++
 		if c.lastErrorTime.IsZero() || time.Since(c.lastErrorTime) > 5*time.Second {
 			fmt.Printf("⚠️  RateController.SetPose error: %v (total errors: %d)\n", err, c.errorCount)
@@ -198,8 +247,8 @@ func (c *RateController) tick() {
 
 	// Heartbeat log every ~5 seconds (100 ticks at 50ms)
 	if c.tickCount%100 == 0 {
-		fmt.Printf("💓 RateController: %d ticks, %d errors, head=(%.2f,%.2f,%.2f)\n",
-			c.tickCount, c.errorCount, combined.Roll, combined.Pitch, combined.Yaw)
+		fmt.Printf("💓 RateController: %d ticks, %d skipped, %d errors, head=(%.2f,%.2f,%.2f)\n",
+			c.tickCount, c.skippedTicks, c.errorCount, combined.Roll, combined.Pitch, combined.Yaw)
 	}
 }
 

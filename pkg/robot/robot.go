@@ -1,3 +1,8 @@
+//go:build ignore
+
+// NOTE: This file is excluded from the build. It contains an incomplete
+// experimental Zenoh-based robot client. Use ZenohController from zenoh.go instead.
+
 package robot
 
 import (
@@ -14,10 +19,10 @@ const ControlLoopHz = 30
 
 // JointPositions represents the robot's joint positions
 type JointPositions struct {
-	Neck       [3]float64 `json:"neck"`       // roll, pitch, yaw
-	LeftAntenna  float64  `json:"l_antenna"`
-	RightAntenna float64  `json:"r_antenna"`
-	BodyYaw      float64  `json:"body_yaw"`
+	Neck         [3]float64 `json:"neck"` // roll, pitch, yaw
+	LeftAntenna  float64    `json:"l_antenna"`
+	RightAntenna float64    `json:"r_antenna"`
+	BodyYaw      float64    `json:"body_yaw"`
 }
 
 // HeadPose represents the robot's head pose in 3D space
@@ -28,8 +33,8 @@ type HeadPose struct {
 
 // Command represents a command to send to the robot
 type Command struct {
-	Head     [4]float64 `json:"head"`      // x, y, z, yaw
-	Antennas [2]float64 `json:"antennas"`  // left, right
+	Head     [4]float64 `json:"head"`     // x, y, z, yaw
+	Antennas [2]float64 `json:"antennas"` // left, right
 	BodyYaw  float64    `json:"body_yaw"`
 }
 
@@ -51,10 +56,10 @@ type Reachy struct {
 	status         Status
 
 	// Target state (what we want the robot to do)
-	targetMu   sync.RWMutex
-	targetHead [4]float64
+	targetMu       sync.RWMutex
+	targetHead     [4]float64
 	targetAntennas [2]float64
-	targetBodyYaw float64
+	targetBodyYaw  float64
 
 	// Zenoh connection
 	zenoh *ZenohClient
@@ -255,4 +260,3 @@ func (r *Reachy) PlayEmotion(emotion string) error {
 	data, _ := json.Marshal(cmd)
 	return r.zenoh.Publish("command", data)
 }
-

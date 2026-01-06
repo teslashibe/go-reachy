@@ -1,3 +1,8 @@
+//go:build ignore
+
+// NOTE: This file is excluded from the build. It contains an incomplete
+// experimental speech handler that depends on robot.Reachy which is also excluded.
+
 package speech
 
 import (
