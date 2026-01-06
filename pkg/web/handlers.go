@@ -189,3 +189,80 @@ func (s *Server) handleSetListening(c *fiber.Ctx) error {
 		"status":    status,
 	})
 }
+
+// handleRestartDaemon restarts the robot daemon via SSH (Issue #137)
+func (s *Server) handleRestartDaemon(c *fiber.Ctx) error {
+	if s.OnRestartDaemon == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Restart not available (callback not configured)",
+		})
+	}
+
+	s.AddLog("info", "🔄 Restarting robot daemon...")
+
+	if err := s.OnRestartDaemon(); err != nil {
+		s.AddLog("error", "Daemon restart failed: "+err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	s.AddLog("info", "✅ Robot daemon restarted successfully")
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Robot daemon restarted",
+	})
+}
+
+// handleSleep puts the robot to sleep (Issue #137)
+func (s *Server) handleSleep(c *fiber.Ctx) error {
+	if s.OnSleep == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Sleep not available (callback not configured)",
+		})
+	}
+
+	s.AddLog("info", "😴 Putting robot to sleep...")
+
+	if err := s.OnSleep(); err != nil {
+		s.AddLog("error", "Sleep failed: "+err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	s.AddLog("info", "💤 Robot is now sleeping")
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Robot is sleeping",
+		"asleep":  true,
+	})
+}
+
+// handleWake wakes the robot from sleep (Issue #137)
+func (s *Server) handleWake(c *fiber.Ctx) error {
+	if s.OnWake == nil {
+		return c.Status(503).JSON(fiber.Map{
+			"error": "Wake not available (callback not configured)",
+		})
+	}
+
+	s.AddLog("info", "☀️ Waking robot...")
+
+	if err := s.OnWake(); err != nil {
+		s.AddLog("error", "Wake failed: "+err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	s.AddLog("info", "✅ Robot is now awake")
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Robot is awake",
+		"asleep":  false,
+	})
+}

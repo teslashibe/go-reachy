@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -949,6 +950,57 @@ func startWebDashboard(ctx context.Context) {
 		} else {
 			fmt.Println("🔇 Microphone MUTED from dashboard")
 		}
+	}
+
+	// Wire up robot control callbacks (Issue #137)
+	webServer.OnRestartDaemon = func() error {
+		fmt.Println("🔄 Restarting robot daemon via SSH...")
+		cmd := exec.Command("sshpass", "-p", sshPass,
+			"ssh", "-o", "StrictHostKeyChecking=no",
+			fmt.Sprintf("%s@%s", sshUser, robotIP),
+			"sudo systemctl restart reachy-mini-daemon")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("SSH command failed: %v - %s", err, string(output))
+		}
+		fmt.Println("✅ Robot daemon restarted successfully")
+		return nil
+	}
+
+	webServer.OnSleep = func() error {
+		fmt.Println("😴 Putting robot to sleep...")
+		// Use robot API to disable motors
+		if robotCtrl != nil {
+			// Send sleep command to robot daemon
+			cmd := exec.Command("sshpass", "-p", sshPass,
+				"ssh", "-o", "StrictHostKeyChecking=no",
+				fmt.Sprintf("%s@%s", sshUser, robotIP),
+				"curl -s -X POST http://localhost:8000/api/robot/sleep")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("sleep command failed: %v - %s", err, string(output))
+			}
+		}
+		fmt.Println("💤 Robot is now sleeping")
+		return nil
+	}
+
+	webServer.OnWake = func() error {
+		fmt.Println("☀️ Waking robot...")
+		// Use robot API to enable motors
+		if robotCtrl != nil {
+			// Send wake command to robot daemon
+			cmd := exec.Command("sshpass", "-p", sshPass,
+				"ssh", "-o", "StrictHostKeyChecking=no",
+				fmt.Sprintf("%s@%s", sshUser, robotIP),
+				"curl -s -X POST http://localhost:8000/api/robot/wake")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("wake command failed: %v - %s", err, string(output))
+			}
+		}
+		fmt.Println("✅ Robot is now awake")
+		return nil
 	}
 
 	// Start server in goroutine

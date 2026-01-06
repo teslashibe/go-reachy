@@ -95,6 +95,11 @@ type Server struct {
 	// Audio control callbacks
 	OnSetPaused    func(paused bool)  // Pause/resume Eva completely
 	OnSetListening func(enabled bool) // Mute/unmute microphone
+
+	// Robot control callbacks (Issue #137)
+	OnRestartDaemon func() error // Restart robot daemon via SSH
+	OnSleep         func() error // Put robot to sleep (disable motors)
+	OnWake          func() error // Wake robot from sleep
 }
 
 // NewServer creates a new web dashboard server
@@ -154,6 +159,11 @@ func NewServer(port string) *Server {
 	// Audio control routes
 	api.Post("/paused", s.handleSetPaused)
 	api.Post("/listening", s.handleSetListening)
+
+	// Robot control routes (Issue #137)
+	api.Post("/robot/restart", s.handleRestartDaemon)
+	api.Post("/robot/sleep", s.handleSleep)
+	api.Post("/robot/wake", s.handleWake)
 
 	// WebSocket upgrade middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
