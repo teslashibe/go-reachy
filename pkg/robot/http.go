@@ -10,8 +10,10 @@ import (
 
 // httpClient is a shared HTTP client with timeout to prevent blocking.
 // Used by all HTTPController instances.
+// httpClient has a longer timeout to prevent request pileup during WiFi latency spikes.
+// See: docs/TICKET-DAEMON-STABILITY.md
 var httpClient = &http.Client{
-	Timeout: 2 * time.Second,
+	Timeout: 5 * time.Second,
 }
 
 // HTTPController implements RobotController using the robot's HTTP API.
