@@ -534,8 +534,8 @@ func initialize() error {
 	// Create rate-limited controller (centralizes all robot commands)
 	// This prevents daemon flooding by batching all updates into ONE HTTP call per tick (Issue #135)
 	// Before: 50-100+ HTTP requests/second from multiple sources
-	// After: 20 HTTP requests/second (one batched call every 50ms)
-	rateCtrl = robot.NewRateController(robotCtrl, 50*time.Millisecond)
+	// After: 30 HTTP requests/second (one batched call every 33ms, matches Python reachy)
+	rateCtrl = robot.NewRateController(robotCtrl, 33*time.Millisecond)
 	go rateCtrl.Run() // Start control loop in background
 
 	// Create persistent memory (saves to ~/.eva/memory.json)
