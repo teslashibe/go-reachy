@@ -455,8 +455,11 @@ func main() {
 		}
 
 		// Enable antenna breathing animation (matches Python reachy)
-		headTracker.SetAntennaController(robotCtrl)
-		fmt.Println("😮‍💨 Breathing antenna sway enabled")
+		// Route through RateController to prevent HTTP racing (Issue #139)
+		headTracker.SetAntennaHandler(func(left, right float64) {
+			rateCtrl.SetAntennas(left, right)
+		})
+		fmt.Println("😮‍💨 Breathing antenna sway enabled (→ RateController)")
 
 		// Initialize speech wobbler for natural speaking gestures
 		speechWobbler = speech.NewWobbler(func(roll, pitch, yaw float64) {
@@ -668,9 +671,10 @@ func startWebDashboard(ctx context.Context) {
 	webServer.OnToolTrigger = func(name string, args map[string]interface{}) (string, error) {
 		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
 
-		// Get tool config
+		// Get tool config - Motion routes through RateController (Issue #139)
 		cfg := eva.ToolsConfig{
-			Robot:          robotCtrl,
+			Robot:          robotCtrl,  // For non-motion (volume, status)
+			Motion:         rateCtrl,   // For all motion (head, antennas, body)
 			Memory:         memoryStore,
 			Vision:         &videoVisionAdapter{videoClient},
 			ObjectDetector: &yoloAdapter{objectDetector},
@@ -1064,8 +1068,10 @@ func connectRealtime(apiKey, model string) error {
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
+	// Motion routes through RateController to prevent HTTP racing (Issue #139)
 	toolsCfg := eva.ToolsConfig{
-		Robot:           robotCtrl,
+		Robot:           robotCtrl,  // For non-motion (volume, status)
+		Motion:          rateCtrl,   // For all motion (head, antennas, body)
 		Memory:          memoryStore,
 		Vision:          &videoVisionAdapter{videoClient},
 		ObjectDetector:  &yoloAdapter{objectDetector},
