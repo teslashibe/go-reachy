@@ -258,3 +258,46 @@ func TestController_NilRobot(t *testing.T) {
 	ctrl.tick()
 	// If we get here, test passes
 }
+
+func TestOffset_Clamp(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    Offset
+		expected Offset
+	}{
+		{
+			name:     "within limits",
+			input:    Offset{Roll: 0.1, Pitch: 0.2, Yaw: 0.3},
+			expected: Offset{Roll: 0.1, Pitch: 0.2, Yaw: 0.3},
+		},
+		{
+			name:     "yaw exceeds max",
+			input:    Offset{Roll: 0, Pitch: 0, Yaw: 2.58},
+			expected: Offset{Roll: 0, Pitch: 0, Yaw: MaxHeadYaw},
+		},
+		{
+			name:     "yaw exceeds min",
+			input:    Offset{Roll: 0, Pitch: 0, Yaw: -2.58},
+			expected: Offset{Roll: 0, Pitch: 0, Yaw: -MaxHeadYaw},
+		},
+		{
+			name:     "all exceed limits",
+			input:    Offset{Roll: 1.0, Pitch: 1.0, Yaw: 3.0},
+			expected: Offset{Roll: MaxHeadRoll, Pitch: MaxHeadPitch, Yaw: MaxHeadYaw},
+		},
+		{
+			name:     "negative exceed limits",
+			input:    Offset{Roll: -1.0, Pitch: -1.0, Yaw: -3.0},
+			expected: Offset{Roll: -MaxHeadRoll, Pitch: -MaxHeadPitch, Yaw: -MaxHeadYaw},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.input.Clamp()
+			if result != tt.expected {
+				t.Errorf("Clamp() = %+v, want %+v", result, tt.expected)
+			}
+		})
+	}
+}

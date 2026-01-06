@@ -242,3 +242,170 @@ export OPENAI_API_KEY="..."
 ./travis
 ```
 
+---
+
+## Debug Commands for Crash Investigation
+
+### Check Temperature and Throttling Status
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "vcgencmd measure_temp && vcgencmd get_throttled"
+```
+
+**Throttle flags interpretation:**
+| Bit | Meaning |
+|-----|---------|
+| 0 | Under-voltage detected |
+| 1 | Arm frequency capped |
+| 2 | Currently throttled |
+| 3 | Soft temperature limit active |
+| 16 | Under-voltage has occurred |
+| 17 | Arm frequency capping has occurred |
+| 18 | Throttling has occurred |
+| 19 | Soft temperature limit has occurred |
+
+`throttled=0x0` = No issues. `throttled=0x50005` = Under-voltage + throttling occurred.
+
+### Check Kernel Messages (dmesg)
+```bash
+# Look for OOM kills, panics, thermal issues
+sshpass -p "root" ssh pollen@192.168.68.83 "dmesg | grep -iE 'killed|oom|error|fail|panic|crash|voltage|throttl' | tail -30"
+```
+
+### Check Daemon Logs
+```bash
+# Recent daemon logs
+sshpass -p "root" ssh pollen@192.168.68.83 "journalctl -u reachy-mini-daemon --since '10 minutes ago' --no-pager | tail -50"
+
+# Check previous boot (if persistent journaling enabled)
+sshpass -p "root" ssh pollen@192.168.68.83 "journalctl -b -1 -u reachy-mini-daemon | tail -50"
+```
+
+### Check Memory and System Load
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "free -m && echo '---' && top -bn1 | head -15"
+```
+
+### Check Port Status (API, WebRTC, Zenoh)
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "netstat -tlnp 2>/dev/null | grep -E '7447|8000|8443'"
+```
+
+Expected output:
+```
+tcp  0  0  0.0.0.0:7447  0.0.0.0:*  LISTEN  950/python   # Zenoh
+tcp  0  0  0.0.0.0:8000  0.0.0.0:*  LISTEN  950/python   # HTTP API
+tcp  0  0  0.0.0.0:8443  0.0.0.0:*  LISTEN  950/python   # WebRTC signaling
+```
+
+### Check Voltage Levels
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "vcgencmd measure_volts core && vcgencmd measure_volts sdram_c && vcgencmd measure_volts sdram_i && vcgencmd measure_volts sdram_p"
+```
+
+---
+
+## Enable Persistent Journaling
+
+By default, the robot doesn't persist logs across reboots. Enable it to debug crashes:
+
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "echo 'root' | sudo -S mkdir -p /var/log/journal && echo 'root' | sudo -S systemd-tmpfiles --create --prefix /var/log/journal && echo 'root' | sudo -S systemctl restart systemd-journald"
+```
+
+After enabling, you can view previous boot logs:
+```bash
+# List available boots
+sshpass -p "root" ssh pollen@192.168.68.83 "journalctl --list-boots"
+
+# View previous boot
+sshpass -p "root" ssh pollen@192.168.68.83 "journalctl -b -1 | tail -100"
+```
+
+---
+
+## Known Issues
+
+### 8. Camera Autofocus I2C Errors (dw9807)
+
+**Symptoms (in dmesg):**
+```
+dw9807 10-000c: I2C write CTL fail ret = -5
+dw9807 10-000c: dw9807_ramp I2C failure: -5
+imx708 10-001a: probe with driver imx708 failed with error -5
+```
+
+**Cause:** The IMX708 camera's autofocus driver (dw9807) has intermittent I2C communication failures.
+
+**Impact:** Usually non-critical - the camera still works but autofocus may not function properly.
+
+**Status:** Known hardware/driver issue. No fix available. Monitor but don't panic.
+
+---
+
+### 9. Robot Freezes During Heavy Movement (WebRTC Disconnection)
+
+**Symptoms:**
+- Robot stops responding during conversation
+- go-reachy logs show: `Connection state: disconnected` then `Connection state: failed`
+- No fan spin-up (not thermal)
+- Temperature remains low (~38-45°C)
+
+**Root Cause:** WebRTC connection becomes unstable under load. When the video/audio pipeline fails, the Python daemon's async event loop may stall.
+
+**Mitigation:**
+1. Reduce camera resolution (if supported)
+2. Use Zenoh for motor control (bypasses HTTP bottleneck)
+3. Enable dead-zone filtering to reduce command frequency
+
+**go-reachy command with optimizations:**
+```bash
+./eva --transport=zenoh --voice=charlotte --tts=elevenlabs-ws
+```
+
+---
+
+### 10. Robot Unresponsive But No Thermal Issues
+
+**Investigation checklist:**
+1. Check temperature: `vcgencmd measure_temp` (should be <80°C)
+2. Check throttling: `vcgencmd get_throttled` (should be 0x0)
+3. Check memory: `free -m` (should have >500MB available)
+4. Check daemon: `systemctl status reachy-mini-daemon`
+5. Check WebRTC port: `nc -z localhost 8443`
+
+**If daemon is running but WebRTC port is closed:**
+```bash
+sshpass -p "root" ssh pollen@192.168.68.83 "echo 'root' | sudo -S systemctl restart reachy-mini-daemon"
+```
+
+---
+
+## Performance Tuning
+
+### Reduce go-reachy Control Loop Frequency
+The default control loop runs at 20Hz. If experiencing issues, this can be reduced by modifying `cmd/eva/main.go`:
+```go
+rateCtrl = robot.NewRateController(robotCtrl, 100*time.Millisecond)  // 10Hz instead of 20Hz
+```
+
+### Reduce Tracking Detection Rate
+The face tracking runs at 10Hz by default. Can be further reduced in `pkg/tracking/config.go`:
+```go
+DetectionInterval: 200 * time.Millisecond,  // 5Hz instead of 10Hz
+```
+
+---
+
+## Robot Hardware Info
+
+| Component | Details |
+|-----------|---------|
+| Board | Raspberry Pi 5 (4GB) |
+| Camera | IMX708 Wide (CSI) |
+| OS | Raspberry Pi OS (Bookworm) |
+| Python | 3.12 |
+| Daemon | reachy_mini v1.x |
+| Motor Control | Zenoh (port 7447) |
+| HTTP API | Uvicorn (port 8000) |
+| WebRTC Signaling | GStreamer rswebrtc (port 8443) |
+

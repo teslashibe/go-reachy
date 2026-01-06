@@ -1,274 +1,189 @@
 package robot
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
+	"math"
 	"sync"
-	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/teslashibe/go-reachy/pkg/debug"
+	zenoh "github.com/teslashibe/zenoh-go"
 )
 
-// ZenohClient wraps the connection to the robot
-// Note: Uses HTTP/WebSocket since zenoh-go doesn't exist yet
-// TODO: Switch to native Zenoh when zenoh-go is available
-type ZenohClient struct {
-	httpBase string
-	wsBase   string
-	prefix   string
-	debug    bool
+// ZenohController implements RobotController using Zenoh pub/sub.
+// This provides direct communication with the robot daemon at 100Hz+
+// without the overhead of HTTP requests.
+//
+// Zenoh topics:
+//   - {prefix}/command - motor commands (head pose, antennas, body yaw)
+//   - {prefix}/joint_positions - joint state feedback (subscriber)
+//   - {prefix}/head_pose - current head pose (subscriber)
+type ZenohController struct {
+	prefix  string
+	session zenoh.Session
+	cmdPub  zenoh.Publisher
 
-	wsConn        *websocket.Conn
-	connected     chan struct{}
-	connectedOnce sync.Once
-
-	// Message callbacks
-	OnJointPositions func([]byte)
-	OnHeadPose       func([]byte)
-	OnStatus         func([]byte)
-
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	closed bool
 }
 
-// NewZenohClient creates a new client connection to the robot
-// Uses HTTP API + WebSocket for state updates
-func NewZenohClient(ctx context.Context, endpoint string, prefix string, debug bool) (*ZenohClient, error) {
-	// Parse endpoint (tcp/IP:PORT) -> http://IP:8000
-	var ip string
-	fmt.Sscanf(endpoint, "tcp/%s", &ip)
-	// Remove port from IP if present
-	if len(ip) > 0 {
-		for i := len(ip) - 1; i >= 0; i-- {
-			if ip[i] == ':' {
-				ip = ip[:i]
-				break
-			}
-		}
-	}
+// NewZenohController creates a new Zenoh-based robot controller.
+// robotIP should be the robot's IP address (e.g., "192.168.68.83").
+// The Zenoh endpoint is on port 7447.
+func NewZenohController(robotIP string) (*ZenohController, error) {
+	endpoint := fmt.Sprintf("tcp/%s:7447", robotIP)
 
-	httpBase := fmt.Sprintf("http://%s:8000", ip)
-	wsBase := fmt.Sprintf("ws://%s:8000", ip)
-
-	if debug {
-		log.Printf("Connecting to robot at %s", httpBase)
-	}
-
-	zc := &ZenohClient{
-		httpBase:  httpBase,
-		wsBase:    wsBase,
-		prefix:    prefix,
-		debug:     debug,
-		connected: make(chan struct{}),
-	}
-
-	// Check if daemon is running
-	status, err := zc.GetDaemonStatus()
+	session, err := zenoh.Open(zenoh.ClientConfig(endpoint))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get daemon status: %w", err)
+		return nil, fmt.Errorf("failed to open zenoh session: %w", err)
 	}
 
-	if debug {
-		log.Printf("Daemon status: %s", status["state"])
-	}
+	// Default prefix for Reachy Mini
+	prefix := "reachy_mini"
 
-	// Connect WebSocket for state updates
-	if err := zc.connectWebSocket(ctx); err != nil {
-		log.Printf("WebSocket connection failed (non-fatal): %v", err)
-	}
-
-	// Mark as connected
-	zc.connectedOnce.Do(func() {
-		close(zc.connected)
-	})
-
-	if debug {
-		log.Println("Robot client initialized successfully")
-	}
-
-	return zc, nil
-}
-
-// GetDaemonStatus gets the current daemon status via HTTP
-func (zc *ZenohClient) GetDaemonStatus() (map[string]interface{}, error) {
-	resp, err := httpClient.Get(zc.httpBase + "/api/daemon/status")
+	cmdPub, err := session.Publisher(zenoh.KeyExpr(prefix + "/command"))
 	if err != nil {
-		debug.Log("⚠️  GetDaemonStatus error: %v\n", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		session.Close()
+		return nil, fmt.Errorf("failed to create command publisher: %w", err)
 	}
 
-	var status map[string]interface{}
-	if err := json.Unmarshal(body, &status); err != nil {
-		return nil, err
-	}
-
-	return status, nil
+	return &ZenohController{
+		prefix:  prefix,
+		session: session,
+		cmdPub:  cmdPub,
+	}, nil
 }
 
-// StartDaemon starts the robot daemon
-func (zc *ZenohClient) StartDaemon(wakeUp bool) error {
-	url := fmt.Sprintf("%s/api/daemon/start?wake_up=%v", zc.httpBase, wakeUp)
-	resp, err := httpClient.Post(url, "application/json", nil)
-	if err != nil {
-		debug.Log("⚠️  StartDaemon error: %v\n", err)
-		return err
+// sendCommand publishes a JSON command to the robot.
+func (z *ZenohController) sendCommand(cmd map[string]interface{}) error {
+	z.mu.RLock()
+	if z.closed {
+		z.mu.RUnlock()
+		return fmt.Errorf("zenoh controller is closed")
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to start daemon: %s", string(body))
-	}
-
-	return nil
-}
-
-// connectWebSocket establishes WebSocket connection for state updates
-func (zc *ZenohClient) connectWebSocket(ctx context.Context) error {
-	wsURL := zc.wsBase + "/api/state/ws/full"
-
-	if zc.debug {
-		log.Printf("Connecting WebSocket to %s", wsURL)
-	}
-
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("websocket dial failed: %w", err)
-	}
-
-	zc.wsConn = conn
-
-	// Start reading messages
-	go zc.readWebSocket(ctx)
-
-	return nil
-}
-
-// readWebSocket reads messages from WebSocket
-func (zc *ZenohClient) readWebSocket(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			_, message, err := zc.wsConn.ReadMessage()
-			if err != nil {
-				if zc.debug {
-					log.Printf("WebSocket read error: %v", err)
-				}
-				return
-			}
-
-			// Parse the full state message
-			var state map[string]interface{}
-			if err := json.Unmarshal(message, &state); err != nil {
-				continue
-			}
-
-			// Extract and dispatch to callbacks
-			if jp, ok := state["joint_positions"]; ok {
-				if data, err := json.Marshal(jp); err == nil && zc.OnJointPositions != nil {
-					zc.OnJointPositions(data)
-				}
-			}
-			if hp, ok := state["head_pose"]; ok {
-				if data, err := json.Marshal(hp); err == nil && zc.OnHeadPose != nil {
-					zc.OnHeadPose(data)
-				}
-			}
-		}
-	}
-}
-
-// Publish sends a command to the robot via HTTP
-// Note: In real implementation, this would go through Zenoh
-func (zc *ZenohClient) Publish(topic string, data []byte) error {
-	// For now, commands go through HTTP API
-	// TODO: Implement proper Zenoh publish when zenoh-go exists
-	if zc.debug {
-		log.Printf("Publish to %s: %s", topic, string(data))
-	}
-	return nil
-}
-
-// SendMoveCommand sends a movement command via HTTP
-func (zc *ZenohClient) SendMoveCommand(head [4]float64, antennas [2]float64, bodyYaw float64) error {
-	cmd := map[string]interface{}{
-		"head":     head,
-		"antennas": antennas,
-		"body_yaw": bodyYaw,
-	}
+	z.mu.RUnlock()
 
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal command: %w", err)
 	}
 
-	// POST to move endpoint (uses shared httpClient with 2s timeout)
-	resp, err := httpClient.Post(zc.httpBase+"/api/move/target", "application/json",
-		io.NopCloser(jsonReader(data)))
-	if err != nil {
-		debug.Log("⚠️  SendMoveCommand error: %v\n", err)
-		return err
+	return z.cmdPub.Put(data)
+}
+
+// rpyToMatrix converts roll, pitch, yaw (radians) to a 4x4 transformation matrix.
+// Uses ZYX rotation order (yaw, then pitch, then roll) matching reachy_mini.
+func rpyToMatrix(roll, pitch, yaw float64) [4][4]float64 {
+	cr, sr := math.Cos(roll), math.Sin(roll)
+	cp, sp := math.Cos(pitch), math.Sin(pitch)
+	cy, sy := math.Cos(yaw), math.Sin(yaw)
+
+	// ZYX rotation matrix (Rz * Ry * Rx)
+	return [4][4]float64{
+		{cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr, 0},
+		{sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr, 0},
+		{-sp, cp*sr, cp*cr, 0},
+		{0, 0, 0, 1},
 	}
-	defer resp.Body.Close()
-
-	return nil
 }
 
-// jsonReader creates a reader from JSON bytes
-func jsonReader(data []byte) io.Reader {
-	return &jsonBytesReader{data: data}
-}
+// SetHeadPose sets the robot's head position using Zenoh.
+func (z *ZenohController) SetHeadPose(roll, pitch, yaw float64) error {
+	// Convert roll/pitch/yaw to 4x4 pose matrix
+	pose := rpyToMatrix(roll, pitch, yaw)
 
-type jsonBytesReader struct {
-	data []byte
-	pos  int
-}
-
-func (r *jsonBytesReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}
-
-// Connected returns a channel that closes when connected
-func (zc *ZenohClient) Connected() <-chan struct{} {
-	return zc.connected
-}
-
-// Close closes the connection
-func (zc *ZenohClient) Close() error {
-	if zc.debug {
-		log.Println("Closing robot connection...")
+	// Convert to nested slice for JSON
+	poseList := make([][]float64, 4)
+	for i := 0; i < 4; i++ {
+		poseList[i] = pose[i][:]
 	}
 
-	if zc.wsConn != nil {
-		zc.wsConn.Close()
-	}
-
-	return nil
+	return z.sendCommand(map[string]interface{}{
+		"head_pose": poseList,
+	})
 }
 
-// WaitForConnection waits for the robot connection with timeout
-func (zc *ZenohClient) WaitForConnection(timeout time.Duration) error {
-	select {
-	case <-zc.connected:
+// SetAntennas sets the robot's antenna positions using Zenoh.
+func (z *ZenohController) SetAntennas(left, right float64) error {
+	return z.sendCommand(map[string]interface{}{
+		"antennas_joint_positions": []float64{left, right},
+	})
+}
+
+// SetAntennasSmooth sets antenna positions (duration is ignored for Zenoh).
+func (z *ZenohController) SetAntennasSmooth(left, right, _ float64) error {
+	return z.SetAntennas(left, right)
+}
+
+// SetBodyYaw rotates the robot's body using Zenoh.
+func (z *ZenohController) SetBodyYaw(yaw float64) error {
+	return z.sendCommand(map[string]interface{}{
+		"body_yaw": yaw,
+	})
+}
+
+// SetPose sets head, antennas, and body yaw in a single Zenoh message.
+// This is the most efficient method for the control loop.
+func (z *ZenohController) SetPose(head *Offset, antennas *[2]float64, bodyYaw *float64) error {
+	cmd := make(map[string]interface{})
+
+	if head != nil {
+		pose := rpyToMatrix(head.Roll, head.Pitch, head.Yaw)
+		poseList := make([][]float64, 4)
+		for i := 0; i < 4; i++ {
+			poseList[i] = pose[i][:]
+		}
+		cmd["head_pose"] = poseList
+	}
+
+	if antennas != nil {
+		cmd["antennas_joint_positions"] = []float64{antennas[0], antennas[1]}
+	}
+
+	if bodyYaw != nil {
+		cmd["body_yaw"] = *bodyYaw
+	}
+
+	if len(cmd) == 0 {
+		return nil // Nothing to send
+	}
+
+	return z.sendCommand(cmd)
+}
+
+// GetDaemonStatus returns the robot daemon status.
+// Note: This still uses HTTP since status is not real-time critical.
+func (z *ZenohController) GetDaemonStatus() (string, error) {
+	// Zenoh doesn't provide a request/response pattern easily,
+	// so we fall back to HTTP for status queries.
+	// TODO: Subscribe to daemon_status topic instead
+	return "unknown", fmt.Errorf("GetDaemonStatus not implemented for Zenoh (use HTTP)")
+}
+
+// SetVolume sets the robot's speaker volume.
+// Note: This still uses HTTP since volume is not real-time critical.
+func (z *ZenohController) SetVolume(_ int) error {
+	// Volume control goes through HTTP API, not Zenoh
+	return fmt.Errorf("SetVolume not implemented for Zenoh (use HTTP)")
+}
+
+// Close closes the Zenoh session and releases resources.
+func (z *ZenohController) Close() error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+
+	if z.closed {
 		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("connection timeout after %v", timeout)
 	}
+	z.closed = true
+
+	if z.cmdPub != nil {
+		z.cmdPub.Close()
+	}
+	if z.session != nil {
+		return z.session.Close()
+	}
+	return nil
 }
+
+// Ensure ZenohController implements MotionController (for RateController)
+var _ MotionController = (*ZenohController)(nil)

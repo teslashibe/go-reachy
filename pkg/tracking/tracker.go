@@ -37,6 +37,10 @@ type OffsetHandler func(offset robot.Offset)
 // Returns: the actual delta applied (may be 0 if at limit, used for head counter-rotation)
 type BodyRotationHandler func(direction float64) float64
 
+// AntennaHandler is called to set antenna positions for breathing animation.
+// Routes through RateController to prevent HTTP racing (Issue #139).
+type AntennaHandler func(left, right float64)
+
 // Tracker handles head tracking with world-coordinate awareness
 type Tracker struct {
 	config Config
@@ -44,8 +48,10 @@ type Tracker struct {
 	video  VideoSource
 	state  StateUpdater
 
-	// Optional antenna controller for breathing animation
+	// Optional antenna controller for breathing animation (legacy direct mode)
 	antennaController robot.AntennaController
+	// Antenna handler for breathing animation (preferred - routes through RateController)
+	onAntenna AntennaHandler
 
 	// Core components
 	detector   detection.Detector
@@ -172,10 +178,19 @@ func (t *Tracker) SetStateUpdater(state StateUpdater) {
 
 // SetAntennaController sets the optional antenna controller for breathing animation.
 // If set, antennas will sway during breathing like the Python implementation.
+// Deprecated: Use SetAntennaHandler instead to route through RateController (Issue #139).
 func (t *Tracker) SetAntennaController(ctrl robot.AntennaController) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.antennaController = ctrl
+}
+
+// SetAntennaHandler sets the callback for breathing antenna animation.
+// This routes antenna control through RateController to prevent HTTP racing (Issue #139).
+func (t *Tracker) SetAntennaHandler(handler AntennaHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onAntenna = handler
 }
 
 // SetOffsetHandler enables offset mode.
@@ -1199,17 +1214,20 @@ func (t *Tracker) updateBreathing() {
 	// Output head pose (yaw stays at 0 during breathing)
 	t.outputPose(0, pitch, 0)
 
-	// Output antenna sway if controller available
+	// Output antenna sway - prefer handler (routes through RateController) over direct controller
 	t.mu.RLock()
+	antennaHandler := t.onAntenna
 	antennaCtrl := t.antennaController
 	t.mu.RUnlock()
 
-	if antennaCtrl != nil {
-		// Antennas sway in opposite directions (left = +sway, right = -sway)
+	// Antennas sway in opposite directions (left = +sway, right = -sway)
+	if antennaHandler != nil {
+		// Route through RateController (Issue #139)
+		antennaHandler(antennaSway, -antennaSway)
+	} else if antennaCtrl != nil {
+		// Legacy direct mode (deprecated)
 		// Use smooth motion with 0.5s duration for fluid wave effect
-		// This creates overlapping interpolations that blend into smooth motion
 		if err := antennaCtrl.SetAntennasSmooth(antennaSway, -antennaSway, 0.5); err != nil {
-			// Don't spam logs for antenna errors
 			debug.Log("⚠️  Antenna sway error: %v\n", err)
 		}
 	}

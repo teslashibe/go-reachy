@@ -44,15 +44,15 @@ type Client struct {
 	sessionReady bool
 
 	// Callbacks
-	OnTranscript       func(text string, isFinal bool)
-	OnTranscriptDone   func() // Called when response.audio_transcript.done is received
-	OnAudioDelta       func(audioBase64 string)
-	OnAudioDone        func()
-	OnFunctionCall     func(name string, args map[string]interface{}) string
-	OnError            func(err error)
-	OnSessionCreated   func()
-	OnSpeechStarted    func() // User started speaking
-	OnSpeechStopped    func() // User stopped speaking
+	OnTranscript     func(text string, isFinal bool)
+	OnTranscriptDone func() // Called when response.audio_transcript.done is received
+	OnAudioDelta     func(audioBase64 string)
+	OnAudioDone      func()
+	OnFunctionCall   func(name string, args map[string]interface{}) string
+	OnError          func(err error)
+	OnSessionCreated func()
+	OnSpeechStarted  func() // User started speaking
+	OnSpeechStopped  func() // User stopped speaking
 
 	// Internal state
 	closed bool
@@ -146,7 +146,7 @@ func (c *Client) ConfigureSession(instructions string, voice string) error {
 				"type":                "server_vad",
 				"threshold":           0.5,
 				"prefix_padding_ms":   300,
-				"silence_duration_ms": 500,
+				"silence_duration_ms": 300,
 			},
 			"tools":       apiTools,
 			"tool_choice": "auto",
@@ -398,7 +398,3 @@ func (c *Client) IsReady() bool {
 func (c *Client) Model() string {
 	return c.model
 }
-
-
-
-

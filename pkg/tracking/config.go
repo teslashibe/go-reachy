@@ -91,7 +91,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		// Timing - fast and responsive
-		DetectionInterval: 50 * time.Millisecond,  // 20 detections per second (tuned up from 4Hz)
+		DetectionInterval: 100 * time.Millisecond, // 10 Hz - reduced from 20Hz for daemon stability (TICKET-DAEMON-STABILITY)
 		MovementInterval:  50 * time.Millisecond,  // 20 updates per second
 		DecayInterval:     100 * time.Millisecond, // 10 decay updates per second
 

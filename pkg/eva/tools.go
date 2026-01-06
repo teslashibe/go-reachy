@@ -6,13 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/teslashibe/go-reachy/pkg/robot"
 	"github.com/teslashibe/go-reachy/pkg/spark"
 	"github.com/teslashibe/go-reachy/pkg/vision"
 )
 
 // Tools returns all tools available to Eva.
 func Tools(cfg ToolsConfig) []Tool {
-	robot := cfg.Robot
+	robotCtrl := cfg.Robot // For non-motion ops (volume, status)
 	mem := cfg.Memory
 	tools := []Tool{
 		{
@@ -42,8 +43,9 @@ func Tools(cfg ToolsConfig) []Tool {
 					// All zero
 				}
 
-				if robot != nil {
-					robot.SetHeadPose(roll, pitch, yaw)
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBaseHead(robot.Offset{Roll: roll, Pitch: pitch, Yaw: yaw})
 				}
 				return fmt.Sprintf("Looking %s", dir), nil
 			},
@@ -125,14 +127,15 @@ func Tools(cfg ToolsConfig) []Tool {
 			Description: "Wave your antennas to greet someone friendly.",
 			Parameters:  map[string]interface{}{},
 			Handler: func(args map[string]interface{}) (string, error) {
-				if robot != nil {
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
 					for i := 0; i < 3; i++ {
-						robot.SetAntennas(0.4, 0)
+						cfg.Motion.SetAntennas(0.4, 0)
 						time.Sleep(150 * time.Millisecond)
-						robot.SetAntennas(0, 0.4)
+						cfg.Motion.SetAntennas(0, 0.4)
 						time.Sleep(150 * time.Millisecond)
 					}
-					robot.SetAntennas(0, 0)
+					cfg.Motion.SetAntennas(0, 0)
 				}
 				return "Waved hello with antennas", nil
 			},
@@ -262,12 +265,13 @@ func Tools(cfg ToolsConfig) []Tool {
 			Description: "Look around the room to see who or what is there.",
 			Parameters:  map[string]interface{}{},
 			Handler: func(args map[string]interface{}) (string, error) {
-				if robot != nil {
-					robot.SetHeadPose(0, 0, 0.4)
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBaseHead(robot.Offset{Yaw: 0.4})
 					time.Sleep(500 * time.Millisecond)
-					robot.SetHeadPose(0, 0, -0.4)
+					cfg.Motion.SetBaseHead(robot.Offset{Yaw: -0.4})
 					time.Sleep(500 * time.Millisecond)
-					robot.SetHeadPose(0, 0, 0)
+					cfg.Motion.SetBaseHead(robot.Offset{})
 				}
 				return "Looked around the room", nil
 			},
@@ -295,8 +299,9 @@ func Tools(cfg ToolsConfig) []Tool {
 					yaw = 0
 				}
 
-				if robot != nil {
-					robot.SetBodyYaw(yaw)
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBodyYaw(yaw)
 				}
 
 				if cfg.Tracker != nil {
@@ -311,14 +316,15 @@ func Tools(cfg ToolsConfig) []Tool {
 			Description: "Nod your head to agree with something.",
 			Parameters:  map[string]interface{}{},
 			Handler: func(args map[string]interface{}) (string, error) {
-				if robot != nil {
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
 					for i := 0; i < 2; i++ {
-						robot.SetHeadPose(0, 0.15, 0)
+						cfg.Motion.SetBaseHead(robot.Offset{Pitch: 0.15})
 						time.Sleep(200 * time.Millisecond)
-						robot.SetHeadPose(0, -0.1, 0)
+						cfg.Motion.SetBaseHead(robot.Offset{Pitch: -0.1})
 						time.Sleep(200 * time.Millisecond)
 					}
-					robot.SetHeadPose(0, 0, 0)
+					cfg.Motion.SetBaseHead(robot.Offset{})
 				}
 				return "Nodded yes", nil
 			},
@@ -328,14 +334,15 @@ func Tools(cfg ToolsConfig) []Tool {
 			Description: "Shake your head to disagree with something.",
 			Parameters:  map[string]interface{}{},
 			Handler: func(args map[string]interface{}) (string, error) {
-				if robot != nil {
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
 					for i := 0; i < 2; i++ {
-						robot.SetHeadPose(0, 0, 0.2)
+						cfg.Motion.SetBaseHead(robot.Offset{Yaw: 0.2})
 						time.Sleep(200 * time.Millisecond)
-						robot.SetHeadPose(0, 0, -0.2)
+						cfg.Motion.SetBaseHead(robot.Offset{Yaw: -0.2})
 						time.Sleep(200 * time.Millisecond)
 					}
-					robot.SetHeadPose(0, 0, 0)
+					cfg.Motion.SetBaseHead(robot.Offset{})
 				}
 				return "Shook head no", nil
 			},
@@ -356,8 +363,8 @@ func Tools(cfg ToolsConfig) []Tool {
 				if l, ok := args["level"].(float64); ok {
 					level = int(l)
 				}
-				if robot != nil {
-					robot.SetVolume(level)
+				if robotCtrl != nil {
+					robotCtrl.SetVolume(level)
 				}
 				return fmt.Sprintf("Volume set to %d%%", level), nil
 			},
@@ -620,8 +627,9 @@ func Tools(cfg ToolsConfig) []Tool {
 					return "I cannot see right now", nil
 				}
 
-				if robot != nil {
-					robot.SetHeadPose(0, 0, 0.3)
+				// Use RateController for motion (Issue #139)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBaseHead(robot.Offset{Yaw: 0.3})
 					time.Sleep(400 * time.Millisecond)
 				}
 
@@ -634,8 +642,8 @@ func Tools(cfg ToolsConfig) []Tool {
 					}
 				}
 
-				if robot != nil {
-					robot.SetHeadPose(0, 0, -0.3)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBaseHead(robot.Offset{Yaw: -0.3})
 					time.Sleep(400 * time.Millisecond)
 				}
 
@@ -648,8 +656,8 @@ func Tools(cfg ToolsConfig) []Tool {
 					}
 				}
 
-				if robot != nil {
-					robot.SetHeadPose(0, 0, 0)
+				if cfg.Motion != nil {
+					cfg.Motion.SetBaseHead(robot.Offset{})
 					time.Sleep(300 * time.Millisecond)
 				}
 

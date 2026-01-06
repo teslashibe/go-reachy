@@ -36,6 +36,7 @@ const (
 )
 
 var robotIP = defaultRobotIP
+var transport = "zenoh" // "zenoh" (default) or "http"
 
 func init() {
 	if ip := os.Getenv("ROBOT_IP"); ip != "" {
@@ -106,7 +107,8 @@ var (
 	realtimeClient  *openai.Client
 	videoClient     *video.Client
 	audioPlayer     *audio.Player
-	robotCtrl       *robot.HTTPController
+	robotCtrl       robot.MotionController  // Motion control (HTTP or Zenoh)
+	httpCtrl        *robot.HTTPController   // HTTP-only ops (status, volume)
 	rateCtrl        *robot.RateController // Centralized rate-limited controller (Issue #135)
 	memoryStore     *memory.Memory
 	sparkStore      *spark.JSONStore
@@ -170,6 +172,7 @@ func main() {
 	ttsVoice := flag.String("tts-voice", "", "Voice ID for ElevenLabs (required if --tts=elevenlabs)")
 	sparkFlag := flag.Bool("spark", true, "Enable Spark idea collection (overrides SPARK_ENABLED env var)")
 	noBodyFlag := flag.Bool("no-body", false, "Disable body rotation (head-only tracking)")
+	transportFlag := flag.String("transport", "zenoh", "Robot transport: zenoh (default, direct 100Hz+) or http")
 	sparkFlagSet := false
 	flag.Parse()
 	// Check if --spark was explicitly set
@@ -189,6 +192,9 @@ func main() {
 	debug.Enabled = *debugFlag
 	if *robotIPFlag != "" {
 		robotIP = *robotIPFlag
+	}
+	if *transportFlag != "" {
+		transport = *transportFlag
 	}
 
 	fmt.Println("🤖 Eva 2.0 - Low-Latency Conversational Agent")
@@ -455,8 +461,11 @@ func main() {
 		}
 
 		// Enable antenna breathing animation (matches Python reachy)
-		headTracker.SetAntennaController(robotCtrl)
-		fmt.Println("😮‍💨 Breathing antenna sway enabled")
+		// Route through RateController to prevent HTTP racing (Issue #139)
+		headTracker.SetAntennaHandler(func(left, right float64) {
+			rateCtrl.SetAntennas(left, right)
+		})
+		fmt.Println("😮‍💨 Breathing antenna sway enabled (→ RateController)")
 
 		// Initialize speech wobbler for natural speaking gestures
 		speechWobbler = speech.NewWobbler(func(roll, pitch, yaw float64) {
@@ -525,13 +534,27 @@ func main() {
 }
 
 func initialize() error {
-	// Create robot controller (HTTP layer)
-	robotCtrl = robot.NewHTTPController(robotIP)
+	// Always create HTTP controller for non-motion ops (status, volume)
+	httpCtrl = robot.NewHTTPController(robotIP)
+
+	// Create motion controller based on transport flag
+	switch transport {
+	case "zenoh":
+		fmt.Printf("🔌 Using Zenoh transport for motion (direct connection to port 7447)\n")
+		var err error
+		robotCtrl, err = robot.NewZenohController(robotIP)
+		if err != nil {
+			return fmt.Errorf("failed to create Zenoh controller: %w", err)
+		}
+	default:
+		fmt.Printf("🔌 Using HTTP transport (REST API on port 8000)\n")
+		robotCtrl = httpCtrl // Reuse HTTP controller for motion
+	}
 
 	// Create rate-limited controller (centralizes all robot commands)
 	// This prevents daemon flooding by batching all updates into ONE HTTP call per tick (Issue #135)
 	// Before: 50-100+ HTTP requests/second from multiple sources
-	// After: 20 HTTP requests/second (one batched call every 50ms)
+	// After: 30 HTTP requests/second (one batched call every 33ms, matches Python reachy)
 	rateCtrl = robot.NewRateController(robotCtrl, 50*time.Millisecond)
 	go rateCtrl.Run() // Start control loop in background
 
@@ -668,9 +691,10 @@ func startWebDashboard(ctx context.Context) {
 	webServer.OnToolTrigger = func(name string, args map[string]interface{}) (string, error) {
 		fmt.Printf("🎮 Dashboard tool: %s (args: %v)\n", name, args)
 
-		// Get tool config
+		// Get tool config - Motion routes through RateController (Issue #139)
 		cfg := eva.ToolsConfig{
-			Robot:          robotCtrl,
+			Robot:          httpCtrl,  // For non-motion (volume, status) - always HTTP
+			Motion:         rateCtrl,   // For all motion (head, antennas, body)
 			Memory:         memoryStore,
 			Vision:         &videoVisionAdapter{videoClient},
 			ObjectDetector: &yoloAdapter{objectDetector},
@@ -1026,7 +1050,7 @@ func streamCameraToWeb(ctx context.Context) {
 }
 
 func wakeUpRobot() error {
-	status, err := robotCtrl.GetDaemonStatus()
+	status, err := httpCtrl.GetDaemonStatus()
 	if err != nil {
 		return err
 	}
@@ -1034,7 +1058,7 @@ func wakeUpRobot() error {
 		return fmt.Errorf("daemon not running: %s", status)
 	}
 	// Set volume to max
-	robotCtrl.SetVolume(100)
+	httpCtrl.SetVolume(100)
 
 	// Reset body to neutral position at startup
 	// This ensures known initial state and matches Python reachy behavior
@@ -1064,8 +1088,10 @@ func connectRealtime(apiKey, model string) error {
 	audioPlayer.SetOpenAIKey(apiKey)
 
 	// Register Eva's tools with vision and tracking support
+	// Motion routes through RateController to prevent HTTP racing (Issue #139)
 	toolsCfg := eva.ToolsConfig{
-		Robot:           robotCtrl,
+		Robot:           httpCtrl,  // For non-motion (volume, status) - always HTTP
+		Motion:          rateCtrl,   // For all motion (head, antennas, body)
 		Memory:          memoryStore,
 		Vision:          &videoVisionAdapter{videoClient},
 		ObjectDetector:  &yoloAdapter{objectDetector},
