@@ -694,14 +694,15 @@ func startWebDashboard(ctx context.Context) {
 
 		// Get tool config - Motion routes through RateController (Issue #139)
 		cfg := eva.ToolsConfig{
-			Robot:          httpCtrl,  // For non-motion (volume, status) - always HTTP
-			Motion:         rateCtrl,   // For all motion (head, antennas, body)
-			Memory:         memoryStore,
-			Vision:         &videoVisionAdapter{videoClient},
-			ObjectDetector: &yoloAdapter{objectDetector},
-			GoogleAPIKey:   os.Getenv("GOOGLE_API_KEY"),
-			AudioPlayer:    audioPlayer,
-			Tracker:        headTracker,
+			Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+			Motion:             rateCtrl,    // For all motion (head, antennas, body)
+			Memory:             memoryStore,
+			Vision:             &videoVisionAdapter{videoClient},
+			ObjectDetector:     &yoloAdapter{objectDetector},
+			GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
+			AudioPlayer:        audioPlayer,
+			Tracker:            headTracker,
+			TrackingController: headTracker, // For pausing during emotions
 		}
 
 		// Get tools and find the one requested
@@ -1092,18 +1093,19 @@ func connectRealtime(apiKey, model string, vadSilenceMs int) error {
 	// Register Eva's tools with vision and tracking support
 	// Motion routes through RateController to prevent HTTP racing (Issue #139)
 	toolsCfg := eva.ToolsConfig{
-		Robot:           httpCtrl,  // For non-motion (volume, status) - always HTTP
-		Motion:          rateCtrl,   // For all motion (head, antennas, body)
-		Memory:          memoryStore,
-		Vision:          &videoVisionAdapter{videoClient},
-		ObjectDetector:  &yoloAdapter{objectDetector},
-		GoogleAPIKey:    os.Getenv("GOOGLE_API_KEY"),
-		AudioPlayer:     audioPlayer,
-		Tracker:         headTracker, // For body rotation sync
-		Emotions:        emotionRegistry,
-		SparkStore:      sparkStore,      // Idea collection
-		SparkGemini:     sparkGemini,     // Gemini for title/tag generation
-		SparkGoogleDocs: sparkGoogleDocs, // Google Docs for syncing
+		Robot:              httpCtrl,    // For non-motion (volume, status) - always HTTP
+		Motion:             rateCtrl,    // For all motion (head, antennas, body)
+		Memory:             memoryStore,
+		Vision:             &videoVisionAdapter{videoClient},
+		ObjectDetector:     &yoloAdapter{objectDetector},
+		GoogleAPIKey:       os.Getenv("GOOGLE_API_KEY"),
+		AudioPlayer:        audioPlayer,
+		Tracker:            headTracker, // For body rotation sync
+		TrackingController: headTracker, // For pausing during emotions
+		Emotions:           emotionRegistry,
+		SparkStore:         sparkStore,      // Idea collection
+		SparkGemini:        sparkGemini,     // Gemini for title/tag generation
+		SparkGoogleDocs:    sparkGoogleDocs, // Google Docs for syncing
 	}
 	tools := eva.Tools(toolsCfg)
 	for _, tool := range tools {

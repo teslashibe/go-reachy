@@ -82,11 +82,23 @@ func Tools(cfg ToolsConfig) []Tool {
 
 				fmt.Printf("🎭 Playing emotion: %s (%.1fs)\n", emotionName, emotion.Duration.Seconds())
 
-				// Play asynchronously - callback handles robot movement
+				// Play asynchronously - pause tracking during emotion to prevent conflicts
 				go func() {
+					// Pause tracking to prevent head movement conflicts
+					if cfg.TrackingController != nil {
+						cfg.TrackingController.SetEnabled(false)
+						fmt.Println("⏸️  Tracking paused for emotion")
+					}
+
 					ctx := context.Background()
 					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
 						fmt.Printf("🎭 Emotion playback error: %v\n", err)
+					}
+
+					// Resume tracking after emotion completes
+					if cfg.TrackingController != nil {
+						cfg.TrackingController.SetEnabled(true)
+						fmt.Println("▶️  Tracking resumed")
 					}
 				}()
 
@@ -143,10 +155,23 @@ func Tools(cfg ToolsConfig) []Tool {
 
 				fmt.Printf("🎭 Expressing emotion: %s (%.1fs)\n", emotionName, emotion.Duration.Seconds())
 
+				// Play asynchronously - pause tracking during emotion to prevent conflicts
 				go func() {
+					// Pause tracking to prevent head movement conflicts
+					if cfg.TrackingController != nil {
+						cfg.TrackingController.SetEnabled(false)
+						fmt.Println("⏸️  Tracking paused for emotion")
+					}
+
 					ctx := context.Background()
 					if err := cfg.Emotions.PlaySync(ctx, emotionName); err != nil {
 						fmt.Printf("🎭 Emotion playback error: %v\n", err)
+					}
+
+					// Resume tracking after emotion completes
+					if cfg.TrackingController != nil {
+						cfg.TrackingController.SetEnabled(true)
+						fmt.Println("▶️  Tracking resumed")
 					}
 				}()
 
